@@ -38,7 +38,9 @@ a consulted inventory location does not change the account's assigned authority.
 See the [inventory API contract](apps/api/docs/inventory-api.md), the
 [stock ingress contract](apps/api/docs/stock-entries.md), the
 [stock adjustment contract](apps/api/docs/stock-adjustments.md) and the
-[transfer API contract](apps/api/docs/transfers-api.md) for backend rules, and
+[transfer API contract](apps/api/docs/transfers-api.md) for backend rules, the
+[supplier contract](apps/api/docs/suppliers.md) for the warehouse counterparty
+that offers catalogue entries and is required by every new ingress document, and
 the [other products contract](apps/api/docs/other-products.md) for the second
 catalog kind, the variant identity both kinds share and the surfaces that read
 it today.

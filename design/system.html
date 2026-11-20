@@ -1,9 +1,315 @@
 <!doctype html>
-<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Luson · sistema sincronizado</title><style>
-*{box-sizing:border-box}body{margin:0;background:#F8F6F4;color:#242124;font:14px sans-serif}main{max-width:1440px;margin:auto;padding:32px}h1{font-size:24px}h2{font-size:18px;margin-top:32px}p{line-height:1.6}small{color:#6B6267}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px}article,section{background:#FFFFFF;border:1px solid #DED7DA;border-radius:6px;padding:16px}article div{height:56px;border:1px solid #6B6267;margin-bottom:12px}article strong,article small{display:block;overflow-wrap:anywhere}button,input{font:inherit;min-height:44px;padding:8px 12px;border:1px solid #6B6267;border-radius:4px;background:#FFFFFF;color:#242124}button{cursor:pointer}button:hover{background:#F5E8ED}.primary{background:#7A1F3D;color:#FFFFFF;border-color:#7A1F3D}.primary:hover{background:#5B162D}:focus-visible{outline:2px solid #7A1F3D;outline-offset:3px}.samples{display:flex;flex-wrap:wrap;gap:16px;margin:16px 0}.scale{display:flex;gap:16px;align-items:end;flex-wrap:wrap}.scale span{display:block;background:#F5E8ED;border:1px solid #7A1F3D;padding:4px}.tag{background:#ECFDF5;color:#047857;border:1px solid #A7F3D0;padding:8px;border-radius:6px}label{display:grid;gap:8px}section{margin-top:16px}@media(max-width:767px){main{padding:16px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}</style></head><body><main><h1>Sistema visual · Luson</h1><p>Sincronizado desde <strong>apps/web/src/style.css</strong>. Valores reales; no es un sistema inicial propuesto. Nombres y selectores completos en design/system.md.</p><p>36 representaciones de color · 13 tamaños de texto · 17 espacios principales · 7 radios (incluye 0) · 3 sombras más el reset <code>none</code>. Inter, sans-serif en fuente; aquí se utiliza sans-serif del sistema sin descargas.</p><h2>Colores de origen</h2><div class="grid" id="colors"></div><h2>Tipografía</h2><section id="type"></section><h2>Espaciado (px)</h2><section class="scale" id="space"></section><h2>Radios y sombras</h2><div class="samples" id="radius"></div><div class="samples"><section style="box-shadow:0 1px 2px #2421240d">0 1px 2px #2421240d</section><section style="box-shadow:0 20px 50px #24212433">0 20px 50px #24212433</section><section style="box-shadow:0 16px 48px rgb(0 0 0 / 20%)">0 16px 48px rgb(0 0 0 / 20%)</section></div><h2>Componentes base</h2><section><div class="samples"><button class="primary">Acción principal · muestra</button><button>Secundaria · muestra</button><span class="tag">Recibida</span></div><label>Campo ilustrativo<input value="Sucursal Centro" readonly></label><p style="background:#F5E8ED;padding:16px">Contexto con tint. Los bordes de campos de esta galería usan muted para accesibilidad; no modifica la app.</p><p>Sidebar 240px · cabecera 56px · foco wine 2px / offset 3px · controles táctiles 44px · breakpoint 767px.</p></section><h2>Componentes de medición</h2><section><h3 style="margin:0 0 10px;font-size:13.5px">Banda de celdas · gap 1px sobre borde</h3><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#DED7DA;border:1px solid #DED7DA;border-radius:8px;overflow:hidden"><div style="background:#FFFFFF;padding:16px 18px"><span style="font-size:12px;color:#6B6267">Quedó al cerrar</span><div style="font-size:24px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin:6px 0 2px">Bs 1.850,00</div><span style="font-size:12.5px;color:#6B6267">12/11 18:30</span></div><div style="background:#FFFFFF;padding:16px 18px"><span style="font-size:12px;color:#6B6267">Ventas en efectivo</span><div style="font-size:24px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin:6px 0 2px">Bs 6.420,00</div><span style="font-size:12.5px;color:#6B6267">desde el corte</span></div><div style="background:#FFFFFF;padding:16px 18px"><span style="font-size:12px;color:#6B6267">Esperado en el cajón</span><div style="font-size:24px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin:6px 0 2px;color:#7A1F3D">Bs 6.820,00</div><span style="font-size:12.5px;color:#6B6267">en vivo</span></div></div><h3 style="margin:24px 0 10px;font-size:13.5px">Monto que encabeza · 26px tabular</h3><div style="background:#FFFFFF;border:1px solid #DED7DA;border-radius:8px;padding:16px 18px;box-shadow:0 1px 2px #2421240d"><div style="display:flex;align-items:baseline;gap:10px"><span style="font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums">Bs 6.820,00</span><span style="font-size:12.5px;color:#6B6267">esperado en el cajón</span></div></div></section></main><script>
-const colors={wine:'#7A1F3D',hover:'#5B162D',tint:'#F5E8ED',page:'#F8F6F4',border:'#DED7DA',muted:'#6B6267',ink:'#242124',surface:'#FFFFFF','action-alert':'#BA1A1A','received-bg':'#ECFDF5','received-ink':'#047857','received-border':'#A7F3D0','approved-bg':'#EDF7F0','approved-ink':'#22633B','shortage-bg':'#FFF0F0','shortage-border':'#FFDAD6','warning-bg':'#FFFBEF','warning-border':'#E8CF86','warning-ink':'#805400','approved-border':'#D9B3C1','history-positive':'#23815A','reject-ink':'#991515','reject-border':'#CCAAAA','restitution-border':'#A7D9C3','restitution-ink':'#065F46','disabled-ink':'#595459','disabled-border':'#AAA5AA','disabled-bg':'#EFEDEF','notice-overlay':'#F5E8ED99','variant-overlay':'#F8F6F466','soft-shadow':'#2421240D','modal-shadow':'#24212433','creation-backdrop':'#24212466','review-backdrop':'#24212473','decision-backdrop':'rgb(36 33 36 / 45%)','decision-shadow':'rgb(0 0 0 / 20%)'};
-Object.entries(colors).forEach(([name,value])=>{const a=document.createElement('article');const sw=document.createElement('div');sw.style.background=value;const b=document.createElement('strong');b.textContent=name;const s=document.createElement('small');s.textContent=value;a.append(sw,b,s);document.querySelector('#colors').append(a)});
-[10,11,12,13,14,15,16,17,18,20,22,24,26].forEach(n=>{const p=document.createElement('p');p.style.fontSize=n+'px';p.textContent=n+'px · Transferencia recibida';if(n===26)p.textContent=n+'px · Bs 6.820,00 · monto que encabeza una pantalla de medición';document.querySelector('#type').append(p)});
-[1,2,4,5,6,8,10,12,14,16,18,20,24,28,32,40,48].forEach(n=>{const s=document.createElement('span');s.style.paddingTop=n+'px';s.textContent=n;document.querySelector('#space').append(s)});
-[0,3,4,6,8,12,999].forEach(n=>{const s=document.createElement('section');s.style.borderRadius=n+'px';s.textContent=n+'px';document.querySelector('#radius').append(s)});
-</script></body></html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Luson · sistema visual sincronizado</title>
+<style>
+:root{--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:#242124;font:14px/1.45 Inter, sans-serif}
+main{max-width:1440px;margin:0 auto;padding:32px}
+h1{font-size:24px;font-weight:700;letter-spacing:-.025em}
+h2{font-size:20px;font-weight:600;margin:40px 0 8px;padding-top:16px;border-top:1px solid var(--border)}
+h3{font-size:14px;font-weight:600;margin:20px 0 8px}
+p{margin:0 0 8px;max-width:88ch;line-height:1.6}
+.lead{color:var(--muted);font-size:13px}
+small,figcaption span{color:var(--muted);font-size:11px}
+code{font-family:inherit;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.swgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.sw{margin:0;background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:8px}
+.chip-color{height:52px;border:1px solid var(--muted);border-radius:3px;background:#FFFFFF}
+.sw figcaption{display:grid;gap:2px;margin-top:8px}
+.sw strong{font-size:11px;font-weight:600;overflow-wrap:anywhere}
+.sw span{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#FFFFFF;border:1px solid var(--border)}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+thead th{text-transform:uppercase;font-size:11px;letter-spacing:.03em;color:var(--muted);background:var(--page);height:36px}
+tbody th{font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+tbody tr:last-child th,tbody tr:last-child td{border-bottom:0}
+.muted{color:var(--muted);font-size:12px}
+.space-row,.r,.sh{display:flex;align-items:center;gap:12px;margin:6px 0}
+.space-row code{width:44px}
+.bar{display:block;height:12px;background:var(--tint);border:1px solid var(--wine);border-radius:2px}
+.rbox{display:block;width:140px;height:72px;background:var(--tint);border:1px solid var(--wine)}
+.r code{width:44px}
+.shbox{display:block;width:120px;height:44px;background:#FFFFFF;border:1px solid var(--border);border-radius:4px}
+.sh code{flex:1 1 auto;overflow-wrap:anywhere}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:12px 0}
+.demo{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:20px}
+button,input{font:inherit;min-height:44px;padding:8px 12px;border:1px solid var(--muted);border-radius:4px;background:#FFFFFF;color:#242124}
+button{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px}
+button:hover{background:var(--tint)}
+button:disabled{cursor:not-allowed;background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+.primary:hover{background:var(--hover)}
+.primary:disabled{background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+:is(button,a,input,summary):focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+.primary:focus-visible{outline-color:#FFFFFF;outline-offset:-4px}
+.demo-focus{outline:2px solid var(--wine);outline-offset:3px}
+.demo-focus.primary{outline-color:#FFFFFF;outline-offset:-4px;box-shadow:0 0 0 2px var(--wine)}
+label{display:grid;gap:6px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+input{min-width:260px;font-size:13px}
+input::placeholder{color:var(--muted);opacity:1}
+.tag{display:inline-block;padding:4px 8px;background:var(--page);border:1px solid var(--border);border-radius:3px;color:var(--muted);font-size:11px}
+.tag.ok{background:#EDF7F0;border-color:var(--border);color:#22633B;font-weight:600}
+.chip{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;background:var(--tint);color:var(--wine);font-size:11.5px;font-weight:600}
+.pol{min-width:56px;min-height:44px;padding:0 8px;gap:6px;font-weight:600;border-color:var(--muted)}
+.pol .cnt{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.pol[data-in="true"]{background:var(--tint);border-color:var(--wine);color:var(--wine)}
+.pol[data-in="true"] .cnt{color:var(--wine)}
+.choice{display:grid;gap:4px;text-align:left;min-height:44px;padding:14px 16px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px}
+.choice strong{font-size:13.5px}
+.choice span{font-size:12px;color:var(--muted)}
+.choice[aria-pressed="true"]{border-color:var(--wine);box-shadow:inset 0 0 0 1px var(--wine)}
+.choice[aria-pressed="true"] strong{color:var(--wine)}
+.totals{display:flex;gap:32px;margin:0;align-items:flex-end}
+.totals dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.totals dd{margin:2px 0 0;font-size:20px;font-variant-numeric:tabular-nums}
+.totals .units dd{font-size:24px;font-weight:700;letter-spacing:-.02em}
+kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--border);border-bottom-width:2px;border-radius:3px;background:#FFFFFF;color:var(--muted)}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 24px;font-size:12px}
+.legend div{display:flex;align-items:center;gap:8px}
+.swatchline{display:flex;gap:8px;flex-wrap:wrap}
+.shell{display:grid;grid-template-columns:240px minmax(0,1fr);border:1px solid var(--border);border-radius:4px;overflow:hidden;background:#FFFFFF}
+.shell nav{padding:12px;border-right:1px solid var(--border);display:grid;gap:4px;align-content:start}
+.shell nav p{margin:0;font-size:12px;padding:8px 12px;background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.shell nav span{font-size:12px;padding:8px 12px;color:#242124}
+.shell section{padding:20px}
+.shell h4{margin:0 0 4px;font-size:18px}
+.badge{min-width:20px;padding:2px 6px;border:1px solid var(--border);border-radius:999px;background:var(--page);color:var(--muted);font-size:11px;font-weight:700;text-align:center}
+.contrast td:last-child{font-variant-numeric:tabular-nums;white-space:nowrap}
+footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}
+@media (max-width:767px){main{padding:16px}input{min-width:0;width:100%}}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style></head>
+<body><main>
+<h1>Sistema visual · Luson</h1>
+<p class="lead">Sincronizado de los 16 archivos CSS de <code>apps/web/src</code> (3 191 líneas). Valores reales del proyecto, no un sistema inicial propuesto. La tabla completa con la fuente de cada valor está en <code>design/system.md</code>.</p>
+<p class="lead">69 representaciones de color (6 propiedades personalizadas + 62 literales + la palabra clave transparente) · 1 familia tipográfica · 16 tamaños + inherit · 4 pesos · 21 pasos de espaciado en la escala · 10 radios · 9 sombras y el reinicio <code>none</code>.</p>
+
+<h2>Colores</h2>
+<p>Cada muestra lleva su alias de documentación y el valor literal. Los seis tokens del proyecto son <code>--wine</code>, <code>--hover</code>, <code>--tint</code>, <code>--page</code>, <code>--border</code> y <code>--muted</code>; el resto son valores literales y el alias no es una propiedad CSS nueva.</p>
+<h3>Base</h3><div class="swgrid">
+<figure class="sw"><div class="chip-color" style="background:#7A1F3D"></div><figcaption><strong>wine</strong><span>#7A1F3D</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#5B162D"></div><figcaption><strong>hover</strong><span>#5B162D</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F5E8ED"></div><figcaption><strong>tint</strong><span>#F5E8ED</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F8F6F4"></div><figcaption><strong>page</strong><span>#F8F6F4</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#DED7DA"></div><figcaption><strong>border</strong><span>#DED7DA</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#6B6267"></div><figcaption><strong>muted</strong><span>#6B6267</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#242124"></div><figcaption><strong>ink</strong><span>#242124</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFFFFF"></div><figcaption><strong>surface</strong><span>#FFFFFF</span></figcaption></figure>
+</div>
+<h3>Estado</h3><div class="swgrid">
+<figure class="sw"><div class="chip-color" style="background:#ECFDF5"></div><figcaption><strong>received-bg</strong><span>#ECFDF5</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#047857"></div><figcaption><strong>received-ink</strong><span>#047857</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#A7F3D0"></div><figcaption><strong>received-border</strong><span>#A7F3D0</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#BDE2C4"></div><figcaption><strong>received-detail-border</strong><span>#BDE2C4</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#22763B"></div><figcaption><strong>received-matched-ink</strong><span>#22763B</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#EDF7F0"></div><figcaption><strong>approved-bg</strong><span>#EDF7F0</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#A7D9C3"></div><figcaption><strong>restitution-border</strong><span>#A7D9C3</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#065F46"></div><figcaption><strong>restitution-ink</strong><span>#065F46</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#22633B"></div><figcaption><strong>approved-ink</strong><span>#22633B</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#D9B3C1"></div><figcaption><strong>approved-border</strong><span>#D9B3C1</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#E7C6D2"></div><figcaption><strong>approved-pill-border</strong><span>#E7C6D2</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F4ECEF"></div><figcaption><strong>transit-bg</strong><span>#F4ECEF</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#DDBCC7"></div><figcaption><strong>transit-border</strong><span>#DDBCC7</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#624A53"></div><figcaption><strong>transit-ink</strong><span>#624A53</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#EFFCF6"></div><figcaption><strong>receipt-matched-bg</strong><span>#EFFCF6</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#A7EFD4"></div><figcaption><strong>receipt-matched-border</strong><span>#A7EFD4</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#08745A"></div><figcaption><strong>receipt-matched-ink</strong><span>#08745A</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#23815A"></div><figcaption><strong>history-positive</strong><span>#23815A</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FCFAFB"></div><figcaption><strong>table-head-soft</strong><span>#FCFAFB</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FAF7F8"></div><figcaption><strong>table-foot-bg</strong><span>#FAF7F8</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F2EEF0"></div><figcaption><strong>skeleton-bg</strong><span>#F2EEF0</span></figcaption></figure>
+</div>
+<h3>Aviso y diferencia</h3><div class="swgrid">
+<figure class="sw"><div class="chip-color" style="background:#BA1A1A"></div><figcaption><strong>action-alert</strong><span>#BA1A1A</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#991515"></div><figcaption><strong>reject-ink</strong><span>#991515</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#CCAAAA"></div><figcaption><strong>reject-border</strong><span>#CCAAAA</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#9B2424"></div><figcaption><strong>alert-ink</strong><span>#9B2424</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFF0F0"></div><figcaption><strong>shortage-bg</strong><span>#FFF0F0</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFDAD6"></div><figcaption><strong>shortage-border</strong><span>#FFDAD6</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFFBEF"></div><figcaption><strong>warning-bg</strong><span>#FFFBEF</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#E8CF86"></div><figcaption><strong>warning-border</strong><span>#E8CF86</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#805400"></div><figcaption><strong>warning-ink</strong><span>#805400</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#925400"></div><figcaption><strong>received-difference-ink</strong><span>#925400</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#935600"></div><figcaption><strong>receipt-difference-ink</strong><span>#935600</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#EFD18B"></div><figcaption><strong>receipt-difference-border</strong><span>#EFD18B</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F9F6F7"></div><figcaption><strong>receipt-effect-bg</strong><span>#F9F6F7</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFFDF5"></div><figcaption><strong>received-discrepant-bg</strong><span>#FFFDF5</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFFDF7"></div><figcaption><strong>receipt-discrepant-bg</strong><span>#FFFDF7</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFF9EF"></div><figcaption><strong>action-summary-bg</strong><span>#FFF9EF</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#E7D6B7"></div><figcaption><strong>action-summary-border</strong><span>#E7D6B7</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#C38E32"></div><figcaption><strong>action-summary-accent</strong><span>#C38E32</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F7EBD4"></div><figcaption><strong>action-summary-icon-bg</strong><span>#F7EBD4</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#91621E"></div><figcaption><strong>action-summary-icon-ink</strong><span>#91621E</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FFFDFA"></div><figcaption><strong>action-categories-bg</strong><span>#FFFDFA</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#E9DDC9"></div><figcaption><strong>action-categories-border</strong><span>#E9DDC9</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#6D5733"></div><figcaption><strong>action-categories-ink</strong><span>#6D5733</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F5F1F3"></div><figcaption><strong>closing-outside-bg</strong><span>#F5F1F3</span></figcaption></figure>
+</div>
+<h3>Superficie, overlay y deshabilitado</h3><div class="swgrid">
+<figure class="sw"><div class="chip-color" style="background:#2421240D"></div><figcaption><strong>soft-shadow</strong><span>#2421240D</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#24212433"></div><figcaption><strong>modal-shadow</strong><span>#24212433</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:rgb(0 0 0 / 20%)"></div><figcaption><strong>decision-shadow</strong><span>rgb(0 0 0 / 20%)</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:rgb(36 33 36 / 45%)"></div><figcaption><strong>decision-backdrop</strong><span>rgb(36 33 36 / 45%)</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#24212466"></div><figcaption><strong>creation-backdrop</strong><span>#24212466</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#24212473"></div><figcaption><strong>review-backdrop</strong><span>#24212473</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F5E8ED99"></div><figcaption><strong>notice-overlay</strong><span>#F5E8ED99</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F8F6F466"></div><figcaption><strong>variant-overlay</strong><span>#F8F6F466</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#F5EDEF"></div><figcaption><strong>receipt-step-bg</strong><span>#F5EDEF</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#D9BCC6"></div><figcaption><strong>receipt-step-border</strong><span>#D9BCC6</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#FDFBFC"></div><figcaption><strong>modal-footer-bg</strong><span>#FDFBFC</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#272327"></div><figcaption><strong>modal-ink</strong><span>#272327</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#EFEDEF"></div><figcaption><strong>disabled-bg</strong><span>#EFEDEF</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#595459"></div><figcaption><strong>disabled-ink</strong><span>#595459</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:#AAA5AA"></div><figcaption><strong>disabled-border</strong><span>#AAA5AA</span></figcaption></figure>
+<figure class="sw"><div class="chip-color" style="background:repeating-linear-gradient(45deg,#FFFFFF 0 6px,#F5E8ED 6px 12px)"></div><figcaption><strong>transparent</strong><span>#0000</span><small>palabra clave, sin valor</small></figcaption></figure>
+</div>
+
+<h2>Tipografía</h2>
+<p>Una sola familia declarada: <code>Inter, sans-serif</code> (<code>style.css:4</code>). Inter no se descarga: estas láminas usan el respaldo genérico <code>sans-serif</code>. Base 14px. Las cifras de cantidades y totales llevan <code>font-variant-numeric: tabular-nums</code>; los rótulos en mayúscula usan <code>letter-spacing:.04em</code> y la cabecera de tabla <code>.03em</code>; el <code>h1</code> usa <code>-.015em</code> y las cifras grandes <code>-.02em</code>.</p>
+<table><caption class="muted" style="text-align:left;padding-bottom:8px">Tamaños y su papel en el producto</caption>
+<thead><tr><th scope="col">Tamaño</th><th scope="col">Muestra</th><th scope="col">Uso</th></tr></thead>
+<tbody><tr><th scope="row">10px</th><td class="sample" style="font-size:10px">Transferencia recibida · 7 unidades</td><td class="muted">badge móvil</td></tr>
+<tr><th scope="row">11px</th><td class="sample" style="font-size:11px">Transferencia recibida · 7 unidades</td><td class="muted">rótulos, cabeceras de tabla</td></tr>
+<tr><th scope="row">11.5px</th><td class="sample" style="font-size:11.5px">Transferencia recibida · 7 unidades</td><td class="muted">chip de tipo</td></tr>
+<tr><th scope="row">12px</th><td class="sample" style="font-size:12px">Transferencia recibida · 7 unidades</td><td class="muted">etiquetas, cuerpo secundario</td></tr>
+<tr><th scope="row">12.5px</th><td class="sample" style="font-size:12.5px">Transferencia recibida · 7 unidades</td><td class="muted">línea de contexto</td></tr>
+<tr><th scope="row">13px</th><td class="sample" style="font-size:13px">Transferencia recibida · 7 unidades</td><td class="muted">cuerpo, campos, celdas</td></tr>
+<tr><th scope="row">13.5px</th><td class="sample" style="font-size:13.5px">Transferencia recibida · 7 unidades</td><td class="muted">título de elección</td></tr>
+<tr><th scope="row">14px</th><td class="sample" style="font-size:14px">Transferencia recibida · 7 unidades</td><td class="muted">base del documento</td></tr>
+<tr><th scope="row">15px</th><td class="sample" style="font-size:15px">Transferencia recibida · 7 unidades</td><td class="muted">subtítulo de diálogo</td></tr>
+<tr><th scope="row">16px</th><td class="sample" style="font-size:16px">Transferencia recibida · 7 unidades</td><td class="muted">título de panel</td></tr>
+<tr><th scope="row">17px</th><td class="sample" style="font-size:17px">Transferencia recibida · 7 unidades</td><td class="muted">título de pendientes</td></tr>
+<tr><th scope="row">18px</th><td class="sample" style="font-size:18px">Transferencia recibida · 7 unidades</td><td class="muted">marca, barra superior</td></tr>
+<tr><th scope="row">20px</th><td class="sample" style="font-size:20px">Transferencia recibida · 7 unidades</td><td class="muted">total de unidades</td></tr>
+<tr><th scope="row">22px</th><td class="sample" style="font-size:22px">Transferencia recibida · 7 unidades</td><td class="muted">h1 de página</td></tr>
+<tr><th scope="row">24px</th><td class="sample" style="font-size:24px">Transferencia recibida · 7 unidades</td><td class="muted">total de detalle</td></tr>
+<tr><th scope="row">26px</th><td class="sample" style="font-size:26px">Transferencia recibida · 7 unidades</td><td class="muted">cifra que encabeza</td></tr></tbody></table>
+<div class="row"><span style="font-weight:400">400 normal</span><span style="font-weight:500">500 medio</span><span style="font-weight:600">600 seminegrita</span><span style="font-weight:700">700 negrita</span></div>
+
+<h2>Espaciado</h2>
+<p>Escala reutilizable tomada de <code>padding</code>, <code>gap</code> y <code>margin</code>. La barra mide el valor. Fuera de la escala quedan ajustes ópticos de una sola vez (11, 36, 42, 50, 54, 80, 112, 140 y los solapamientos negativos).</p>
+<div class="space-row"><code>1px</code><span class="bar" style="width:8px"></span></div>
+<div class="space-row"><code>2px</code><span class="bar" style="width:16px"></span></div>
+<div class="space-row"><code>3px</code><span class="bar" style="width:24px"></span></div>
+<div class="space-row"><code>4px</code><span class="bar" style="width:32px"></span></div>
+<div class="space-row"><code>5px</code><span class="bar" style="width:40px"></span></div>
+<div class="space-row"><code>6px</code><span class="bar" style="width:48px"></span></div>
+<div class="space-row"><code>7px</code><span class="bar" style="width:56px"></span></div>
+<div class="space-row"><code>8px</code><span class="bar" style="width:64px"></span></div>
+<div class="space-row"><code>9px</code><span class="bar" style="width:72px"></span></div>
+<div class="space-row"><code>10px</code><span class="bar" style="width:80px"></span></div>
+<div class="space-row"><code>12px</code><span class="bar" style="width:96px"></span></div>
+<div class="space-row"><code>14px</code><span class="bar" style="width:112px"></span></div>
+<div class="space-row"><code>16px</code><span class="bar" style="width:128px"></span></div>
+<div class="space-row"><code>18px</code><span class="bar" style="width:144px"></span></div>
+<div class="space-row"><code>20px</code><span class="bar" style="width:160px"></span></div>
+<div class="space-row"><code>22px</code><span class="bar" style="width:176px"></span></div>
+<div class="space-row"><code>24px</code><span class="bar" style="width:192px"></span></div>
+<div class="space-row"><code>28px</code><span class="bar" style="width:224px"></span></div>
+<div class="space-row"><code>32px</code><span class="bar" style="width:256px"></span></div>
+<div class="space-row"><code>40px</code><span class="bar" style="width:320px"></span></div>
+<div class="space-row"><code>48px</code><span class="bar" style="width:384px"></span></div>
+
+<h2>Radios</h2>
+<div class="r"><span class="rbox" style="border-radius:0px"></span><code>0</code><small class="muted">navegación</small></div>
+<div class="r"><span class="rbox" style="border-radius:2px"></span><code>2</code><small class="muted">detalle</small></div>
+<div class="r"><span class="rbox" style="border-radius:3px"></span><code>3</code><small class="muted">etiquetas</small></div>
+<div class="r"><span class="rbox" style="border-radius:4px"></span><code>4</code><small class="muted">botones, paneles</small></div>
+<div class="r"><span class="rbox" style="border-radius:6px"></span><code>6</code><small class="muted">diálogos, avisos</small></div>
+<div class="r"><span class="rbox" style="border-radius:8px"></span><code>8</code><small class="muted">tarjetas, logo</small></div>
+<div class="r"><span class="rbox" style="border-radius:12px"></span><code>12</code><small class="muted">tarjeta de acceso</small></div>
+<div class="r"><span class="rbox" style="border-radius:20px"></span><code>20</code><small class="muted">píldoras de estado</small></div>
+<div class="r"><span class="rbox" style="border-radius:999px"></span><code>999</code><small class="muted">badges y chips</small></div>
+<div class="r"><span class="rbox" style="border-radius:50%;width:72px;height:72px"></span><code>50%</code><small class="muted">marcadores circulares</small></div>
+
+<h2>Sombras</h2>
+<div class="sh"><span class="shbox" style="box-shadow:0 1px 2px #2421240d"></span><code>0 1px 2px #2421240d</code><small class="muted">reposo de paneles y tarjetas</small></div>
+<div class="sh"><span class="shbox" style="box-shadow:inset 0 0 0 1px var(--wine)"></span><code>inset 0 0 0 1px var(--wine)</code><small class="muted">elección presionada</small></div>
+<div class="sh"><span class="shbox" style="box-shadow:inset 2px 0 0 var(--wine)"></span><code>inset 2px 0 0 var(--wine)</code><small class="muted">fila desplegada</small></div>
+<div class="sh"><span class="shbox" style="box-shadow:inset 3px 0 0 #E8CF86"></span><code>inset 3px 0 0 #E8CF86</code><small class="muted">fila modificada</small></div>
+<div class="sh"><span class="shbox" style="box-shadow:inset 3px 0 0 var(--wine)"></span><code>inset 3px 0 0 var(--wine)</code><small class="muted">fila fuera de alcance</small></div>
+<div class="sh"><span class="shbox" style="box-shadow:0 20px 50px #24212433"></span><code>0 20px 50px #24212433</code><small class="muted">revisión previa</small></div>
+<div class="sh"><span class="shbox" style="box-shadow:0 16px 48px rgb(0 0 0 / 20%)"></span><code>0 16px 48px rgb(0 0 0 / 20%)</code><small class="muted">diálogo de decisión</small></div>
+<div class="sh"><span class="shbox" style="box-shadow:0 -2px 10px #2421240D"></span><code>0 -2px 10px #2421240D</code><small class="muted">barra de acción pegada</small></div>
+
+<h2 id="componentes">Componentes</h2>
+<div class="demo">
+<h3>Acciones</h3>
+<div class="row">
+<button class="primary" type="button">Confirmar ingreso</button>
+<button type="button">Anular</button>
+<button type="button" disabled aria-describedby="why">Confirmar ingreso</button>
+<span class="muted" id="why">Agregá al menos una línea para confirmar.</span>
+</div>
+<p class="muted">La acción principal es la única rellena de vino; la deshabilitada usa el juego <code>#EFEDEF</code> / <code>#595459</code> / <code>#AAA5AA</code> que ya define la pantalla de correcciones, y siempre lleva el motivo al lado porque un control deshabilitado no recibe foco.</p>
+</div>
+
+<div class="demo" style="margin-top:16px">
+<h3>Foco visible</h3>
+<div class="row">
+<button type="button" class="demo-focus">Anular</button>
+<button type="button" class="primary demo-focus">Confirmar ingreso</button>
+<a href="#componentes" class="demo-focus" style="color:var(--wine);padding:10px">Ver detalle</a>
+</div>
+<p class="muted">Contorno vino de 2px con 3px de separación; sobre relleno vino el contorno pasa a blanco. El foco nunca se confunde con la selección, que se marca con fondo <code>--tint</code> y borde vino.</p>
+</div>
+
+<div class="demo" style="margin-top:16px">
+<h3>Campo y etiquetas</h3>
+<div class="row">
+<label for="nota">Nota (opcional)<input id="nota" placeholder="Remito 0002-00045871"></label>
+<div class="swatchline"><span class="tag">33 productos</span><span class="tag ok">Aplicado</span><span class="chip">Baterías</span><span class="tag">sin proveedor</span></div>
+</div>
+<p class="muted">Los bordes de controles de esta galería usan <code>--muted</code> (5,89:1) en lugar de <code>--border</code> (1,35:1); los bordes decorativos de paneles sí usan <code>--border</code>.</p>
+</div>
+
+<div class="demo" style="margin-top:16px">
+<h3>Tabla de decisión con polaridad</h3>
+<table><thead><tr><th scope="col">Producto</th><th scope="col">Polaridad</th><th scope="col" style="text-align:right">En el documento</th></tr></thead>
+<tbody>
+<tr><td><strong>TOYO · NS40ZL</strong><br><span class="muted">35 Ah</span></td>
+<td><div class="row" style="margin:0;gap:8px"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS40ZL polaridad R"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td>
+<td style="text-align:right;font-variant-numeric:tabular-nums"><strong>2 u.</strong></td></tr>
+<tr><td><strong>Agua acidulada</strong><br><span class="muted">5 L</span></td>
+<td><button type="button" aria-label="Agregar Agua acidulada 5 L">Agregar</button></td>
+<td style="text-align:right;font-variant-numeric:tabular-nums"><strong>0 u.</strong></td></tr>
+</tbody></table>
+<p class="muted">La polaridad es un control de 44px dentro de la fila, no una fila repetida. El 0 se escribe: nunca se omite un valor cero.</p>
+</div>
+
+<div class="demo" style="margin-top:16px">
+<h3>Totales, elección presionada y leyenda de teclado</h3>
+<dl class="totals"><div><dt>Líneas</dt><dd>3</dd></div><div class="units"><dt>Unidades</dt><dd>7</dd></div></dl>
+<div class="row" style="margin-top:16px">
+<button type="button" class="choice" aria-pressed="true"><strong>BATEVOL</strong><span>33 productos · Baterías</span></button>
+<button type="button" class="choice"><strong>DISTRIBUIDORA NORTE</strong><span>18 productos · Baterías y otros</span></button>
+<button type="button" class="choice" disabled aria-describedby="nooffers"><strong>DISTRIBUIDORA SUR</strong><span>0 productos</span></button>
+<span class="muted" id="nooffers">Sin productos asignados: no puede recibir un ingreso.</span>
+</div>
+<div class="legend" style="margin-top:16px">
+<div><kbd>/</kbd> enfocar la búsqueda</div><div><kbd>L</kbd> agregar polaridad L</div><div><kbd>R</kbd> agregar polaridad R</div><div><kbd>↑</kbd><kbd>↓</kbd> mover la selección</div><div><kbd>Supr</kbd> quitar la última línea</div><div><kbd>Ctrl</kbd>+<kbd>Enter</kbd> confirmar</div>
+</div>
+<p class="muted">La leyenda de teclado reutiliza el <code>kbd</code> que ya existe en <code>closings.css</code>.</p>
+</div>
+
+<div class="demo" style="margin-top:16px">
+<h3>Cáscara de escritorio</h3>
+<div class="shell"><nav aria-label="Navegación de muestra"><p>Ingresos</p><span>Inventario</span><span>Transferencias <span class="badge">0</span></span><span>Ajustes</span></nav><section><h4>Nuevo ingreso de stock</h4><p class="muted">Barra superior 56px · sidebar 240px · contenido 80px 24px 24px 40px · paneles blancos con borde decorativo y sombra de reposo.</p><div class="swatchline"><span class="tag">ALMACÉN / INGRESOS</span><span class="tag ok">Aplicado</span></div></section></div>
+</div>
+
+<h2>Contraste medido</h2>
+<table class="contrast"><thead><tr><th scope="col">Par</th><th scope="col">Razón</th><th scope="col">Lectura</th></tr></thead><tbody>
+<tr><td>ink sobre surface</td><td>15,9:1</td><td>cuerpo</td></tr>
+<tr><td>muted sobre surface</td><td>5,89:1</td><td>texto secundario, AA</td></tr>
+<tr><td>muted sobre page</td><td>5,46:1</td><td>rótulos sobre lienzo</td></tr>
+<tr><td>wine sobre surface</td><td>10,0:1</td><td>acción y navegación activa</td></tr>
+<tr><td>surface sobre wine</td><td>10,0:1</td><td>etiqueta del botón principal</td></tr>
+<tr><td>approved-ink sobre approved-bg</td><td>6,57:1</td><td>etiqueta Aplicado</td></tr>
+<tr><td>disabled-ink sobre disabled-bg</td><td>6,36:1</td><td>etiqueta deshabilitada</td></tr>
+<tr><td>warning-ink sobre warning-bg</td><td>6,37:1</td><td>aviso de diferencia</td></tr>
+<tr><td>border sobre surface</td><td>1,35:1</td><td>solo divisor decorativo</td></tr>
+</tbody></table>
+
+<footer>Luson · sistema visual sincronizado el 2026-11-20. Sin URLs externas, sin fuentes descargadas, sin imágenes. Movimiento desactivado con <code>prefers-reduced-motion</code>.</footer>
+</main></body></html>

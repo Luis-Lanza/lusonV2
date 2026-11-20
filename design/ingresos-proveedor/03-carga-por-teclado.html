@@ -1,0 +1,1408 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ingresos · 03 Carga por teclado</title>
+<style>
+:root{--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:#242124;font:14px/1.45 Inter, sans-serif}
+h1,h2,h3,h4,p,figure,figcaption,dl,dd,dt,ul,li{margin:0;padding:0}
+ul{list-style:none}
+a{color:inherit}
+button{font:inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--muted);border-radius:4px;background:#FFFFFF;color:#242124;padding:8px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button:disabled{cursor:not-allowed;background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button.primary:disabled{background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+:is(button,a,input,select,summary):focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+button.primary:focus-visible{outline-color:#FFFFFF;outline-offset:-4px}
+input{font:inherit;color:#242124;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:8px 12px;min-height:44px;width:100%}
+input::placeholder{color:var(--muted);opacity:1}
+input:disabled{background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.skip{position:absolute;left:-9999px;top:0;z-index:100;background:#FFFFFF;color:var(--wine);border:2px solid var(--wine);border-radius:4px;padding:12px 16px}
+.skip:focus{left:16px;top:16px}
+kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--border);border-bottom-width:2px;border-radius:3px;background:#FFFFFF;color:var(--muted)}
+
+.screen{position:relative;width:1440px;height:1000px;display:grid;grid-template-columns:240px minmax(0,1fr);grid-template-rows:56px minmax(0,1fr);background:var(--page);border:1px solid var(--border);overflow:hidden}
+.screen.auto{height:auto;grid-template-rows:56px auto;overflow:visible}
+.sidebar{grid-row:1/3;background:#FFFFFF;border-right:1px solid var(--border);display:flex;flex-direction:column;justify-content:space-between;padding:12px}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 12px;border-bottom:1px solid var(--border)}
+.logo{width:32px;height:32px;border-radius:4px;background:var(--wine);color:#FFFFFF;display:grid;place-items:center;font-weight:700;font-size:18px;flex-shrink:0}
+.brand strong{display:block;font-size:18px;line-height:22px;color:var(--wine)}
+.brand small{display:block;font-size:11px;line-height:16px;color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:4px;margin-top:12px}
+.nav a,.nav button{display:flex;align-items:center;gap:8px;font-size:12px;padding:8px 12px;min-height:36px;text-decoration:none;color:#242124;border:0;background:none;width:100%;text-align:left;border-radius:0;justify-content:flex-start}
+.nav a:hover,.nav button:hover{background:var(--tint)}
+.nav a[aria-current="page"],.nav button[aria-current="page"]{background:var(--tint);border-left:2px solid var(--wine);color:var(--wine);font-weight:600}
+.ic{width:20px;height:20px;flex-shrink:0}
+.badge{margin-left:auto;min-width:20px;padding:2px 6px;border:1px solid var(--border);border-radius:999px;background:var(--page);color:var(--muted);font-size:11px;font-weight:700;line-height:16px;text-align:center}
+.side-foot{border-top:1px solid var(--border);padding-top:12px}
+.identity{display:flex;flex-direction:column;padding:8px;background:var(--page);border:1px solid var(--border);font-size:12px}
+.identity small{color:var(--muted);margin-top:2px;font-size:11px}
+.logout{border:0;justify-content:flex-start;padding:8px 12px;width:100%;color:var(--muted);font-size:12px;margin-top:8px;min-height:36px}
+.topbar{grid-column:2;display:flex;align-items:center;justify-content:space-between;padding:0 24px 0 16px;background:#FFFFFF;border-bottom:1px solid var(--border)}
+.topbar strong{font-size:18px}
+.loc{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:12px}
+.loc b{color:#242124}
+.main{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow:hidden;padding:24px 24px 20px 40px;display:flex;flex-direction:column;gap:12px}
+.screen.auto .main{overflow:visible}
+
+.head small{display:block;font-size:11px;letter-spacing:.04em;color:var(--muted)}
+.head h1{font-size:22px;font-weight:600;letter-spacing:-.015em;margin-top:4px}
+.tag{display:inline-block;padding:4px 8px;background:var(--page);border:1px solid var(--border);border-radius:3px;color:var(--muted);font-size:11px;white-space:nowrap}
+.tag.ok{background:#EDF7F0;color:#22633B;font-weight:600}
+.chip{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;background:var(--tint);color:var(--wine);font-size:11.5px;font-weight:600;white-space:nowrap}
+.lbl{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.ctx{display:flex;align-items:center;gap:12px;padding:8px 14px;background:#FFFFFF;border:1px solid var(--border);border-radius:4px;box-shadow:0 1px 2px #2421240D;min-width:0}
+.ctx .who{display:flex;align-items:center;gap:8px;padding-right:12px;border-right:1px solid var(--border);min-width:0}
+.ctx .who strong{font-size:13.5px}
+.ctx .who span{font-size:11px;color:var(--muted)}
+.ctx .note{flex:1 1 auto;display:flex;align-items:center;gap:8px;min-width:0}
+.ctx .note label{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);white-space:nowrap}
+.ctx .note input{min-height:44px;font-size:13px}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:16px;align-items:start;min-width:0}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;box-shadow:0 1px 2px #2421240D;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.panel-head h2{font-size:18px;font-weight:600}
+.panel-head p{font-size:12px;color:var(--muted);margin-top:2px}
+.hint{font-size:12px;line-height:1.6;color:var(--muted)}
+.search{display:flex;flex-direction:column;gap:6px}
+.search > span{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.search input{min-height:56px;font-size:16px;padding:10px 14px}
+.focus-demo{outline:2px solid var(--wine);outline-offset:3px}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;text-transform:uppercase;font-size:11px;font-weight:600;letter-spacing:.03em;background:var(--page);color:var(--muted);height:36px;padding:0 12px;border-bottom:1px solid var(--border)}
+.tbl td{padding:6px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+.tbl tbody tr:last-child td{border-bottom:0}
+.tbl td strong{display:block;font-size:13px}
+.tbl td small{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.tbl .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tbl tr[aria-current="true"]{background:var(--tint);box-shadow:inset 2px 0 0 var(--wine)}
+.tbl tr[aria-current="true"] td:first-child strong{color:var(--wine)}
+.pols{display:flex;gap:6px;align-items:center}
+.pol{min-width:56px;min-height:44px;padding:0 8px;gap:6px;border-color:var(--muted);font-weight:600}
+.pol .cnt{font-size:11px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums}
+.pol[data-in="true"],.pol[aria-pressed="true"]{background:var(--tint);border-color:var(--wine);color:var(--wine)}
+.pol[data-in="true"] .cnt{color:var(--wine)}
+.keys{display:flex;gap:4px;align-items:center;font-size:11px;color:var(--muted)}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px 20px}
+.legend div{display:flex;align-items:center;gap:8px;font-size:12px;color:#242124}
+.legend span{color:var(--muted)}
+.receipt{padding:18px}
+.rt{width:100%;border-collapse:collapse;font-size:13px}
+.rt th{text-align:left;font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);padding:0 0 6px}
+.rt td{padding:9px 0;border-bottom:1px dashed var(--border);vertical-align:middle}
+.rt tbody tr:last-child td{border-bottom:0}
+.rt td strong{font-size:13px;display:block}
+.rt td small{font-size:11px;color:var(--muted);display:block}
+.rt .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.rt .qty{width:64px;min-height:44px;text-align:right;font-variant-numeric:tabular-nums;padding:6px 8px}
+.rt .rm{border:0;background:none;min-height:44px;min-width:44px;padding:0;color:var(--muted);font-size:16px}
+.rt .rm:hover{background:var(--tint);color:var(--wine)}
+.totals{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;border-top:1px solid var(--border);padding-top:12px}
+.totals dl{display:flex;gap:28px}
+.totals dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.totals dd{margin-top:2px;font-size:20px;font-variant-numeric:tabular-nums}
+.totals .units dd{font-size:26px;font-weight:700;letter-spacing:-.02em}
+.big{width:100%;min-height:44px;padding:10px 16px;font-size:14px}
+.note{font-size:11px;line-height:16px;color:var(--muted)}
+.empty{padding:18px;background:var(--page);border:1px dashed var(--border);border-radius:4px;display:grid;gap:8px}
+.empty strong{font-size:13px}
+.empty p{font-size:12px;line-height:1.6;color:var(--muted)}
+.examples{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12px;color:var(--muted)}
+.hist{padding:16px 20px}
+.proveedor-none{font-size:12px;color:var(--muted)}
+.actions{display:flex;gap:8px}
+.sm{min-height:44px;padding:0 10px;font-size:12px;white-space:nowrap}
+.sm.wine{color:var(--wine);border-color:var(--border);font-weight:600}
+
+.notes{width:1440px;padding:28px 40px 8px;display:grid;gap:10px}
+.notes h2{font-size:20px;font-weight:600}
+.notes h3{font-size:13px;font-weight:600;margin-top:6px}
+.notes p,.notes li{font-size:13px;line-height:1.6;max-width:110ch}
+.notes .lead{color:var(--muted)}
+.notes ul{display:grid;gap:6px;padding-left:18px;list-style:disc}
+.notes code{font-family:inherit;font-size:12px;color:var(--wine)}
+.states{width:1440px;display:grid;gap:28px;padding:8px 0 56px}
+.states > h2,.state > figcaption,.narrow-wrap{padding-left:40px;padding-right:40px}
+.states > h2{font-size:20px;font-weight:600;padding-top:16px;border-top:1px solid var(--border)}
+.state{display:grid;gap:10px}
+.state > figcaption{display:grid;gap:4px}
+.state > figcaption h3{font-size:16px;font-weight:600}
+.state > figcaption p{font-size:12px;line-height:1.6;color:var(--muted);max-width:120ch}
+
+.narrow-wrap{display:flex;gap:20px;align-items:flex-start}
+.narrow{width:390px;background:var(--page);border:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+.mhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;background:#FFFFFF;border-bottom:1px solid var(--border)}
+.mhead .brand{padding:0;border:0}
+.mhead .brand strong{font-size:14px;line-height:18px}
+.mhead .brand small{font-size:11px}
+.mexit{min-height:44px;border:0;color:var(--muted);padding:6px}
+.mloc{display:flex;justify-content:space-between;gap:8px;padding:6px 16px;background:#FFFFFF;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
+.mmain{padding:12px;display:flex;flex-direction:column;gap:12px}
+.mmain h1{font-size:20px;font-weight:700}
+.mrow{display:grid;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)}
+.mrow:last-child{border-bottom:0}
+.mrow .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.mrow strong{font-size:13px}
+.mrow small{font-size:11px;color:var(--muted)}
+.mbar{padding:10px 12px 12px;background:#FFFFFF;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.mbar span{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.mbar b{display:block;font-size:20px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.bnav{height:64px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:#FFFFFF;border-top:1px solid var(--border)}
+.bnav a,.bnav button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:11px;text-decoration:none;color:var(--muted);border:0;border-bottom:2px solid transparent;border-radius:0;background:none;min-height:44px;padding:4px}
+.bnav a[aria-current="page"],.bnav button[aria-current="page"]{color:var(--wine);font-weight:700;border-bottom-color:var(--wine)}
+.bnav .wrap{display:flex;align-items:center;gap:4px}
+
+/* bounded, grouped result list — F container + H order in the keyboard direction */
+.cols.filled{flex:1;min-height:0;align-items:stretch;grid-template-rows:minmax(0,1fr)}
+.cols.filled .receipt{align-self:start;min-height:0;max-height:100%;overflow:hidden}
+/* the comprobante is a collection too: header above, the lines in their own scroll with the
+   column head stuck inside it, and the totals with the confirm pinned at the foot */
+.rec-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;border-top:1px solid var(--border);scrollbar-width:thin;scrollbar-color:var(--muted) var(--page)}
+.rec-scroll:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+.rec-scroll th{position:sticky;top:0;z-index:1;background:#FFFFFF;border-bottom:1px solid var(--border)}
+.rec-foot{flex:0 0 auto;display:flex;flex-direction:column;gap:10px}
+.stack{display:grid;grid-template-rows:minmax(0,1fr) auto;gap:14px;min-width:0;min-height:0}
+.res-p{padding:16px 0 0;gap:0;overflow:hidden}
+.res-p .panel-head{padding:0 16px 10px}
+.res-p .search{padding:0 16px 10px}
+.res-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;border-top:1px solid var(--border);scrollbar-width:thin;scrollbar-color:var(--muted) var(--page)}
+.res-scroll thead th{position:sticky;top:0;z-index:1}
+.group{border-bottom:1px solid var(--border)}
+.group summary{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px 16px;cursor:pointer;font-size:13.5px;font-weight:600;list-style:none}
+.group summary::-webkit-details-marker{display:none}
+.group summary:hover{background:var(--tint)}
+.group summary .ic{margin-left:auto;color:var(--muted)}
+.group[open] summary{border-bottom:1px solid var(--border);background:var(--page)}
+.group[open] summary .ic{transform:rotate(180deg)}
+.group .tbl td{padding:6px 16px}
+.group .tbl th{padding:0 16px}
+.group-all{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;min-height:44px;padding:8px 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:#FFFFFF;color:var(--wine);font-size:12px;font-weight:600}
+.group-all:hover{background:var(--tint)}
+.res-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 16px;border-top:1px solid var(--border);background:var(--page)}
+.res-foot p{font-size:12px;line-height:16px;color:var(--muted)}
+.res-foot b{color:#242124;font-variant-numeric:tabular-nums}
+
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<a class="skip" href="#pantalla">Saltar a la pantalla modelada</a>
+
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <defs>
+    <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v5H3z M5 8v13h14V8 M9 12h6"/></symbol>
+    <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h17m-4-4 4 4-4 4 M21 17H4m4-4-4 4 4 4"/></symbol>
+    <symbol id="i-warehouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V7l9-4 9 4v14 M7 21V11h10v10 M10 15h4v6"/></symbol>
+    <symbol id="i-adjustment" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v8 M3 8h8 M15 17h6"/></symbol>
+    <symbol id="i-catalog" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h10l8 8-10 10-8-8V3z M7.5 7.5h.01"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h9l5 5v13H5z M14 3v5h5 M9 13h6 M9 17h6"/></symbol>
+    <symbol id="i-administration" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-password" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V7a5 5 0 0 1 10 0v4 M5 11h14v10H5z M12 15v2"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3H4v18h6 M9 12h12m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-6-6 M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5 5 5-5"/></symbol>
+  </defs>
+</svg>
+
+<!-- ============ BOARD 1 · live screen, 1440 x 1000 ============ -->
+<figure id="pantalla" tabindex="-1" style="margin:0">
+<div class="screen">
+  <aside class="sidebar">
+    <div>
+      <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+      <nav class="nav" aria-label="Navegación principal">
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+        <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+      <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+    </div>
+  </aside>
+  <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+
+  <main class="main" aria-labelledby="page-title">
+    <div class="head"><small>ALMACÉN / INGRESOS</small><h1 id="page-title">Nuevo ingreso de stock</h1></div>
+
+    <section class="ctx" aria-label="Contexto del documento">
+      <div class="who"><strong>BATEVOL</strong><span>22 productos · <kbd>F2</kbd> cambia de proveedor</span></div>
+      <p><span class="chip">Baterías</span></p>
+      <div class="note"><label for="nota-live">Nota</label><input id="nota-live" placeholder="Remito 0002-00045871"></div>
+    </section>
+
+    <div class="cols filled">
+      <div class="stack">
+        <section class="panel res-p" aria-labelledby="search-title" aria-describedby="keys-hint">
+          <div class="panel-head"><div><h2 id="search-title">Cargar líneas</h2><p id="keys-hint">Escribí un código o parte del nombre; L y R suman la polaridad de la fila resaltada.</p></div><span class="tag">22 productos</span></div>
+          <div class="search">
+            <span id="q-label">Buscar producto</span>
+            <input id="q" type="search" class="focus-demo" aria-labelledby="q-label" aria-describedby="keys-hint" placeholder="NS40ZL, TOYO, 45 Ah" value="NS4">
+          </div>
+          <div class="res-scroll" id="q-scroll" aria-describedby="res-foot-live">
+          <details class="group" open>
+            <summary><span>TOYO</span><span class="tag">3 resultados</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Resultados TOYO para NS4; la fila resaltada es la que reciben las teclas L y R</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr aria-current="true">
+                  <td><strong>NS40ZL</strong><small>35 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>3 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>NS60L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>BT45L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>4 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <button type="button" class="group-all">Ver todos los productos (22)</button>
+          </div>
+          <div class="res-foot" id="res-foot-live">
+            <p><b>3 resultados</b> de 22 productos · marca TOYO</p>
+            <p><kbd>↑</kbd> <kbd>↓</kbd> mueven el resaltado · <kbd>L</kbd> <kbd>R</kbd> agregan</p>
+          </div>
+        </section>
+
+        <section class="panel" aria-labelledby="legend-title">
+          <div class="panel-head"><div><h2 id="legend-title">Teclado</h2><p>Atajos de la búsqueda, con su equivalente en botón.</p></div></div>
+          <div class="legend">
+            <div><kbd>/</kbd><span>enfocar la búsqueda</span></div>
+            <div><kbd>↑</kbd><kbd>↓</kbd><span>mover la fila resaltada</span></div>
+            <div><kbd>Alt</kbd>+<kbd>↓</kbd><span>saltar al grupo siguiente</span></div>
+            <div><kbd>Alt</kbd>+<kbd>↑</kbd><span>saltar al grupo anterior</span></div>
+            <div><kbd>Enter</kbd><span>abrir o cerrar el grupo de la fila resaltada</span></div>
+            <div><kbd>L</kbd><span>agregar polaridad L</span></div>
+            <div><kbd>R</kbd><span>agregar polaridad R</span></div>
+            <div><kbd>Supr</kbd><span>quitar la última línea</span></div>
+            <div><kbd>Ctrl</kbd>+<kbd>Enter</kbd><span>confirmar el ingreso</span></div>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel receipt" aria-labelledby="receipt-title">
+        <div class="panel-head"><div><h2 id="receipt-title">Comprobante</h2><p>BATEVOL · Baterías · se numera al confirmar</p></div><span class="chip">Sin aplicar</span></div>
+        <div class="rec-scroll" id="rec-lines" role="region" aria-label="Líneas del comprobante" tabindex="0">
+        <table class="rt">
+          <caption class="sr-only">Líneas del comprobante que se está cargando</caption>
+          <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
+          <tbody>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO NS40ZL polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO NS40ZL polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad R</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de TOYO NS40ZL polaridad R"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO NS40ZL polaridad R">×</button></td></tr>
+            <tr><td><strong>TOYO · BT45L</strong><small>45 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO BT45L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO BT45L polaridad L">×</button></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="rec-foot">
+        <div class="totals">
+          <dl><div><dt>Líneas</dt><dd>3</dd></div><div class="units"><dt>Unidades</dt><dd>7</dd></div></dl>
+        </div>
+        <button type="button" class="primary big" aria-describedby="confirm-note-live">Confirmar ingreso</button>
+        <p class="note" id="confirm-note-live">Ctrl + Enter hace lo mismo. Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+        </div>
+      </section>
+    </div>
+
+  </main>
+</div>
+</figure>
+
+<section class="notes" aria-labelledby="notas-03">
+  <h2 id="notas-03">Dirección 03 · Carga por teclado</h2>
+  <p class="lead">Búsqueda primero y cromo mínimo: el operador escribe, la fila se resuelve y una tecla por polaridad suma la línea. El documento se lee como un comprobante que se llena solo, con la leyenda de teclado siempre visible y un estado inicial que enseña el método. La lista de lo disponible toma la corrección F+H: es una región acotada con scroll propio y contador fijo al pie, ordenada por marca con su cantidad —un grupo abierto, el resto cerrado, más «Ver todos los productos (22)»—, y la leyenda suma saltar de grupo y abrirlo o cerrarlo.</p>
+  <p><strong>Tradeoff:</strong> es la más rápida para 20 o más líneas y la que menos mouse pide, pero exige aprender atajos —ahora también los del agrupado—, pide recorrer con el teclado dos colecciones acotadas —la lista de lo disponible y el comprobante, cada una con su scroll, su cabecera fija y su pie— y ninguna de las dos cabe entera en pantalla: 22 líneas en el comprobante y 22 productos en la lista viven en regiones que se recorren.</p>
+  <h3>Los defectos del punto de partida, uno por uno</h3>
+  <ul>
+    <li><strong>Tres franjas apiladas:</strong> una barra de contexto de 64 px (proveedor, tipo, nota, estado) y nada más antes de la búsqueda.</li>
+    <li><strong>El paso de tipo eliminado:</strong> el tipo es un chip cuando hay uno solo y un control en el mismo lugar cuando hay dos; ninguna frase explica un control ausente.</li>
+    <li><strong>Catálogo duplicado:</strong> un resultado por producto con sus dos polaridades y su total; un único conteo, «22 productos».</li>
+    <li><strong>Lista que crecía sin límite:</strong> los resultados viven en una región acotada con scroll propio y contador al pie, agrupados por marca, así que 22 o 40 productos no cambian el alto de la pantalla.</li>
+    <li><strong>El comprobante también crecía:</strong> el comprobante es una colección con el encabezado fijo, sus líneas en una región propia con la cabecera de columnas a la vista y pegada, y los totales con la confirmación al pie; con 22 líneas y 60 unidades el botón sigue a la vista y Ctrl+Enter confirma sin buscar nada.</li>
+    <li><strong>Tabla que no decidía:</strong> el resultado no se recorre con el mouse: se resuelve escribiendo, y L/R deciden en la fila resaltada.</li>
+    <li><strong>Documento vacío y botón engañoso:</strong> el comprobante tiene totales y confirmación propios; sin líneas el botón se deshabilita y explica qué falta, y Ctrl+Enter no dispara nada.</li>
+    <li><strong>Jerga interna:</strong> «Sin aplicar», «3 líneas», «7 unidades»; se fue la jerga de borrador y de variante, y la frase dramática sobre el todo o nada.</li>
+  </ul>
+  <h3>Accesibilidad</h3>
+  <ul>
+    <li>La búsqueda es un campo real con etiqueta y descripción; el foco se muestra desde el primer momento.</li>
+    <li>Ningún atajo es la única vía: cada acción (L, R, quitar, confirmar) tiene su botón de 44 px, y la leyenda lo dice.</li>
+    <li>La fila resaltada se marca con <code>aria-current</code>, no solo con color; el resumen de teclas usa <code>kbd</code> real.</li>
+    <li>Cada grupo es un <code>details</code>/<code>summary</code>: se abre con teclado y anuncia su estado, y ninguna acción del agrupado queda solo en un atajo.</li>
+    <li>En pantalla angosta no se prometen atajos: los botones de la fila son la vía principal.</li>
+    <li>La región de líneas del comprobante es enfocable con Tab y muestra su anillo de foco; la cabecera de columnas queda fija adentro y el pie con los totales no se va con el scroll.</li>
+  </ul>
+</section>
+
+<section class="states" aria-labelledby="estados-03">
+  <h2 id="estados-03">Estados modelados</h2>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado A · Sin líneas, estado inicial para principiante</h3>
+      <p>La pantalla enseña el método antes de pedir nada: tres pasos, ejemplos de lo que se puede escribir y la leyenda completa. El comprobante está vacío, el botón deshabilitado con su motivo y no hay ningún resultado inventado.</p>
+    </figcaption>
+    <div class="screen auto">
+      <aside class="sidebar">
+        <div>
+          <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+          <nav class="nav" aria-label="Navegación principal">
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+            <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+          </nav>
+        </div>
+        <div class="side-foot">
+          <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+          <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </aside>
+      <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main">
+        <div class="head"><small>ALMACÉN / INGRESOS</small><h1>Nuevo ingreso de stock</h1></div>
+        <section class="ctx" aria-label="Contexto del documento">
+          <div class="who"><strong>BATEVOL</strong><span>22 productos</span></div>
+          <p><span class="chip">Baterías</span></p>
+          <div class="note"><label for="nota-a">Nota</label><input id="nota-a" placeholder="Remito 0002-00045871"></div>
+            </section>
+        <div class="cols">
+          <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+            <section class="panel" aria-labelledby="search-a">
+              <div class="panel-head"><div><h2 id="search-a">Cargar líneas</h2><p>Escribí un código o parte del nombre.</p></div><span class="tag">22 productos</span></div>
+              <div class="search"><span id="q-a-label">Buscar producto</span><input id="q-a" type="search" class="focus-demo" aria-labelledby="q-a-label" placeholder="NS40ZL, TOYO, 45 Ah"></div>
+              <div class="empty">
+                <strong>Empezá escribiendo qué llegó</strong>
+                <p>1 · Escribí el código o parte del nombre. 2 · Movete con ↑ ↓ hasta la fila correcta. 3 · Sumá con L o R según la polaridad. Repetí: la línea aparece en el comprobante a la derecha.</p>
+                <div class="examples"><span>Ejemplos:</span><span class="tag">NS40ZL</span><span class="tag">TOYO</span><span class="tag">45 Ah</span></div>
+              </div>
+              <p class="hint">Todavía no escribiste nada: el buscador recorre los 22 productos de BATEVOL y el documento espera su primera línea.</p>
+            </section>
+            <section class="panel" aria-labelledby="legend-a">
+              <div class="panel-head"><div><h2 id="legend-a">Teclado</h2><p>Con el foco en la búsqueda.</p></div></div>
+              <div class="legend">
+                <div><kbd>/</kbd><span>enfocar la búsqueda</span></div>
+                <div><kbd>↑</kbd><kbd>↓</kbd><span>mover la fila resaltada</span></div>
+                <div><kbd>L</kbd><span>agregar polaridad L</span></div>
+                <div><kbd>R</kbd><span>agregar polaridad R</span></div>
+                <div><kbd>Supr</kbd><span>quitar la última línea</span></div>
+                <div><kbd>Ctrl</kbd>+<kbd>Enter</kbd><span>confirmar el ingreso</span></div>
+              </div>
+            </section>
+          </div>
+          <section class="panel receipt" aria-labelledby="receipt-a">
+            <div class="panel-head"><div><h2 id="receipt-a">Comprobante</h2><p>BATEVOL · Baterías · se numera al confirmar</p></div><span class="chip">Sin aplicar</span></div>
+            <div class="empty"><strong>Sin líneas todavía</strong><p>La primera línea que agregues abre el comprobante: producto, polaridad y unidades.</p></div>
+            <div class="totals"><dl><div><dt>Líneas</dt><dd>0</dd></div><div class="units"><dt>Unidades</dt><dd>0</dd></div></dl></div>
+            <button type="button" class="primary big" disabled aria-describedby="why-a">Confirmar ingreso</button>
+            <p class="note" id="why-a">Agregá al menos una línea para confirmar; Ctrl + Enter tampoco hace nada mientras esté vacío.</p>
+          </section>
+        </div>
+      </main>
+    </div>
+  </figure>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado B · Proveedor con dos tipos</h3>
+      <p>DISTRIBUIDORA NORTE ofrece los dos tipos. El chip de tipo pasa a ser un control y la leyenda suma dos teclas: <kbd>T</kbd> alterna el tipo (con el aviso de que descarta el borrador) y <kbd>Enter</kbd> agrega el producto resaltado, porque un producto de otro tipo no tiene polaridad.</p>
+    </figcaption>
+    <div class="screen auto">
+      <aside class="sidebar">
+        <div>
+          <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+          <nav class="nav" aria-label="Navegación principal">
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+            <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+          </nav>
+        </div>
+        <div class="side-foot">
+          <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+          <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </aside>
+      <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main">
+        <div class="head"><small>ALMACÉN / INGRESOS</small><h1>Nuevo ingreso de stock</h1></div>
+        <section class="ctx" aria-label="Contexto del documento">
+          <div class="who"><strong>DISTRIBUIDORA NORTE</strong><span>18 productos</span></div>
+          <div role="group" aria-label="Tipo del ingreso" style="display:flex;gap:8px;align-items:center">
+            <button type="button" class="pol" style="min-width:100px" aria-pressed="false">Baterías</button>
+            <button type="button" class="pol" style="min-width:140px" aria-pressed="true">Otros productos</button>
+            <span class="keys" aria-hidden="true"><kbd>T</kbd></span>
+          </div>
+          <div class="note"><label for="nota-b">Nota</label><input id="nota-b" placeholder="Remito 0002-00045871"></div>
+            </section>
+        <div class="cols">
+          <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+            <section class="panel" aria-labelledby="search-b">
+              <div class="panel-head"><div><h2 id="search-b">Cargar líneas</h2><p>Otros productos: el nombre y su detalle, sin polaridad.</p></div><span class="tag">Otros productos</span></div>
+              <div class="search"><span id="q-b-label">Buscar producto</span><input id="q-b" type="search" aria-labelledby="q-b-label" placeholder="Agua acidulada, 5 L" value="Agua"></div>
+              <table class="tbl">
+                <caption class="sr-only">Resultados para Agua; la fila resaltada se agrega con Enter</caption>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+                <tbody><tr aria-current="true">
+                  <td><strong>Agua acidulada</strong><small>5 L</small></td>
+                  <td><div class="pols"><button type="button" aria-label="Agregar Agua acidulada 5 L">Agregar</button><span class="keys" aria-hidden="true"><kbd>Enter</kbd></span></div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr></tbody>
+              </table>
+              <p class="hint">1 resultado. Enter agrega el producto resaltado; T cambia de tipo y descarta el borrador.</p>
+            </section>
+            <section class="panel" aria-labelledby="legend-b">
+              <div class="panel-head"><div><h2 id="legend-b">Teclado</h2><p>Con el foco en la búsqueda.</p></div></div>
+              <div class="legend">
+                <div><kbd>↑</kbd><kbd>↓</kbd><span>mover la fila resaltada</span></div>
+                <div><kbd>Enter</kbd><span>agregar el producto resaltado</span></div>
+                <div><kbd>T</kbd><span>cambiar de tipo</span></div>
+                <div><kbd>Supr</kbd><span>quitar la última línea</span></div>
+                <div><kbd>Ctrl</kbd>+<kbd>Enter</kbd><span>confirmar el ingreso</span></div>
+              </div>
+            </section>
+          </div>
+          <section class="panel receipt" aria-labelledby="receipt-b">
+            <div class="panel-head"><div><h2 id="receipt-b">Comprobante</h2><p>DISTRIBUIDORA NORTE · Otros productos · se numera al confirmar</p></div><span class="chip">Sin aplicar</span></div>
+            <div class="empty"><strong>Sin líneas todavía</strong><p>Enter sobre el resultado agrega la primera línea.</p></div>
+            <div class="totals"><dl><div><dt>Líneas</dt><dd>0</dd></div><div class="units"><dt>Unidades</dt><dd>0</dd></div></dl></div>
+            <button type="button" class="primary big" disabled aria-describedby="why-b">Confirmar ingreso</button>
+            <p class="note" id="why-b">Agregá al menos una línea para confirmar.</p>
+          </section>
+        </div>
+      </main>
+    </div>
+  </figure>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado C · Proveedor sin productos</h3>
+      <p>Sin productos asignados no hay nada que buscar: el campo queda deshabilitado con el motivo visible, la leyenda de teclado desaparece porque no hay acciones, y el comprobante no se dibuja. El historial sigue a la vista.</p>
+    </figcaption>
+    <div class="screen auto">
+      <aside class="sidebar">
+        <div>
+          <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+          <nav class="nav" aria-label="Navegación principal">
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+            <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+          </nav>
+        </div>
+        <div class="side-foot">
+          <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+          <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </aside>
+      <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main">
+        <div class="head"><small>ALMACÉN / INGRESOS</small><h1>Nuevo ingreso de stock</h1></div>
+        <section class="ctx" aria-label="Contexto del documento">
+          <div class="who"><strong>DISTRIBUIDORA SUR</strong><span>0 productos</span></div>
+          <span class="tag">Sin productos</span>
+            </section>
+        <section class="panel" aria-labelledby="search-c">
+          <div class="panel-head"><div><h2 id="search-c">Cargar líneas</h2><p>DISTRIBUIDORA SUR no tiene productos asignados.</p></div><span class="tag">Sin productos</span></div>
+          <div class="search"><span id="q-c-label">Buscar producto</span><input id="q-c" type="search" aria-labelledby="q-c-label" aria-describedby="why-c" placeholder="Sin productos para buscar" disabled></div>
+          <p class="hint" id="why-c" style="font-size:13px">Este proveedor no tiene productos asignados. Asigná sus productos en Catálogo → Proveedores y volvé a intentar.</p>
+        </section>
+        <section class="panel hist" aria-labelledby="hist-c">
+          <div class="panel-head"><div><h2 id="hist-c">Historial de ingresos</h2><p>Los documentos confirmados no se editan ni se borran.</p></div><span class="tag">1 ingreso</span></div>
+          <table class="tbl">
+            <caption class="sr-only">Historial de ingresos del Almacén</caption>
+            <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th><th scope="col">Proveedor</th><th scope="col">Acción</th></tr></thead>
+            <tbody><tr><td><strong>#1</strong></td><td class="num">19/11/2026 12:57</td><td>TESTING LIMITS</td><td class="num">1 línea</td><td class="num">50 unidades</td><td><span class="tag ok">Aplicado</span></td><td><span class="proveedor-none">sin proveedor</span></td><td><div class="actions"><button type="button" class="sm wine">Ver detalle</button><button type="button" class="sm">Anular</button></div></td></tr></tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+  </figure>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado D · Pantalla angosta, sin teclado físico</h3>
+      <p>En el teléfono no se prometen atajos: la búsqueda sigue primero, cada resultado trae sus botones de 44 px y el comprobante apila sus líneas. La leyenda se reemplaza por una frase honesta y el total con la confirmación queda sobre la barra inferior.</p>
+    </figcaption>
+    <div class="narrow-wrap">
+      <div class="narrow">
+        <header class="mhead"><div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div><button type="button" class="mexit" aria-label="Cerrar sesión"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg></button></header>
+        <div class="mloc"><span>Almacén</span><span>dev_almacen</span></div>
+        <div class="mmain">
+          <h1>Nuevo ingreso de stock</h1>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="chip">BATEVOL</span><span class="chip">Baterías</span><span class="tag">Sin aplicar</span></div>
+          <div style="background:#FFFFFF;border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:10px">
+            <div class="search"><span id="q-d-label">Buscar producto</span><input id="q-d" type="search" aria-labelledby="q-d-label" placeholder="NS40ZL, TOYO, 45 Ah"></div>
+            <div class="mrow"><div class="top"><strong>TOYO · NS40ZL</strong><small>35 Ah</small></div>
+              <div class="pols" style="justify-content:space-between">
+                <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button>
+                <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button>
+                <small>3 u.</small>
+              </div></div>
+            <div class="mrow"><div class="top"><strong>TOYO · BT45L</strong><small>45 Ah</small></div>
+              <div class="pols" style="justify-content:space-between">
+                <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button>
+                <button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                <small>4 u.</small>
+              </div></div>
+            <p class="hint">En el teléfono cada acción está en su botón: no hace falta escribir atajos.</p>
+          </div>
+          <div style="background:#FFFFFF;border:1px solid var(--border);border-radius:8px;padding:12px;display:grid;gap:6px">
+            <strong style="font-size:13px">Comprobante · 3 líneas</strong>
+            <span class="hint">NS40ZL L ×2 · NS40ZL R ×1 · BT45L L ×4</span>
+            <span class="hint">Se numera al confirmar.</span>
+          </div>
+        </div>
+        <div class="mbar"><div><span>Unidades</span><b>7</b></div><button type="button" class="primary" style="min-width:180px">Confirmar ingreso</button></div>
+        <nav class="bnav" aria-label="Navegación móvil">
+          <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+          <button type="button"><span class="wrap"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg><span class="badge" aria-hidden="true">0</span></span>Transferencias</button>
+          <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+        </nav>
+      </div>
+      <div style="max-width:520px;display:grid;gap:8px;padding-top:8px">
+        <h4 style="font-size:13px">Qué se conserva en el teléfono</h4>
+        <ul style="list-style:disc;padding-left:18px;font-size:13px;line-height:1.6">
+          <li>La búsqueda sigue siendo el primer control de la pantalla.</li>
+          <li>Los dos botones de polaridad conservan 44 px y el total por producto.</li>
+          <li>No se anuncia ningún atajo que el dispositivo no tenga.</li>
+          <li>El comprobante resume sus tres líneas y el total antes de confirmar.</li>
+        </ul>
+      </div>
+    </div>
+  </figure>
+  <figure class="state">
+    <figcaption>
+      <h3>Estado E · Lista agrupada y acotada con 22 productos</h3>
+      <p>Sin búsqueda, la lista de lo disponible muestra las 22 baterías de BATEVOL ordenadas por marca con su cantidad: el grupo TOYO abierto y los otros cinco cerrados, más la fila «Ver todos los productos (22)». La lista vive en una región acotada con scroll propio y el contador fijo al pie, así que 22 o 40 productos no cambian el alto de la pantalla. El teclado gana lo que el agrupado implica —<kbd>Alt</kbd>+<kbd>↑</kbd>/<kbd>Alt</kbd>+<kbd>↓</kbd> saltan entre grupos y <kbd>Enter</kbd> abre o cierra el grupo de la fila resaltada—, y <kbd>L</kbd>/<kbd>R</kbd> siguen agregando en la fila resaltada.</p>
+    </figcaption>
+    <div class="screen">
+  <aside class="sidebar">
+    <div>
+      <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+      <nav class="nav" aria-label="Navegación principal">
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+        <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+      <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+    </div>
+  </aside>
+  <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main" aria-labelledby="e-title">
+    <div class="head"><small>ALMACÉN / INGRESOS</small><h1 id="e-title">Nuevo ingreso de stock</h1></div>
+    <section class="ctx" aria-label="Contexto del documento">
+      <div class="who"><strong>BATEVOL</strong><span>22 productos · <kbd>F2</kbd> cambia de proveedor</span></div>
+      <p><span class="chip">Baterías</span></p>
+      <div class="note"><label for="e-nota">Nota</label><input id="e-nota" placeholder="Remito 0002-00045871"></div>
+    </section>
+    <div class="cols filled">
+      <div class="stack">
+        <section class="panel res-p" aria-labelledby="e-search" aria-describedby="e-keys">
+          <div class="panel-head"><div><h2 id="e-search">Cargar líneas</h2><p id="e-keys">Sin búsqueda: el índice completo por marca. Escribí para achicar la lista, o abrí un grupo.</p></div><span class="tag">22 productos</span></div>
+          <div class="search"><span id="e-q-label">Buscar producto</span><input id="e-q" type="search" class="focus-demo" aria-labelledby="e-q-label" aria-describedby="e-keys" placeholder="NS40ZL, TOYO, 45 Ah"></div>
+          <div class="res-scroll" id="e3-scroll" aria-describedby="e-foot">
+          <details class="group" open>
+            <summary><span>TOYO</span><span class="tag">8 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos TOYO que ofrece BATEVOL; cada fila elige la polaridad sin repetir el producto</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr aria-current="true">
+                  <td><strong>NS40ZL</strong><small>35 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button>
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 4"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">4</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>10 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>NS60L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60L polaridad L. En el documento: 8"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">8</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>8 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>BT45L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 5"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">5</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>5 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>NS40L</strong><small>35 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>NS60R</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55B24L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55B24R</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>95D31L</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>WILLARD</span><span class="tag">6 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos WILLARD que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>55D23L</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 55D23L polaridad L. En el documento: 7"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">7</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>7 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>75D26L</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 75D26L polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>6 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55D23R</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>75D26R</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>95D31R</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>105D31L</strong><small>95 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>MOURA</span><span class="tag">3 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos MOURA que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>95D31L</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 95D31L polaridad L. En el documento: 5"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">5</span></button>
+                    <button type="button" class="pol" aria-label="Agregar MOURA 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>5 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>75D26L</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55D23L</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>BOSCH</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos BOSCH que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>S4</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>S5</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>VARTA</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos VARTA que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>D24</strong><small>60 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>D31</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>HELIAR</span><span class="tag">1 producto</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos HELIAR que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>HD45</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <button type="button" class="group-all">Ver todos los productos (22)</button>
+          </div>
+          <div class="res-foot" id="e-foot">
+            <p><b>22 productos</b> en 6 marcas · lista completa</p>
+            <p><kbd>Alt</kbd>+<kbd>↑</kbd> <kbd>Alt</kbd>+<kbd>↓</kbd> saltan de grupo · <kbd>Enter</kbd> lo abre</p>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="e-legend">
+          <div class="panel-head"><div><h2 id="e-legend">Teclado</h2><p>Con el foco en la búsqueda.</p></div></div>
+          <div class="legend">
+            <div><kbd>/</kbd><span>enfocar la búsqueda</span></div>
+            <div><kbd>↑</kbd><kbd>↓</kbd><span>mover la fila resaltada</span></div>
+            <div><kbd>Alt</kbd>+<kbd>↓</kbd><span>saltar al grupo siguiente</span></div>
+            <div><kbd>Alt</kbd>+<kbd>↑</kbd><span>saltar al grupo anterior</span></div>
+            <div><kbd>Enter</kbd><span>abrir o cerrar el grupo de la fila resaltada</span></div>
+            <div><kbd>L</kbd><span>agregar polaridad L</span></div>
+            <div><kbd>R</kbd><span>agregar polaridad R</span></div>
+            <div><kbd>Supr</kbd><span>quitar la última línea</span></div>
+            <div><kbd>Ctrl</kbd>+<kbd>Enter</kbd><span>confirmar el ingreso</span></div>
+          </div>
+        </section>
+      </div>
+      <section class="panel receipt" aria-labelledby="e-receipt">
+        <div class="panel-head"><div><h2 id="e-receipt">Comprobante</h2><p>BATEVOL · Baterías · 7 líneas · se numera al confirmar</p></div><span class="chip">Sin aplicar</span></div>
+        <div class="rec-scroll" id="e-rec-lines" role="region" aria-label="Líneas del comprobante" tabindex="0">
+        <table class="rt">
+          <caption class="sr-only">Líneas del comprobante que se está cargando</caption>
+          <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
+          <tbody>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de TOYO · NS40ZL polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS40ZL polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad R</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO · NS40ZL polaridad R"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS40ZL polaridad R">×</button></td></tr>
+            <tr><td><strong>TOYO · NS60L</strong><small>45 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="8" aria-label="Cantidad de TOYO · NS60L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS60L polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · BT45L</strong><small>45 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="5" aria-label="Cantidad de TOYO · BT45L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · BT45L polaridad L">×</button></td></tr>
+            <tr><td><strong>WILLARD · 55D23L</strong><small>50 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="7" aria-label="Cantidad de WILLARD · 55D23L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar WILLARD · 55D23L polaridad L">×</button></td></tr>
+            <tr><td><strong>WILLARD · 75D26L</strong><small>70 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de WILLARD · 75D26L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar WILLARD · 75D26L polaridad L">×</button></td></tr>
+            <tr><td><strong>MOURA · 95D31L</strong><small>90 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="5" aria-label="Cantidad de MOURA · 95D31L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar MOURA · 95D31L polaridad L">×</button></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="rec-foot">
+        <div class="totals">
+          <dl><div><dt>Líneas</dt><dd>7</dd></div><div class="units"><dt>Unidades</dt><dd>41</dd></div></dl>
+        </div>
+        <button type="button" class="primary big" aria-describedby="e-confirm-note">Confirmar ingreso</button>
+        <p class="note" id="e-confirm-note">Ctrl + Enter hace lo mismo. Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+        </div>
+      </section>
+    </div>
+      </main>
+    </div>
+  </figure>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado F · El comprobante con 22 líneas, en scroll propio</h3>
+      <p>Un remito de 20 o más líneas no puede empujar la confirmación fuera de la pantalla, así que el comprobante también es una colección: el encabezado queda fijo arriba, las líneas corren en su propia región con la cabecera de columnas pegada adentro y los totales con la confirmación quedan al pie. Tiene <strong>22 líneas y 60 unidades</strong>, la suma real de las cantidades dibujadas, y la región está a mitad de la lista: <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sigue confirmando con el pie a la vista. La lista de lo disponible conserva su scroll propio, el orden por marca con su cantidad y la leyenda con los saltos de grupo sin cambios.</p>
+    </figcaption>
+    <div class="screen">
+  <aside class="sidebar">
+    <div>
+      <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+      <nav class="nav" aria-label="Navegación principal">
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+        <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+      <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+    </div>
+  </aside>
+  <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main" aria-labelledby="f-title">
+    <div class="head"><small>ALMACÉN / INGRESOS</small><h1 id="f-title">Nuevo ingreso de stock</h1></div>
+    <section class="ctx" aria-label="Contexto del documento">
+      <div class="who"><strong>BATEVOL</strong><span>22 productos · <kbd>F2</kbd> cambia de proveedor</span></div>
+      <p><span class="chip">Baterías</span></p>
+      <div class="note"><label for="f-nota">Nota</label><input id="f-nota" value="Remito 0002-00045871"></div>
+    </section>
+    <div class="cols filled">
+      <div class="stack">
+        <section class="panel res-p" aria-labelledby="f-search" aria-describedby="f-keys">
+          <div class="panel-head"><div><h2 id="f-search">Cargar líneas</h2><p id="f-keys">Escribí un código o parte del nombre; L y R suman la polaridad de la fila resaltada.</p></div><span class="tag">22 productos</span></div>
+          <div class="search"><span id="f-q-label">Buscar producto</span><input id="f-q" type="search" aria-labelledby="f-q-label" aria-describedby="f-keys" placeholder="NS40ZL, TOYO, 45 Ah"></div>
+          <div class="res-scroll" id="f-cat-scroll" aria-describedby="f-foot">
+          <details class="group" open>
+            <summary><span>TOYO</span><span class="tag">8 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos TOYO que ofrece BATEVOL; cada fila elige la polaridad sin repetir el producto</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr aria-current="true">
+                  <td><strong>NS40ZL</strong><small>35 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button>
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 2"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>8 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>NS60L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button>
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60L polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>5 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>BT45L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>3 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>NS40L</strong><small>35 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>2 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>NS60R</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60R polaridad R. En el documento: 4"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">4</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>4 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55B24L</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO 55B24L polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>3 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55B24R</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>95D31L</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar TOYO 95D31L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>2 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>WILLARD</span><span class="tag">6 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos WILLARD que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>55D23L</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 55D23L polaridad L. En el documento: 5"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">5</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>5 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>75D26L</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 75D26L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>2 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55D23R</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 55D23R polaridad R. En el documento: 2"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>2 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>75D26R</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>0 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>95D31R</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 95D31R polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>1 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>105D31L</strong><small>95 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 105D31L polaridad L. En el documento: 1"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">1</span></button>
+                    <button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>1 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>MOURA</span><span class="tag">3 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos MOURA que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>95D31L</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 95D31L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button>
+                    <button type="button" class="pol" aria-label="Agregar MOURA 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>4 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>75D26L</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 75D26L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>2 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>55D23L</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 55D23L polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button>
+                    <button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>6 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>BOSCH</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos BOSCH que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>S4</strong><small>50 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar BOSCH S4 polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button>
+                    <button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>2 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>S5</strong><small>70 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar BOSCH S5 polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button>
+                    <button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>3 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>VARTA</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos VARTA que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>D24</strong><small>60 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar VARTA D24 polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button>
+                    <button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>3 u.</strong></td>
+                </tr>
+                <tr>
+                  <td><strong>D31</strong><small>90 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar VARTA D31 polaridad L. En el documento: 1"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">1</span></button>
+                    <button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>1 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <details class="group">
+            <summary><span>HELIAR</span><span class="tag">1 producto</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <table class="tbl">
+              <caption class="sr-only">Productos HELIAR que ofrece BATEVOL</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Agregar</th><th scope="col" class="num">En el documento</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>HD45</strong><small>45 Ah</small></td>
+                  <td><div class="pols">
+                    <button type="button" class="pol" data-in="true" aria-label="Agregar HELIAR HD45 polaridad L. En el documento: 1"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">1</span></button>
+                    <button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button>
+                    <span class="keys" aria-hidden="true"><kbd>L</kbd><kbd>R</kbd></span>
+                  </div></td>
+                  <td class="num"><strong>1 u.</strong></td>
+                </tr>
+              </tbody>
+            </table>
+          </details>
+          <button type="button" class="group-all">Ver todos los productos (22)</button>
+          </div>
+          <div class="res-foot" id="f-foot">
+            <p><b>22 productos</b> en 6 marcas · <b>22</b> líneas · <b>60 u.</b></p>
+            <p><kbd>Alt</kbd>+<kbd>↑</kbd> <kbd>Alt</kbd>+<kbd>↓</kbd> saltan de grupo · <kbd>Enter</kbd> lo abre</p>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="f-legend">
+          <div class="panel-head"><div><h2 id="f-legend">Teclado</h2><p>Con el foco en la búsqueda.</p></div></div>
+          <div class="legend">
+            <div><kbd>/</kbd><span>enfocar la búsqueda</span></div>
+            <div><kbd>↑</kbd><kbd>↓</kbd><span>mover la fila resaltada</span></div>
+            <div><kbd>Alt</kbd>+<kbd>↓</kbd><span>saltar al grupo siguiente</span></div>
+            <div><kbd>Alt</kbd>+<kbd>↑</kbd><span>saltar al grupo anterior</span></div>
+            <div><kbd>Enter</kbd><span>abrir o cerrar el grupo de la fila resaltada</span></div>
+            <div><kbd>L</kbd><span>agregar polaridad L</span></div>
+            <div><kbd>R</kbd><span>agregar polaridad R</span></div>
+            <div><kbd>Supr</kbd><span>quitar la última línea</span></div>
+            <div><kbd>Ctrl</kbd>+<kbd>Enter</kbd><span>confirmar el ingreso</span></div>
+          </div>
+        </section>
+      </div>
+      <section class="panel receipt" aria-labelledby="f-receipt">
+        <div class="panel-head"><div><h2 id="f-receipt">Comprobante</h2><p>BATEVOL · Baterías · 22 líneas · se numera al confirmar</p></div><span class="chip">Sin aplicar</span></div>
+        <div class="rec-scroll" id="f-rec-lines" role="region" aria-label="Líneas del comprobante" tabindex="0">
+        <table class="rt">
+          <caption class="sr-only">Líneas del comprobante que se está cargando: 22 líneas, 60 unidades</caption>
+          <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
+          <tbody>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de TOYO · NS40ZL polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS40ZL polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad R</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO · NS40ZL polaridad R"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS40ZL polaridad R">×</button></td></tr>
+            <tr><td><strong>TOYO · NS60L</strong><small>45 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO · NS60L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS60L polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS60L</strong><small>45 Ah · Polaridad R</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de TOYO · NS60L polaridad R"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS60L polaridad R">×</button></td></tr>
+            <tr><td><strong>TOYO · BT45L</strong><small>45 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de TOYO · BT45L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · BT45L polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS40L</strong><small>35 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO · NS40L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS40L polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS60R</strong><small>45 Ah · Polaridad R</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO · NS60R polaridad R"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · NS60R polaridad R">×</button></td></tr>
+            <tr><td><strong>TOYO · 55B24L</strong><small>45 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de TOYO · 55B24L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · 55B24L polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · 95D31L</strong><small>90 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO · 95D31L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar TOYO · 95D31L polaridad L">×</button></td></tr>
+            <tr><td><strong>WILLARD · 55D23L</strong><small>50 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="5" aria-label="Cantidad de WILLARD · 55D23L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar WILLARD · 55D23L polaridad L">×</button></td></tr>
+            <tr><td><strong>WILLARD · 75D26L</strong><small>70 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de WILLARD · 75D26L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar WILLARD · 75D26L polaridad L">×</button></td></tr>
+            <tr><td><strong>WILLARD · 55D23R</strong><small>50 Ah · Polaridad R</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de WILLARD · 55D23R polaridad R"></td>
+              <td><button type="button" class="rm" aria-label="Quitar WILLARD · 55D23R polaridad R">×</button></td></tr>
+            <tr><td><strong>WILLARD · 95D31R</strong><small>90 Ah · Polaridad R</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de WILLARD · 95D31R polaridad R"></td>
+              <td><button type="button" class="rm" aria-label="Quitar WILLARD · 95D31R polaridad R">×</button></td></tr>
+            <tr><td><strong>WILLARD · 105D31L</strong><small>95 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de WILLARD · 105D31L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar WILLARD · 105D31L polaridad L">×</button></td></tr>
+            <tr><td><strong>MOURA · 95D31L</strong><small>90 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de MOURA · 95D31L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar MOURA · 95D31L polaridad L">×</button></td></tr>
+            <tr><td><strong>MOURA · 75D26L</strong><small>70 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de MOURA · 75D26L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar MOURA · 75D26L polaridad L">×</button></td></tr>
+            <tr><td><strong>MOURA · 55D23L</strong><small>50 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de MOURA · 55D23L polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar MOURA · 55D23L polaridad L">×</button></td></tr>
+            <tr><td><strong>BOSCH · S4</strong><small>50 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de BOSCH · S4 polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar BOSCH · S4 polaridad L">×</button></td></tr>
+            <tr><td><strong>BOSCH · S5</strong><small>70 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de BOSCH · S5 polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar BOSCH · S5 polaridad L">×</button></td></tr>
+            <tr><td><strong>VARTA · D24</strong><small>60 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de VARTA · D24 polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar VARTA · D24 polaridad L">×</button></td></tr>
+            <tr><td><strong>VARTA · D31</strong><small>90 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de VARTA · D31 polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar VARTA · D31 polaridad L">×</button></td></tr>
+            <tr><td><strong>HELIAR · HD45</strong><small>45 Ah · Polaridad L</small></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de HELIAR · HD45 polaridad L"></td>
+              <td><button type="button" class="rm" aria-label="Quitar HELIAR · HD45 polaridad L">×</button></td></tr>
+          </tbody>
+        </table>
+        </div>
+        <div class="rec-foot">
+        <div class="totals">
+          <dl><div><dt>Líneas</dt><dd>22</dd></div><div class="units"><dt>Unidades</dt><dd>60</dd></div></dl>
+        </div>
+        <button type="button" class="primary big" aria-describedby="f-confirm-note">Confirmar ingreso</button>
+        <p class="note" id="f-confirm-note">Ctrl + Enter hace lo mismo. Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+        </div>
+      </section>
+    </div>
+      </main>
+    </div>
+  </figure>
+</section>
+
+<footer class="notes" style="padding-bottom:40px">
+  <p class="lead">Lámina estática, sin URLs externas, sin fuentes descargadas y sin imágenes. Tokens: <code>--wine</code>, <code>--hover</code>, <code>--tint</code>, <code>--page</code>, <code>--border</code>, <code>--muted</code>, <code>ink</code>, <code>surface</code>, <code>soft-shadow</code>, el juego deshabilitado y el verde de «Aplicado»; familia única <code>Inter, sans-serif</code>.</p>
+</footer>
+
+<script>
+(function () {
+  var box = document.getElementById('e3-scroll');
+  if (box) box.scrollTop = box.scrollHeight;
+  /* the 22-line comprobante opens mid-way down its own scroll, with the totals and the confirm pinned */
+  var rec = document.getElementById('f-rec-lines');
+  if (rec) {
+    var rows = rec.querySelectorAll('tbody tr');
+    var start = rows[7];
+    if (start) rec.scrollTop += start.getBoundingClientRect().top - rec.getBoundingClientRect().top - (rec.querySelector('thead') || { offsetHeight: 0 }).offsetHeight;
+  }
+  /* the results list behind it is scrolled to its second group row, aligned to the sticky column head */
+  var cat = document.getElementById('f-cat-scroll');
+  if (cat) {
+    var crow = cat.querySelectorAll('tbody tr');
+    var chead = cat.querySelector('thead');
+    if (crow[1]) cat.scrollTop += crow[1].getBoundingClientRect().top - cat.getBoundingClientRect().top - (chead ? chead.offsetHeight : 0);
+  }
+})();
+</script>
+</body>
+</html>

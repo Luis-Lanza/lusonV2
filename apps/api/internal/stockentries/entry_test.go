@@ -16,6 +16,7 @@ import (
 func validInput() CreateInput {
 	return CreateInput{
 		OperationKey: "warehouse-ingress-key-0001",
+		SupplierID:   1,
 		Note:         "Compra de proveedor",
 		Lines:        []Line{{VariantID: 2, Quantity: 3}, {VariantID: 1, Quantity: 1}},
 	}
@@ -35,8 +36,8 @@ func TestValidateCanonicalPayload(t *testing.T) {
 	if !reflect.DeepEqual(got.Lines, want) {
 		t.Fatal("lines must be canonicalized by variant id")
 	}
-	if got.OperationKey != in.OperationKey || got.Note != in.Note {
-		t.Fatal("canonical payload must keep key and note")
+	if got.OperationKey != in.OperationKey || got.Note != in.Note || got.SupplierID != in.SupplierID {
+		t.Fatal("canonical payload must keep key, note and supplier")
 	}
 	reversed := validInput()
 	reversed.Lines[0], reversed.Lines[1] = reversed.Lines[1], reversed.Lines[0]
@@ -48,6 +49,28 @@ func TestValidateCanonicalPayload(t *testing.T) {
 	changed.Note = "Otra nota"
 	if same, err := Validate(changed); err != nil || reflect.DeepEqual(same, got) {
 		t.Fatal("note must bind the canonical payload")
+	}
+	// The supplier is part of the canonical payload, exactly like the note.
+	anotherSupplier := validInput()
+	anotherSupplier.SupplierID = 2
+	if same, err := Validate(anotherSupplier); err != nil || reflect.DeepEqual(same, got) {
+		t.Fatal("supplier must bind the canonical payload")
+	}
+}
+
+// A new ingress document always names a supplier: the id is required and positive.
+func TestValidateSupplier(t *testing.T) {
+	for _, id := range []int64{0, -1, math.MinInt64} {
+		in := validInput()
+		in.SupplierID = id
+		if _, err := Validate(in); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("supplier %d must be rejected", id)
+		}
+	}
+	in := validInput()
+	in.SupplierID = math.MaxInt64
+	if _, err := Validate(in); err != nil {
+		t.Fatal("a positive supplier id must be admitted by the payload shape")
 	}
 }
 
@@ -156,6 +179,14 @@ func TestMapFailureSQLState(t *testing.T) {
 		"LS005": ErrInvalid,
 		"LS006": ErrInvalid,
 		"LS007": ErrInvalid,
+		// The supplier guards: a missing or unoffered supplier is a rejected
+		// payload, while an unknown or retired one is a decision conflict. Every
+		// other code stays opaque.
+		"LS009": ErrInvalid,
+		"LS010": ErrDecisionConflict,
+		"LS011": ErrInvalid,
+		"LS012": ErrInvalid,
+		"LS013": ErrUnavailable,
 		"23505": ErrUnavailable,
 		"23514": ErrUnavailable,
 		"42501": ErrUnavailable,

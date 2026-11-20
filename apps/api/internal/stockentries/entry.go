@@ -45,8 +45,21 @@ type Line struct {
 	Quantity  int64 `json:"quantity"`
 }
 
+// Supplier is the warehouse counterparty of one ingress document, as the
+// document keeps it: the id it named and the name that supplier has. A
+// historical document written before suppliers existed has no supplier at all,
+// so it is never invented: the field is nil and the wire spells it null.
+type Supplier struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// CreateInput is one requested ingress document. SupplierID is required and
+// positive for a new document, and it is part of the canonical payload: a replay
+// under the same operation key with another supplier is a conflict.
 type CreateInput struct {
 	OperationKey string
+	SupplierID   int64
 	Note         string
 	Lines        []Line
 }
@@ -62,6 +75,7 @@ type Entry struct {
 	ID                 int64       `json:"id"`
 	LocationID         int         `json:"location_id"`
 	Note               string      `json:"note"`
+	Supplier           *Supplier   `json:"supplier"`
 	CreatedByAccountID int64       `json:"created_by_account_id"`
 	CreatedAt          time.Time   `json:"created_at"`
 	Lines              []EntryLine `json:"lines"`
@@ -89,6 +103,7 @@ type EntryDetail struct {
 	ID                 int64
 	LocationID         int
 	Note               string
+	Supplier           *Supplier
 	CreatedAt          time.Time
 	CreatedByAccountID int64
 	ReversesEntryID    *int64
@@ -104,6 +119,7 @@ type EntryDetail struct {
 type EntrySummary struct {
 	ID         int64
 	Note       string
+	Supplier   *Supplier
 	CreatedAt  time.Time
 	Lines      int
 	TotalUnits int64
@@ -158,9 +174,10 @@ func validNote(note string) bool {
 // Validate returns the canonical payload used to persist and to detect a
 // conflicting replay. Lines are copied and sorted by variant id; the caller's
 // slice is never modified. Quantities are never summed blindly: an int64
-// overflow is a rejection, not a wrapped total.
+// overflow is a rejection, not a wrapped total. A new document always names a
+// supplier, so an absent or non-positive one is rejected before the database.
 func Validate(input CreateInput) (CreateInput, error) {
-	if !ValidOperationKey(input.OperationKey) || !validNote(input.Note) {
+	if !ValidOperationKey(input.OperationKey) || !validNote(input.Note) || input.SupplierID < 1 {
 		return CreateInput{}, ErrInvalid
 	}
 	if len(input.Lines) < 1 || len(input.Lines) > maxLines {
@@ -182,7 +199,7 @@ func Validate(input CreateInput) (CreateInput, error) {
 		lines = append(lines, line)
 	}
 	sort.Slice(lines, func(i, j int) bool { return lines[i].VariantID < lines[j].VariantID })
-	return CreateInput{OperationKey: input.OperationKey, Note: input.Note, Lines: lines}, nil
+	return CreateInput{OperationKey: input.OperationKey, SupplierID: input.SupplierID, Note: input.Note, Lines: lines}, nil
 }
 
 // sameLines compares two variant-ordered line sets, never quantities across

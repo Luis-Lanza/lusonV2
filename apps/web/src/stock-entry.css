@@ -5,7 +5,7 @@
 .stock-entry-heading small { color: var(--muted); font-size: 11px; letter-spacing: .04em; }
 .stock-entry-heading h1 { margin: 0; }
 .stock-entry-heading p { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.stock-entry-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
+.stock-entry-panels { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: stretch; }
 .stock-entry-panel { display: grid; gap: 16px; min-width: 0; padding: 24px; background: #fff;
   border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 1px 2px #2421240d; }
 .stock-panel-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
@@ -46,11 +46,13 @@
 .stock-history .page-controls { flex-wrap: wrap; }
 .stock-history .page-controls :is(button, select) { min-height: 44px; }
 
-@media (max-width: 1050px) {
-  .stock-entry-grid { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1150px) {
+  .stock-entry-panels { grid-template-columns: minmax(0, 1fr); }
+  .stock-entry .stock-catalog-panel, .stock-entry .stock-document-panel { height: 560px; }
 }
 @media (max-width: 767px) {
   .stock-entry-panel { padding: 16px; border-radius: 8px; }
+  .stock-entry .stock-catalog-panel, .stock-entry .stock-document-panel { height: 520px; }
   .stock-panel-head h2 { font-size: 16px; }
   .stock-totalbar { align-items: stretch; }
   .stock-totalbar button.primary { width: 100%; }
@@ -110,3 +112,75 @@
 @media (max-width: 767px) {
   .stock-detail-body { padding: 16px; }
 }
+/* Supplier step, compressed to the context of the document: one compact strip
+   with the selector, its offer count and the kind — a fact with one kind and a
+   control only when the supplier offers both. Tokens and 44px targets only. */
+.stock-entry .stock-context { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px;
+  padding: 12px 16px; }
+.stock-context-field { display: grid; gap: 6px; min-width: 0; color: var(--muted);
+  font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.stock-context-supplier { flex: 0 1 300px; }
+.stock-context-field select { width: 100%; min-height: 44px; padding: 8px 12px; border: 1px solid var(--muted);
+  border-radius: 4px; background: #fff; color: #242124; font-size: 13px; letter-spacing: 0; text-transform: none; }
+.stock-context-kind { display: flex; flex-wrap: wrap; gap: 8px; }
+.stock-context-kind-choice { min-height: 44px; padding: 8px 12px; border-color: var(--muted); font-weight: 600; }
+.stock-context-kind-choice[aria-pressed="true"] { background: var(--tint); border-color: var(--wine);
+  color: var(--wine); box-shadow: inset 0 0 0 1px var(--wine); }
+.stock-context .stock-hint, .stock-context .stock-message { flex: 1 1 100%; }
+.stock-supplier-modal { width: min(600px, 100%); }
+.stock-empty-panel { border-color: var(--muted); }
+
+/* The two bounded panels: the page never grows with the catalogue or the lines.
+   Each panel keeps its header above and its footer below, and only the middle
+   region scrolls (search above it in the catalogue, sticky thead inside it). */
+.stock-entry .stock-catalog-panel, .stock-entry .stock-document-panel { display: flex; flex-direction: column;
+  gap: 12px; height: 640px; min-height: 0; padding: 20px; overflow: hidden; }
+.stock-catalog-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  border-top: 1px solid var(--border); scrollbar-width: thin; scrollbar-color: var(--muted) var(--page); }
+.stock-catalog-scroll:focus-visible, .stock-doc-scroll:focus-visible { outline: 2px solid var(--wine);
+  outline-offset: 3px; }
+.stock-catalog-scroll .stock-table th, .stock-doc-scroll .stock-table th { position: sticky; top: 0; z-index: 1; }
+.stock-groups { border-bottom: 1px solid var(--border); }
+.stock-group { border-bottom: 1px solid var(--border); }
+.stock-group:last-child { border-bottom: 0; }
+.stock-group-head { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px;
+  padding: 8px 12px; border: 0; border-radius: 0; background: #fff; color: #242124; font-size: 13px;
+  font-weight: 600; text-align: left; }
+.stock-group-head:hover { background: var(--tint); }
+.stock-group-head[aria-expanded="true"] { background: var(--page); border-bottom: 1px solid var(--border); }
+.stock-group-label { flex: 1 1 auto; overflow-wrap: anywhere; }
+.stock-group-mark { color: var(--muted); }
+.stock-group-head[aria-expanded="true"] .stock-group-mark { transform: rotate(180deg); }
+.stock-group-body { background: #fff; }
+.stock-group-all { display: flex; align-items: center; width: 100%; min-height: 44px; padding: 8px 12px;
+  border: 0; border-radius: 0; background: #fff; color: var(--wine); font-size: 12px; font-weight: 600;
+  text-align: left; }
+.stock-group-all:hover { background: var(--tint); }
+.stock-catalog-table td { padding: 8px 12px; }
+.stock-catalog-table td small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.stock-catalog-table .stock-num, .stock-doc-scroll .stock-num { text-align: right;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stock-polarities { display: flex; gap: 8px; }
+.stock-polarity { min-width: 58px; min-height: 44px; gap: 6px; padding: 0 8px; border-color: var(--muted);
+  font-weight: 600; }
+.stock-polarity[data-in="true"] { background: var(--tint); border-color: var(--wine); color: var(--wine); }
+.stock-polarity-count { color: var(--muted); font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums; }
+.stock-polarity[data-in="true"] .stock-polarity-count { color: var(--wine); }
+.stock-catalog-foot, .stock-doc-foot { flex: 0 0 auto; padding-top: 12px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 12px; line-height: 1.6; }
+.stock-catalog-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 4px 16px; }
+.stock-catalog-foot b, .stock-doc-count b { color: #242124; font-variant-numeric: tabular-nums; }
+.stock-doc-head { display: grid; gap: 10px; flex: 0 0 auto; }
+.stock-doc-context { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.stock-doc-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  border-top: 1px solid var(--border); scrollbar-width: thin; scrollbar-color: var(--muted) var(--page); }
+.stock-doc-scroll .stock-table td { padding: 6px 8px; }
+.stock-doc-scroll .stock-quantity { width: 88px; }
+.stock-doc-foot { display: flex; flex-direction: column; gap: 10px; }
+.stock-doc-foot .stock-totals { justify-content: flex-start; }
+.stock-doc-foot .stock-units-total dd { font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
+.stock-confirm { min-height: 44px; width: 100%; }
+.stock-doc-foot .stock-status { min-height: 0; }
+.stock-doc-foot .stock-note { color: var(--muted); font-size: 11px; line-height: 16px; }

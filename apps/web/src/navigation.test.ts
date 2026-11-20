@@ -70,17 +70,29 @@ describe('T6 private navigation and existing transfer paths', () => {
     writeNavigation({ section: 'catalog', screen: 'other-products' });
     expect(window.location.hash).toBe('#/catalogo/otros-productos');
     expect(readNavigation()).toEqual({ section: 'catalog', screen: 'other-products' });
-    // The three catalogue screens never swallow each other.
+    // The four catalogue screens never swallow each other.
     for (const [hash, route] of [
       ['/#/catalogo', { section: 'catalog' }],
       ['/#/catalogo/baterias', { section: 'catalog', screen: 'batteries' }],
       ['/#/catalogo/otros-productos', { section: 'catalog', screen: 'other-products' }],
+      ['/#/catalogo/proveedores', { section: 'catalog', screen: 'suppliers' }],
     ] as const) {
       window.history.replaceState(null, '', hash);
       expect(readNavigation()).toEqual(route);
     }
     // A path below the products screen is not a screen of this application.
     for (const hash of ['/#/catalogo/otros-productos/2', '/#/catalogo/otros']) {
+      window.history.replaceState(null, '', hash);
+      expect(readNavigation()).toEqual({ section: 'inventory' });
+    }
+  });
+  it('gives the warehouse suppliers their own catalogue hash', () => {
+    expect(navigationHash({ section: 'catalog', screen: 'suppliers' })).toBe('#/catalogo/proveedores');
+    writeNavigation({ section: 'catalog', screen: 'suppliers' });
+    expect(window.location.hash).toBe('#/catalogo/proveedores');
+    expect(readNavigation()).toEqual({ section: 'catalog', screen: 'suppliers' });
+    // The suppliers never swallow a sibling screen, and a path below them is not a screen.
+    for (const hash of ['/#/catalogo/proveedores/2', '/#/catalogo/proveedor']) {
       window.history.replaceState(null, '', hash);
       expect(readNavigation()).toEqual({ section: 'inventory' });
     }

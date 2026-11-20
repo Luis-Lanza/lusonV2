@@ -1,20 +1,26 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
-import { parseInventory, parseVariantIdentity, queryURL } from './model';
+import { parseInventory, parseVariantIdentity, queryURL, validSearch } from './model';
 import type { Item, Kind, VariantIdentity } from './model';
 import { newTransferRetryKey } from './transferModel';
 
 // Warehouse ingress contract: one document, applied atomically or not at all.
+// A new document always names the supplier whose products it brings in: there is
+// no ingress without a supplier and no "all products" document.
 export interface StockEntryLineInput { readonly variant_id: number; readonly quantity: number }
 export interface StockEntryInput {
-  readonly operation_key: string; readonly note?: string; readonly lines: readonly StockEntryLineInput[];
+  readonly operation_key: string; readonly supplier_id: number; readonly note?: string;
+  readonly lines: readonly StockEntryLineInput[];
 }
 export interface StockEntryLine { readonly variant_id: number; readonly quantity: number }
+/** The supplier a persisted document carries: its id and the name it had then. */
+export interface StockSupplierRef { readonly id: number; readonly name: string }
 export interface StockEntryRecord {
   readonly id: number; readonly location_id: number; readonly note: string;
   readonly created_by_account_id: number; readonly created_at: string;
+  readonly supplier: StockSupplierRef;
   readonly lines: readonly StockEntryLine[]; readonly total_units: number;
 }
-export type StockEntryErrorCode = 'invalid_request' | 'forbidden' | 'retry_conflict'
+export type StockEntryErrorCode = 'invalid_request' | 'forbidden' | 'retry_conflict' | 'decision_conflict'
   | 'insufficient_stock' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
 /** One counter-entry request: the target is in the path, the reason is mandatory. */
@@ -26,6 +32,7 @@ export type StockEntryReversalErrorCode = 'invalid_request' | 'unauthenticated' 
 /** One row of the read-only history: a document summary, never its lines. */
 export interface StockEntryHistoryRow {
   readonly id: number; readonly note: string; readonly created_at: string;
+  readonly supplier: StockSupplierRef | null;
   readonly lines: number; readonly total_units: number; readonly reversed_by: number | null;
 }
 /**
@@ -43,8 +50,26 @@ export interface StockEntryDetail {
   readonly id: number; readonly location_id: number; readonly note: string;
   readonly created_at: string; readonly created_by_account_id: number;
   readonly reverses_entry_id: number | null; readonly reversed_by: number | null;
-  readonly reason: string; readonly lines: readonly StockEntryDetailLine[]; readonly total_units: number;
+  readonly reason: string; readonly supplier: StockSupplierRef | null;
+  readonly lines: readonly StockEntryDetailLine[]; readonly total_units: number;
 }
+/** The supplier reads of the ingress screen: the list and the catalogue of one supplier. */
+export type StockEntrySupplierErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden'
+  | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
+/** One supplier as the screen chooses it; only an active one is selectable. */
+export interface SupplierChoice {
+  readonly id: number; readonly name: string; readonly contact: string;
+  readonly retired: boolean; readonly kinds: readonly Kind[]; readonly offers: number;
+}
+export interface SupplierListPage {
+  readonly page: number; readonly page_size: number; readonly total_suppliers: number;
+  readonly suppliers: readonly SupplierChoice[];
+}
+/**
+ * One row of the catalogue of a supplier: the variant identity the warehouse
+ * already reads, plus the catalogue entry it belongs to and no stock numbers.
+ */
+export interface SupplierCatalogRow extends VariantIdentity { readonly catalog_entry_id: number }
 export type StockEntryDetailErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found'
   | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 /** One newest-first page of persisted ingress documents plus the exact total. */
@@ -68,6 +93,27 @@ export const stockEntryKindDescriptions: Record<Kind, string> = {
   other: 'Del catálogo libre: nombre y sus campos propios.',
 };
 export const stockCatalogPageSize = 50;
+/** One page of suppliers is all the picker asks for, and it asks for the maximum. */
+export const stockSupplierPageSize = 50;
+/**
+ * The catalogue of one supplier is a single server-capped page, never paged here.
+ * The bound is the page size the server publishes (500 variants: 200 assignable
+ * entries at most two polarities each), never a smaller local guess: a decoder
+ * stricter than that reply refuses the whole picker.
+ */
+export const stockSupplierMaxCatalogPageSize = 500;
+export const stockSupplierMaxID = 2_147_483_647;
+export const stockSupplierMaxName = 64;
+export const stockSupplierMaxContact = 200;
+export const stockSupplierMaxOffers = 1_000_000;
+/** A supplier without assigned products cannot receive an ingress, and says so. */
+export const stockSupplierNoOffers =
+  'Este proveedor no tiene productos asignados. Asigná sus productos en Catálogo → Proveedores y volvé a intentar.';
+/** A line the chosen supplier does not offer is refused before anything is sent. */
+export const stockSupplierDraftNotOffered =
+  'El documento tiene una línea que este proveedor no ofrece. Quitá esa línea o elegí otro proveedor: no se envió nada.';
+/** Nothing is written before the supplier is chosen. */
+export const stockSupplierRequired = 'Elegí el proveedor del ingreso antes de confirmar.';
 export const stockEntryHistoryPageSizes: readonly number[] = [10, 25, 50];
 export const stockEntryHistoryDefaultPageSize = 25;
 export const stockEntryHistoryMaxPage = 1_000_000;
@@ -78,7 +124,15 @@ export const stockEntryHistoryUnavailable =
 export const stockEntryAdmittedErrors: ReadonlyMap<number, readonly StockEntryErrorCode[]> = new Map([
   [400, ['invalid_request']],
   [403, ['forbidden']],
-  [409, ['retry_conflict', 'insufficient_stock']],
+  [409, ['decision_conflict', 'retry_conflict', 'insufficient_stock']],
+  [503, ['service_unavailable']],
+]);
+
+/** The supplier reads are their own contract: identity, permission and service failures. */
+export const stockSupplierAdmittedErrors: ReadonlyMap<number, readonly StockEntrySupplierErrorCode[]> = new Map([
+  [400, ['invalid_request']],
+  [401, ['unauthenticated']],
+  [403, ['forbidden']],
   [503, ['service_unavailable']],
 ]);
 
@@ -106,6 +160,7 @@ export const stockEntryErrorMessages: Record<StockEntryErrorCode, string> = {
   invalid_request: 'El documento no es válido. Revisá las líneas y la nota, y volvé a intentar.',
   forbidden: 'No tenés permiso para registrar ingresos en este almacén. No se aplicó ningún cambio.',
   retry_conflict: 'La clave de este ingreso ya se usó con otro contenido. No se aplicó ningún cambio: revisá el documento.',
+  decision_conflict: 'El proveedor elegido ya no está disponible para ingresos. No se aplicó ningún cambio: elegí un proveedor activo y volvé a intentar.',
   insufficient_stock: 'El servidor rechazó el ingreso. No se aplicó ningún cambio en el stock.',
   service_unavailable: 'El servicio no está disponible. No pudimos confirmar el ingreso: conservamos el documento para reintentar.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el ingreso: conservamos el documento.',
@@ -188,6 +243,42 @@ function note(value: unknown): string {
   if (typeof value !== 'string' || !validNote(value)) return invalidResponse();
   return value;
 }
+// The name a supplier is listed and persisted by: bounded, trimmed and free of
+// control characters, exactly like the row the server composes.
+function supplierName(value: unknown): string {
+  if (typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()) return invalidResponse();
+  if (value.trim() !== value || value === '') return invalidResponse();
+  if (Array.from(value).length > stockSupplierMaxName) return invalidResponse();
+  return value;
+}
+function supplierContact(value: unknown): string {
+  if (typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()) return invalidResponse();
+  if (Array.from(value).length > stockSupplierMaxContact) return invalidResponse();
+  return value;
+}
+function supplierRef(value: unknown): StockSupplierRef {
+  const record = fields(value, ['id', 'name']);
+  return Object.freeze({ id: integer(record.id, 1, stockSupplierMaxID), name: supplierName(record.name) });
+}
+// The kinds a supplier offers, in the order the screen offers them, so the
+// picker never depends on the wire order or on a repeated kind.
+function supplierKinds(value: unknown): readonly Kind[] {
+  if (!Array.isArray(value) || value.length > stockEntryKinds.length) return invalidResponse();
+  if (value.some(kind => kind !== 'battery' && kind !== 'other')) return invalidResponse();
+  if (new Set(value).size !== value.length) return invalidResponse();
+  return Object.freeze(stockEntryKinds.filter(kind => value.includes(kind)));
+}
+function supplierChoice(value: unknown): SupplierChoice {
+  const record = fields(value, ['id', 'name', 'contact', 'retired', 'kinds', 'offers']);
+  if (typeof record.retired !== 'boolean') return invalidResponse();
+  const kinds = supplierKinds(record.kinds);
+  const offers = integer(record.offers, 0, stockSupplierMaxOffers);
+  // An offer is always of some kind: a supplier with assigned products offers at
+  // least one kind and a supplier without products offers none.
+  if ((offers === 0) !== (kinds.length === 0)) return invalidResponse();
+  return Object.freeze({ id: integer(record.id, 1, stockSupplierMaxID), name: supplierName(record.name),
+    contact: supplierContact(record.contact), retired: record.retired, kinds, offers });
+}
 function timestamp(value: unknown): string {
   const raw = text(value);
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/.test(raw)) return invalidResponse();
@@ -205,9 +296,13 @@ export function validStockQuantity(value: number): boolean {
 
 function canonicalInput(input: StockEntryInput): StockEntryInput {
   // note is optional in the contract; everything else must be present and nothing else is admitted.
-  const record = fields(input, ['operation_key', 'note', 'lines'], false);
+  const record = fields(input, ['operation_key', 'supplier_id', 'note', 'lines'], false);
   const operation_key = record.operation_key;
   if (typeof operation_key !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operation_key)) return invalidResponse();
+  // The supplier is part of the canonical payload: the same key with another
+  // supplier is a different intent and the server answers retry_conflict.
+  const supplier_id = typeof record.supplier_id === 'number' && Number.isInteger(record.supplier_id)
+    && record.supplier_id >= 1 && record.supplier_id <= stockSupplierMaxID ? record.supplier_id : invalidResponse();
   if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > stockEntryMaxLines) return invalidResponse();
   const seen = new Set<number>();
   const lines = record.lines.map(value => {
@@ -220,7 +315,7 @@ function canonicalInput(input: StockEntryInput): StockEntryInput {
     return Object.freeze({ variant_id, quantity });
   }).sort((left, right) => left.variant_id - right.variant_id);
   const draftNote = record.note === undefined ? '' : note(record.note);
-  return Object.freeze({ operation_key, ...(draftNote === '' ? {} : { note: draftNote }), lines: Object.freeze(lines) });
+  return Object.freeze({ operation_key, supplier_id, ...(draftNote === '' ? {} : { note: draftNote }), lines: Object.freeze(lines) });
 }
 
 /** Validates and normalizes a draft; the same ordered payload is sent and compared. */
@@ -243,11 +338,15 @@ export function parseStockEntryReversalRecord(raw: string): StockEntryRecord {
 }
 
 function parseEntryRecord(raw: string, sign: 'ingress' | 'counter'): StockEntryRecord {
-  const record = fields(decode(raw), ['id', 'location_id', 'note', 'created_by_account_id', 'created_at', 'lines', 'total_units']);
+  const record = fields(decode(raw), ['id', 'location_id', 'note', 'created_by_account_id', 'created_at',
+    'supplier', 'lines', 'total_units']);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
   const location_id = integer(record.location_id, 1, 32767);
   const created_by_account_id = integer(record.created_by_account_id, 1, Number.MAX_SAFE_INTEGER);
   const created_at = timestamp(record.created_at);
+  // A counter-entry inherits the supplier of its original, so both directions of
+  // the contract carry one and a document without a supplier is not one of these.
+  const supplier = supplierRef(record.supplier);
   if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > stockEntryMaxLines) return invalidResponse();
   const seen = new Set<number>();
   const lines = record.lines.map(value => {
@@ -267,7 +366,7 @@ function parseEntryRecord(raw: string, sign: 'ingress' | 'counter'): StockEntryR
   // total, so a shape the database cannot have written never crosses the wire.
   const documentNote = sign === 'ingress' ? note(record.note) : record.note === '' ? '' : invalidResponse();
   if (sign === 'counter' && lines.reduce((sum, line) => sum + line.quantity, 0) !== total_units) return invalidResponse();
-  return Object.freeze({ id, location_id, note: documentNote, created_by_account_id, created_at,
+  return Object.freeze({ id, location_id, note: documentNote, created_by_account_id, created_at, supplier,
     lines: Object.freeze(lines), total_units });
 }
 
@@ -288,9 +387,15 @@ export function parseStockEntryReversalError(raw: string, status: number): Stock
   return admittedError(raw, status, stockEntryReversalAdmittedErrors);
 }
 
+/** The supplier reads admit their own codes and nothing else. */
+export function parseStockSupplierError(raw: string, status: number): StockEntrySupplierErrorCode {
+  return admittedError(raw, status, stockSupplierAdmittedErrors);
+}
+
 /** A definite rejection proves nothing was written; every other failure stays uncertain. */
 export function stockEntryFailureIsDefinite(code: StockEntryErrorCode): boolean {
-  return code === 'invalid_request' || code === 'forbidden' || code === 'retry_conflict' || code === 'insufficient_stock';
+  return code === 'invalid_request' || code === 'forbidden' || code === 'retry_conflict'
+    || code === 'decision_conflict' || code === 'insufficient_stock';
 }
 
 /** The response is evidence only if it repeats the exact payload this client sent. */
@@ -298,6 +403,9 @@ export function matchesStockEntryInput(input: StockEntryInput, record: StockEntr
   let expected: StockEntryInput;
   try { expected = canonicalStockEntryInput(input); } catch { return false; }
   if (record.location_id !== stockCatalogLocationID) return false;
+  // The reply must name the supplier the payload named: a document of another
+  // supplier is not evidence about this one.
+  if (record.supplier.id !== expected.supplier_id) return false;
   if (record.lines.length !== expected.lines.length) return false;
   const total = expected.lines.reduce((sum, line) => sum + line.quantity, 0);
   if (record.total_units !== total) return false;
@@ -309,6 +417,167 @@ export function matchesStockEntryInput(input: StockEntryInput, record: StockEntr
 /** Reuses the existing inventory read contract with the kind of the document. */
 export function stockCatalogPath(search: string, kind: Kind): string {
   return queryURL({ location: stockCatalogLocationID, kind, search, brand: '', polarity: '', page: 1, size: stockCatalogPageSize });
+}
+
+/**
+ * The supplier list the screen chooses from: the active ones first by name and
+ * the retired ones last, marked. Only page and size are ever requested.
+ */
+export function validStockSupplierQuery(page: number, pageSize: number): boolean {
+  return Number.isInteger(page) && page >= 1 && page <= stockEntryHistoryMaxPage
+    && Number.isInteger(pageSize) && pageSize >= 1 && pageSize <= stockSupplierPageSize;
+}
+
+export function stockSupplierListPath(page: number, pageSize: number): string {
+  if (!validStockSupplierQuery(page, pageSize)) return invalidResponse();
+  return `/api/suppliers?page=${page}&page_size=${pageSize}`;
+}
+
+/**
+ * Parses one page of suppliers strictly: exact keys, lossless numbers, unique
+ * known ids, the two admitted kinds and the offer count that proves whether the
+ * supplier can receive an ingress at all. Retired suppliers are listed last.
+ */
+export function parseSupplierList(raw: string): SupplierListPage {
+  const record = fields(decode(raw), ['suppliers', 'page', 'page_size', 'total_suppliers']);
+  const page = integer(record.page, 1, stockEntryHistoryMaxPage);
+  const page_size = integer(record.page_size, 1, stockSupplierPageSize);
+  const total_suppliers = integer(record.total_suppliers, 0, Number.MAX_SAFE_INTEGER);
+  if (!Array.isArray(record.suppliers) || record.suppliers.length > page_size) return invalidResponse();
+  if (record.suppliers.length > 0
+    && (page - 1) * page_size + record.suppliers.length > total_suppliers) return invalidResponse();
+  const suppliers = record.suppliers.map(supplierChoice);
+  if (new Set(suppliers.map(choice => choice.id)).size !== suppliers.length) return invalidResponse();
+  // The contract lists the retired suppliers last: an active one after a retired
+  // one is a page this server never composed.
+  const firstRetired = suppliers.findIndex(choice => choice.retired);
+  if (firstRetired !== -1 && suppliers.slice(firstRetired).some(choice => !choice.retired)) return invalidResponse();
+  return Object.freeze({ page, page_size, total_suppliers, suppliers: Object.freeze(suppliers) });
+}
+
+/** The frozen catalogue path of exactly one supplier, with its kind and search. */
+export function supplierCatalogPath(supplierID: number, kind: Kind, search: string): string {
+  if (!Number.isSafeInteger(supplierID) || supplierID < 1 || supplierID > stockSupplierMaxID) return invalidResponse();
+  if (kind !== 'battery' && kind !== 'other') return invalidResponse();
+  if (typeof search !== 'string' || !validSearch(search)) return invalidResponse();
+  const params = new URLSearchParams({ kind });
+  if (search !== '') params.set('search', search);
+  return `/api/suppliers/${supplierID}/catalog?${params.toString()}`;
+}
+
+/**
+ * Parses the catalogue of one supplier strictly: the typed identity of the
+ * warehouse plus its catalogue entry, without stock numbers, and only rows of
+ * the kind the document declares. This is the only catalogue an ingress names.
+ */
+export function parseSupplierCatalog(raw: string, kind: Kind): readonly SupplierCatalogRow[] {
+  const record = fields(decode(raw), ['items', 'page_size']);
+  const page_size = integer(record.page_size, 1, stockSupplierMaxCatalogPageSize);
+  if (!Array.isArray(record.items) || record.items.length > page_size) return invalidResponse();
+  const seen = new Set<number>();
+  const items = record.items.map(value => {
+    const item = fields(value, ['variant_id', 'catalog_entry_id', 'kind', 'name', 'detail', 'battery', 'fields']);
+    const identity = parseVariantIdentity(item, ['catalog_entry_id']);
+    if (identity.kind !== kind) return invalidResponse();
+    if (seen.has(identity.variant_id)) return invalidResponse();
+    seen.add(identity.variant_id);
+    return Object.freeze({ ...identity, catalog_entry_id: integer(item.catalog_entry_id, 1, stockSupplierMaxID) });
+  });
+  return Object.freeze(items);
+}
+
+/**
+ * One product of the picker: a catalogue entry and every polarity variant it
+ * offers. The screen shows one row per product, never one row per variant.
+ */
+export interface SupplierCatalogProduct {
+  readonly catalog_entry_id: number; readonly name: string; readonly detail: string;
+  readonly variants: readonly SupplierCatalogRow[];
+}
+/** One collapsible group of the picker: a brand, or the single group of other products. */
+export interface SupplierCatalogGroup {
+  readonly key: string; readonly label: string; readonly products: readonly SupplierCatalogProduct[];
+}
+/** Other products have no brand: they read as one group instead of one group each. */
+export const stockEntryOtherGroupKey = 'other';
+export const stockEntryOtherGroupLabel = 'Otros productos';
+
+// The row of a product inside its group: a battery reads as its model and its
+// capacity (the brand is the group), any other product as its own name and detail.
+function catalogProductName(row: SupplierCatalogRow): string {
+  return row.battery === null ? row.name : row.battery.model;
+}
+function catalogProductDetail(row: SupplierCatalogRow): string {
+  return row.battery === null ? row.detail : `${row.battery.capacity_ah} Ah`;
+}
+function catalogRowGroup(row: SupplierCatalogRow): { key: string; label: string } {
+  if (row.battery === null) return { key: stockEntryOtherGroupKey, label: stockEntryOtherGroupLabel };
+  return { key: `brand:${row.battery.brand}`, label: row.battery.brand };
+}
+
+/**
+ * Groups the catalogue of one supplier client-side: one group per brand, one row
+ * per catalogue entry, every variant of that entry inside its own row. The order
+ * of the reply is kept, so the groups read as the server listed them.
+ */
+export function groupSupplierCatalog(items: readonly SupplierCatalogRow[]): readonly SupplierCatalogGroup[] {
+  const groups: { key: string; label: string; products: SupplierCatalogProduct[] }[] = [];
+  const byKey = new Map<string, { key: string; label: string; products: SupplierCatalogProduct[] }>();
+  const byEntry = new Map<number, SupplierCatalogProduct & { variants: SupplierCatalogRow[] }>();
+  for (const row of items) {
+    const { key, label } = catalogRowGroup(row);
+    let group = byKey.get(key);
+    if (!group) { group = { key, label, products: [] }; byKey.set(key, group); groups.push(group); }
+    let product = byEntry.get(row.catalog_entry_id);
+    if (!product) {
+      product = { catalog_entry_id: row.catalog_entry_id, name: catalogProductName(row),
+        detail: catalogProductDetail(row), variants: [] };
+      byEntry.set(row.catalog_entry_id, product);
+      group.products.push(product);
+    }
+    product.variants.push(row);
+  }
+  return Object.freeze(groups.map(group => Object.freeze({ key: group.key, label: group.label,
+    products: Object.freeze(group.products.map(product => Object.freeze({ catalog_entry_id: product.catalog_entry_id,
+      name: product.name, detail: product.detail, variants: Object.freeze([...product.variants]) }))) })));
+}
+
+/** The rows the picker draws: one per product, whatever the number of variants. */
+export function supplierCatalogProductCount(groups: readonly SupplierCatalogGroup[]): number {
+  return groups.reduce((count, group) => count + group.products.length, 0);
+}
+
+/** The units the draft already holds from one product, across all its polarities. */
+export function supplierCatalogProductDraftUnits(product: SupplierCatalogProduct,
+  units: ReadonlyMap<number, number>): number {
+  return product.variants.reduce((total, variant) => total + (units.get(variant.variant_id) ?? 0), 0);
+}
+
+/** The units the draft already holds from one brand: the group's own aggregate. */
+export function supplierCatalogGroupDraftUnits(group: SupplierCatalogGroup,
+  units: ReadonlyMap<number, number>): number {
+  return group.products.reduce((total, product) => total + supplierCatalogProductDraftUnits(product, units), 0);
+}
+
+/** The group that holds a variant, so the screen opens the brand where the work is. */
+export function supplierCatalogGroupKeyOf(groups: readonly SupplierCatalogGroup[], variantID: number): string | null {
+  for (const group of groups) {
+    if (group.products.some(product => product.variants.some(variant => variant.variant_id === variantID))) {
+      return group.key;
+    }
+  }
+  return null;
+}
+
+/** The exact variants a draft may name: only the ones this supplier offers. */
+export function offeredStockEntryVariantIDs(items: readonly SupplierCatalogRow[]): ReadonlySet<number> {
+  return new Set(items.map(item => item.variant_id));
+}
+
+/** The draft lines the chosen supplier does not offer, in document order. */
+export function unofferedStockEntryVariantIDs(offered: ReadonlySet<number>,
+  variantIDs: readonly number[]): readonly number[] {
+  return variantIDs.filter(id => !offered.has(id));
 }
 
 // The picker answers the kind the document declares, so a row of the other kind
@@ -347,15 +616,19 @@ export function parseStockEntryHistory(raw: string): StockEntryHistoryPage {
   if (record.entries.length > 0 && (page - 1) * page_size + record.entries.length > total_entries) return invalidResponse();
   let previous = Number.POSITIVE_INFINITY;
   const entries = record.entries.map(value => {
-    const row = fields(value, ['id', 'note', 'created_at', 'lines', 'total_units', 'reversed_by']);
+    const row = fields(value, ['id', 'note', 'created_at', 'supplier', 'lines', 'total_units', 'reversed_by']);
     const id = integer(row.id, 1, Number.MAX_SAFE_INTEGER);
     if (id >= previous) return invalidResponse();
     previous = id;
+    // A historical document written before suppliers existed keeps a null
+    // supplier: it is never invented and never hidden from the ledger.
+    const supplier = row.supplier === null ? null : supplierRef(row.supplier);
     const lines = integer(row.lines, 1, stockEntryMaxLines);
     const total_units = signedInteger(row.total_units, -stockEntryMaxDocumentUnits, stockEntryMaxDocumentUnits);
     const reversed_by = row.reversed_by === null ? null : integer(row.reversed_by, 1, Number.MAX_SAFE_INTEGER);
     if (reversed_by !== null && reversed_by <= id) return invalidResponse();
-    return Object.freeze({ id, note: note(row.note), created_at: timestamp(row.created_at), lines, total_units, reversed_by });
+    return Object.freeze({ id, note: note(row.note), created_at: timestamp(row.created_at), supplier,
+      lines, total_units, reversed_by });
   });
   return Object.freeze({ page, page_size, total_entries, entries: Object.freeze(entries) });
 }
@@ -441,11 +714,14 @@ export function stockEntryDetailPath(id: number): string {
  */
 export function parseStockEntryDetail(raw: string): StockEntryDetail {
   const record = fields(decode(raw), ['id', 'location_id', 'note', 'created_at', 'created_by_account_id',
-    'reverses_entry_id', 'reversed_by', 'reason', 'lines', 'total_units']);
+    'reverses_entry_id', 'reversed_by', 'reason', 'supplier', 'lines', 'total_units']);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
   if (integer(record.location_id, 1, 32767) !== stockCatalogLocationID) return invalidResponse();
   const created_by_account_id = integer(record.created_by_account_id, 1, Number.MAX_SAFE_INTEGER);
   const created_at = timestamp(record.created_at);
+  // The counter-entry repeats the supplier of its original; a historical
+  // document keeps a null supplier instead of an invented one.
+  const supplier = record.supplier === null ? null : supplierRef(record.supplier);
   // A counter-entry points at an earlier document of this warehouse; an ingress
   // document points at nothing.
   const reverses_entry_id = record.reverses_entry_id === null
@@ -476,7 +752,7 @@ export function parseStockEntryDetail(raw: string): StockEntryDetail {
   // independently reported figure.
   if (lines.reduce((sum, line) => sum + line.quantity, 0) !== total_units) return invalidResponse();
   return Object.freeze({ id, location_id: stockCatalogLocationID, note: note(record.note), created_at,
-    created_by_account_id, reverses_entry_id, reversed_by, reason,
+    created_by_account_id, reverses_entry_id, reversed_by, reason, supplier,
     lines: Object.freeze(lines), total_units });
 }
 

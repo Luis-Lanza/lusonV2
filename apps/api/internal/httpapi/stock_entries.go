@@ -210,6 +210,10 @@ func decodeStockEntry(r *http.Request) (stockentries.CreateInput, error) {
 		switch key {
 		case "operation_key":
 			in.OperationKey, err = stockString(d)
+		case "supplier_id":
+			// The supplier is a canonical positive integer, exactly like the
+			// document id of a path: no string alias, no padding and no zero.
+			in.SupplierID, err = stockNumber(d, math.MaxInt64)
 		case "note":
 			in.Note, err = stockString(d)
 		case "lines":
@@ -221,7 +225,7 @@ func decodeStockEntry(r *http.Request) (stockentries.CreateInput, error) {
 			return stockentries.CreateInput{}, stockentries.ErrInvalid
 		}
 	}
-	if !seen["operation_key"] || !seen["lines"] || len(seen) > 3 || !stockDelimiter(d, '}') {
+	if !seen["operation_key"] || !seen["supplier_id"] || !seen["lines"] || len(seen) > 4 || !stockDelimiter(d, '}') {
 		return stockentries.CreateInput{}, stockentries.ErrInvalid
 	}
 	if _, err := d.Token(); err != io.EOF {
@@ -361,14 +365,46 @@ type stockEntryLineDTO struct {
 	Quantity  int64 `json:"quantity"`
 }
 
+// stockEntrySupplierDTO is the supplier projection of the frozen wire contract:
+// the id the document named and the name that supplier has.
+type stockEntrySupplierDTO struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// validSupplierName mirrors the stored shape of a supplier name: trimmed, 3 to 64
+// characters, valid UTF-8 and no NUL. A stored name outside it is a row this
+// domain never wrote.
+func validSupplierName(name string) bool {
+	if !utf8.ValidString(name) || strings.ContainsRune(name, 0) || strings.TrimSpace(name) != name {
+		return false
+	}
+	length := utf8.RuneCountInString(name)
+	return length >= 3 && length <= 64
+}
+
+// stockEntrySupplier admits only a complete persisted supplier projection. A
+// historical document has no supplier at all and stays null on the wire; it is
+// never replaced by an invented one.
+func stockEntrySupplier(supplier *stockentries.Supplier) (*stockEntrySupplierDTO, error) {
+	if supplier == nil {
+		return nil, nil
+	}
+	if supplier.ID < 1 || !validSupplierName(supplier.Name) {
+		return nil, stockentries.ErrUnavailable
+	}
+	return &stockEntrySupplierDTO{ID: supplier.ID, Name: supplier.Name}, nil
+}
+
 type stockEntryDTO struct {
-	ID                 int64               `json:"id"`
-	LocationID         int                 `json:"location_id"`
-	Note               string              `json:"note"`
-	CreatedByAccountID int64               `json:"created_by_account_id"`
-	CreatedAt          string              `json:"created_at"`
-	Lines              []stockEntryLineDTO `json:"lines"`
-	TotalUnits         int64               `json:"total_units"`
+	ID                 int64                  `json:"id"`
+	LocationID         int                    `json:"location_id"`
+	Note               string                 `json:"note"`
+	Supplier           *stockEntrySupplierDTO `json:"supplier"`
+	CreatedByAccountID int64                  `json:"created_by_account_id"`
+	CreatedAt          string                 `json:"created_at"`
+	Lines              []stockEntryLineDTO    `json:"lines"`
+	TotalUnits         int64                  `json:"total_units"`
 }
 
 // validStockEntryNote is the note bound of the contract, shared by the created
@@ -409,10 +445,15 @@ func stockEntryRecord(entry stockentries.Entry) (stockEntryDTO, error) {
 	if total != entry.TotalUnits || (reversal && total > -1) {
 		return stockEntryDTO{}, stockentries.ErrUnavailable
 	}
+	supplier, err := stockEntrySupplier(entry.Supplier)
+	if err != nil {
+		return stockEntryDTO{}, stockentries.ErrUnavailable
+	}
 	return stockEntryDTO{
 		ID:                 entry.ID,
 		LocationID:         entry.LocationID,
 		Note:               entry.Note,
+		Supplier:           supplier,
 		CreatedByAccountID: entry.CreatedByAccountID,
 		CreatedAt:          entry.CreatedAt.UTC().Format(time.RFC3339),
 		Lines:              lines,
@@ -436,6 +477,7 @@ type stockEntryDetailDTO struct {
 	ID                 int64                     `json:"id"`
 	LocationID         int                       `json:"location_id"`
 	Note               string                    `json:"note"`
+	Supplier           *stockEntrySupplierDTO    `json:"supplier"`
 	CreatedAt          string                    `json:"created_at"`
 	CreatedByAccountID int64                     `json:"created_by_account_id"`
 	ReversesEntryID    *int64                    `json:"reverses_entry_id"`
@@ -454,6 +496,10 @@ func stockEntryDetailRecord(entry stockentries.EntryDetail) (stockEntryDetailDTO
 	unavailable := func() (stockEntryDetailDTO, error) { return stockEntryDetailDTO{}, stockentries.ErrUnavailable }
 	if entry.ID < 1 || entry.LocationID != 1 || entry.CreatedByAccountID < 1 || entry.CreatedAt.IsZero() ||
 		len(entry.Lines) == 0 || len(entry.Lines) > stockEntryMaxLines || !validStockEntryNote(entry.Note) {
+		return unavailable()
+	}
+	supplier, err := stockEntrySupplier(entry.Supplier)
+	if err != nil {
 		return unavailable()
 	}
 	counter := entry.ReversesEntryID != nil
@@ -502,6 +548,7 @@ func stockEntryDetailRecord(entry stockentries.EntryDetail) (stockEntryDetailDTO
 		ID:                 entry.ID,
 		LocationID:         entry.LocationID,
 		Note:               entry.Note,
+		Supplier:           supplier,
 		CreatedAt:          entry.CreatedAt.UTC().Format(time.RFC3339),
 		CreatedByAccountID: entry.CreatedByAccountID,
 		ReversesEntryID:    reverses,
@@ -513,12 +560,13 @@ func stockEntryDetailRecord(entry stockentries.EntryDetail) (stockEntryDetailDTO
 }
 
 type stockEntrySummaryDTO struct {
-	ID         int64  `json:"id"`
-	Note       string `json:"note"`
-	CreatedAt  string `json:"created_at"`
-	Lines      int    `json:"lines"`
-	TotalUnits int64  `json:"total_units"`
-	ReversedBy *int64 `json:"reversed_by"`
+	ID         int64                  `json:"id"`
+	Note       string                 `json:"note"`
+	Supplier   *stockEntrySupplierDTO `json:"supplier"`
+	CreatedAt  string                 `json:"created_at"`
+	Lines      int                    `json:"lines"`
+	TotalUnits int64                  `json:"total_units"`
+	ReversedBy *int64                 `json:"reversed_by"`
 }
 
 type stockEntryPageDTO struct {
@@ -558,7 +606,13 @@ func stockEntryPage(page stockentries.EntryPage) (stockEntryPageDTO, error) {
 			counter := *entry.ReversedBy
 			reversedBy = &counter
 		}
-		entries = append(entries, stockEntrySummaryDTO{ID: entry.ID, Note: entry.Note,
+		// The supplier of a row is null or the stored id and name; anything else
+		// is a row this domain never wrote.
+		supplier, err := stockEntrySupplier(entry.Supplier)
+		if err != nil {
+			return stockEntryPageDTO{}, stockentries.ErrUnavailable
+		}
+		entries = append(entries, stockEntrySummaryDTO{ID: entry.ID, Note: entry.Note, Supplier: supplier,
 			CreatedAt: entry.CreatedAt.UTC().Format(time.RFC3339), Lines: entry.Lines,
 			TotalUnits: entry.TotalUnits, ReversedBy: reversedBy})
 	}

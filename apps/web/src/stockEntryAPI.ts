@@ -1,10 +1,14 @@
 import { canonicalStockEntryInput, canonicalStockEntryReversalInput, matchesStockEntryInput, matchesStockEntryReversal,
   parseStockEntryDetail, parseStockEntryDetailError, parseStockEntryError, parseStockEntryHistory, parseStockEntryRecord,
-  parseStockEntryReversalError, parseStockEntryReversalRecord, stockEntryDetailPath, stockEntryHistoryPath,
-  stockEntryReversalPath, stockEntryReversible, validStockEntryHistoryQuery,
+  parseStockEntryReversalError, parseStockEntryReversalRecord, parseStockSupplierError, parseSupplierCatalog,
+  parseSupplierList, stockEntryDetailPath, stockEntryHistoryPath,
+  stockEntryReversalPath, stockEntryReversible, stockSupplierListPath, supplierCatalogPath,
+  validStockEntryHistoryQuery, validStockSupplierQuery,
   type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryErrorCode, type StockEntryHistoryPage,
   type StockEntryHistoryRow, type StockEntryInput, type StockEntryRecord, type StockEntryReversalErrorCode,
-  type StockEntryReversalInput } from './stockEntryModel';
+  type StockEntryReversalInput, type StockEntrySupplierErrorCode, type SupplierCatalogRow,
+  type SupplierListPage } from './stockEntryModel';
+import type { Kind } from './model';
 
 export class StockEntryAPIError extends Error {
   constructor(public readonly code: StockEntryErrorCode, public readonly status: number | null) {
@@ -23,6 +27,13 @@ export class StockEntryReversalAPIError extends Error {
 export class StockEntryDetailAPIError extends Error {
   constructor(public readonly code: StockEntryDetailErrorCode, public readonly status: number | null) {
     super(code); this.name = 'StockEntryDetailAPIError';
+  }
+}
+// The supplier list and the catalogue of one supplier are reads of their own
+// contract, so they carry their own codes instead of the document vocabulary.
+export class StockEntrySupplierAPIError extends Error {
+  constructor(public readonly code: StockEntrySupplierErrorCode, public readonly status: number | null) {
+    super(code); this.name = 'StockEntrySupplierAPIError';
   }
 }
 export interface StockEntryCreateResult { readonly record: StockEntryRecord; readonly replayed: boolean }
@@ -131,6 +142,56 @@ export function createStockEntryAPI(fetch: typeof globalThis.fetch = globalThis.
       // A reply for another document is never evidence about the row that asked.
       if (detail.id !== id) throw malformed();
       return detail;
+    },
+
+    async suppliers(page: number, pageSize: number, signal?: AbortSignal): Promise<SupplierListPage> {
+      // The page and size are the frozen read contract: a bad one never leaves here.
+      if (!validStockSupplierQuery(page, pageSize)) throw new StockEntrySupplierAPIError('invalid_request', null);
+      let reply: Response;
+      let raw: string;
+      try {
+        reply = await fetch(stockSupplierListPath(page, pageSize), {
+          method: 'GET', credentials: 'same-origin', cache: 'no-store', signal });
+        raw = await reply.text();
+      } catch (error) {
+        const aborted = signal?.aborted === true
+          || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
+        throw new StockEntrySupplierAPIError(aborted ? 'aborted' : 'network', null);
+      }
+      const malformed = () => new StockEntrySupplierAPIError('invalid_response', reply.status);
+      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
+      if (reply.status !== 200) {
+        let code: StockEntrySupplierErrorCode;
+        try { code = parseStockSupplierError(raw, reply.status); } catch { throw malformed(); }
+        throw new StockEntrySupplierAPIError(code, reply.status);
+      }
+      try { return parseSupplierList(raw); } catch { throw malformed(); }
+    },
+
+    async supplierCatalog(supplierID: number, kind: Kind, search: string,
+      signal?: AbortSignal): Promise<readonly SupplierCatalogRow[]> {
+      // The path is the frozen contract of one supplier: a bad id never leaves here.
+      let path: string;
+      try { path = supplierCatalogPath(supplierID, kind, search); }
+      catch { throw new StockEntrySupplierAPIError('invalid_request', null); }
+      let reply: Response;
+      let raw: string;
+      try {
+        reply = await fetch(path, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal });
+        raw = await reply.text();
+      } catch (error) {
+        const aborted = signal?.aborted === true
+          || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
+        throw new StockEntrySupplierAPIError(aborted ? 'aborted' : 'network', null);
+      }
+      const malformed = () => new StockEntrySupplierAPIError('invalid_response', reply.status);
+      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
+      if (reply.status !== 200) {
+        let code: StockEntrySupplierErrorCode;
+        try { code = parseStockSupplierError(raw, reply.status); } catch { throw malformed(); }
+        throw new StockEntrySupplierAPIError(code, reply.status);
+      }
+      try { return parseSupplierCatalog(raw, kind); } catch { throw malformed(); }
     },
 
     async history(page: number, pageSize: number, signal?: AbortSignal): Promise<StockEntryHistoryPage> {

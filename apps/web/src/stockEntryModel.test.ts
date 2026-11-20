@@ -8,7 +8,12 @@ import {
   stockEntryHistoryPath,
   stockEntryHistoryPageSizes, stockEntryReversalAdmittedErrors, stockEntryReversalErrorMessages,
   stockEntryReversalFailureIsDefinite, stockEntryReversalPath, stockEntryReversible, validStockEntryHistoryQuery,
-  validStockQuantity, type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalInput,
+  validStockQuantity, offeredStockEntryVariantIDs, parseStockSupplierError, parseSupplierCatalog, parseSupplierList,
+  stockSupplierAdmittedErrors, stockSupplierListPath, stockSupplierMaxCatalogPageSize, stockSupplierNoOffers,
+  stockSupplierPageSize, supplierCatalogPath, unofferedStockEntryVariantIDs,
+  groupSupplierCatalog, supplierCatalogGroupDraftUnits, supplierCatalogGroupKeyOf, supplierCatalogProductCount,
+  supplierCatalogProductDraftUnits, stockEntryOtherGroupLabel,
+  type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalInput, type SupplierCatalogRow,
 } from './stockEntryModel';
 
 const key = 'warehouse_key_0001';
@@ -18,12 +23,13 @@ function fixedRandom(): Pick<Crypto, 'getRandomValues'> {
     return array;
   } };
 }
+const supplier = { id: 3, name: 'Proveedor del norte' };
 const draft = (patch: Partial<StockEntryInput> = {}): StockEntryInput => ({
-  operation_key: key, lines: [{ variant_id: 4, quantity: 2 }], ...patch,
+  operation_key: key, supplier_id: 3, lines: [{ variant_id: 4, quantity: 2 }], ...patch,
 });
 const recordJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 7, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:20:00Z',
-  lines: [{ variant_id: 4, quantity: 2 }], total_units: 2, ...overrides,
+  supplier, lines: [{ variant_id: 4, quantity: 2 }], total_units: 2, ...overrides,
 });
 const catalogJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   location: { id: 1, name: 'Almacén' },
@@ -38,17 +44,19 @@ describe('stock entry canonical request', () => {
     const canonical = canonicalStockEntryInput(draft({
       note: 'Remito 0002-00045871', lines: [{ variant_id: 9, quantity: 1 }, { variant_id: 4, quantity: 2 }],
     }));
-    expect(canonical).toEqual({ operation_key: key, note: 'Remito 0002-00045871',
+    expect(canonical).toEqual({ operation_key: key, supplier_id: 3, note: 'Remito 0002-00045871',
       lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 9, quantity: 1 }] });
     expect(Object.isFrozen(canonical)).toBe(true);
     expect(Object.isFrozen(canonical.lines)).toBe(true);
     expect(Object.isFrozen(canonical.lines[0])).toBe(true);
-    expect(JSON.stringify(canonical)).toBe('{"operation_key":"warehouse_key_0001","note":"Remito 0002-00045871","lines":[{"variant_id":4,"quantity":2},{"variant_id":9,"quantity":1}]}');
+    expect(JSON.stringify(canonical)).toBe('{"operation_key":"warehouse_key_0001","supplier_id":3,"note":"Remito 0002-00045871","lines":[{"variant_id":4,"quantity":2},{"variant_id":9,"quantity":1}]}');
   });
 
   it('omits an empty note because it is optional in the contract', () => {
-    expect(canonicalStockEntryInput(draft({ note: '' }))).toEqual({ operation_key: key, lines: [{ variant_id: 4, quantity: 2 }] });
-    expect(JSON.stringify(canonicalStockEntryInput(draft({ note: '' })))).toBe('{"operation_key":"warehouse_key_0001","lines":[{"variant_id":4,"quantity":2}]}');
+    expect(canonicalStockEntryInput(draft({ note: '' })))
+      .toEqual({ operation_key: key, supplier_id: 3, lines: [{ variant_id: 4, quantity: 2 }] });
+    expect(JSON.stringify(canonicalStockEntryInput(draft({ note: '' }))))
+      .toBe('{"operation_key":"warehouse_key_0001","supplier_id":3,"lines":[{"variant_id":4,"quantity":2}]}');
   });
 
   it.each([
@@ -64,6 +72,12 @@ describe('stock entry canonical request', () => {
     ['operation key with forbidden characters', draft({ operation_key: 'k'.repeat(30) + '.bad' })],
     ['note over 500 characters', draft({ note: 'n'.repeat(501) })],
     ['note with NUL', draft({ note: 'remito\u0000' })],
+    ['a zero supplier', draft({ supplier_id: 0 })],
+    ['a negative supplier', draft({ supplier_id: -3 })],
+    ['a fractional supplier', draft({ supplier_id: 3.5 })],
+    ['a supplier above the bound', draft({ supplier_id: 2_147_483_648 })],
+    ['a string supplier', draft({ supplier_id: '3' as unknown as number })],
+    ['no supplier at all', { operation_key: key, lines: [{ variant_id: 4, quantity: 2 }] } as unknown as StockEntryInput],
     ['unknown field', { ...draft(), extra: true } as unknown as StockEntryInput],
   ])('rejects %s', (_, input) => {
     expect(() => canonicalStockEntryInput(input)).toThrow('Documento de ingreso inválido.');
@@ -72,6 +86,7 @@ describe('stock entry canonical request', () => {
   it('accepts the 190 line and 500 character boundaries', () => {
     const lines = Array.from({ length: 190 }, (_, index) => ({ variant_id: index + 1, quantity: 1000000 }));
     const canonical = canonicalStockEntryInput(draft({ lines, note: 'n'.repeat(500) }));
+    expect(canonical.supplier_id).toBe(3);
     expect(canonical.lines).toHaveLength(190);
     expect(canonical.note).toHaveLength(500);
     expect(validStockQuantity(1)).toBe(true);
@@ -85,9 +100,17 @@ describe('stock entry response parsing', () => {
   it('parses lossless numbers into exact safe integers and keeps an empty note', () => {
     const record = parseStockEntryRecord(recordJSON({ id: 9007199254740991, total_units: 2 }));
     expect(record).toEqual({ id: 9007199254740991, location_id: 1, note: '', created_by_account_id: 1,
-      created_at: '2026-05-01T14:20:00Z', lines: [{ variant_id: 4, quantity: 2 }], total_units: 2 });
+      created_at: '2026-05-01T14:20:00Z', supplier, lines: [{ variant_id: 4, quantity: 2 }], total_units: 2 });
     expect(Object.isFrozen(record)).toBe(true);
     expect(Object.isFrozen(record.lines)).toBe(true);
+    expect(Object.isFrozen(record.supplier)).toBe(true);
+  });
+
+  it('reads the supplier of the created document and refuses a document without one', () => {
+    expect(parseStockEntryRecord(recordJSON()).supplier).toEqual({ id: 3, name: 'Proveedor del norte' });
+    const withoutSupplier = JSON.parse(recordJSON()) as Record<string, unknown>;
+    delete withoutSupplier.supplier;
+    expect(() => parseStockEntryRecord(JSON.stringify(withoutSupplier))).toThrow('Respuesta inválida del servidor.');
   });
 
   it.each([
@@ -101,6 +124,13 @@ describe('stock entry response parsing', () => {
     ['a date without offset', recordJSON({ created_at: '2026-05-01T14:20:00' })],
     ['a note with NUL', recordJSON({ note: 'a\u0000b' })],
     ['a note over 500 characters', recordJSON({ note: 'n'.repeat(501) })],
+    ['a null supplier', recordJSON({ supplier: null })],
+    ['a supplier with an extra key', recordJSON({ supplier: { ...supplier, contact: '' } })],
+    ['a supplier without a name', recordJSON({ supplier: { id: 3 } })],
+    ['a blank supplier name', recordJSON({ supplier: { id: 3, name: '  ' } })],
+    ['a supplier name over 64 characters', recordJSON({ supplier: { id: 3, name: 'n'.repeat(65) } })],
+    ['a supplier name with NUL', recordJSON({ supplier: { id: 3, name: 'a\u0000b' } })],
+    ['a zero supplier id', recordJSON({ supplier: { id: 0, name: 'Proveedor del norte' } })],
   ])('rejects %s', (_, raw) => {
     expect(() => parseStockEntryRecord(raw)).toThrow('Respuesta inválida del servidor.');
   });
@@ -117,6 +147,7 @@ describe('stock entry error envelopes', () => {
     expect(parseStockEntryError('{"error":"forbidden"}', 403)).toBe('forbidden');
     expect(parseStockEntryError('{"error":"retry_conflict"}', 409)).toBe('retry_conflict');
     expect(parseStockEntryError('{"error":"insufficient_stock"}', 409)).toBe('insufficient_stock');
+    expect(parseStockEntryError('{"error":"decision_conflict"}', 409)).toBe('decision_conflict');
     expect(parseStockEntryError('{"error":"service_unavailable"}', 503)).toBe('service_unavailable');
   });
 
@@ -138,7 +169,8 @@ describe('stock entry error envelopes', () => {
     }
     expect(stockEntryErrorMessages.network).toContain('No se pudo conectar');
     expect(stockEntryErrorMessages.aborted).toContain('Conservamos el documento');
-    for (const code of ['invalid_request', 'forbidden', 'retry_conflict', 'insufficient_stock'] as const) {
+    expect(stockEntryErrorMessages.decision_conflict).toContain('proveedor');
+    for (const code of ['invalid_request', 'forbidden', 'retry_conflict', 'insufficient_stock', 'decision_conflict'] as const) {
       expect(stockEntryFailureIsDefinite(code)).toBe(true);
     }
     for (const code of ['service_unavailable', 'invalid_response', 'network', 'aborted'] as const) {
@@ -184,7 +216,7 @@ describe('stock entry payload evidence', () => {
 
 describe('stock ingress history read contract', () => {
   const historyRow = (overrides: Record<string, unknown> = {}) => ({
-    id: 7, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z',
+    id: 7, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', supplier: null,
     lines: 2, total_units: 18, reversed_by: null, ...overrides });
   const historyJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     page: 1, page_size: 25, total_entries: 1, entries: [historyRow()], ...overrides });
@@ -212,12 +244,22 @@ describe('stock ingress history read contract', () => {
         historyRow({ id: 8, lines: 1, total_units: 1 })],
     }));
     expect(page).toEqual({ page: 2, page_size: 10, total_entries: 12, entries: [
-      { id: 9007199254740990, note: '', created_at: '2026-11-04T14:20:00Z', lines: 2, total_units: -3, reversed_by: 9007199254740991 },
-      { id: 8, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', lines: 1, total_units: 1, reversed_by: null },
+      { id: 9007199254740990, note: '', created_at: '2026-11-04T14:20:00Z', supplier: null,
+        lines: 2, total_units: -3, reversed_by: 9007199254740991 },
+      { id: 8, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', supplier: null,
+        lines: 1, total_units: 1, reversed_by: null },
     ] });
     expect(Object.isFrozen(page)).toBe(true);
     expect(Object.isFrozen(page.entries)).toBe(true);
     expect(Object.isFrozen(page.entries[0])).toBe(true);
+  });
+
+  it('keeps the supplier of a new document and the null of a historical one', () => {
+    const page = parseStockEntryHistory(historyJSON({ total_entries: 2,
+      entries: [historyRow({ id: 8, supplier }), historyRow()] }));
+    expect(page.entries[0].supplier).toEqual({ id: 3, name: 'Proveedor del norte' });
+    expect(page.entries[1].supplier).toBeNull();
+    expect(Object.isFrozen(page.entries[0].supplier)).toBe(true);
   });
 
   it('parses an empty page beyond the last one', () => {
@@ -241,7 +283,11 @@ describe('stock ingress history read contract', () => {
         historyRow({ id: 10 })] })],
     ['a page whose rows exceed the total', historyJSON({ page: 2, page_size: 10, total_entries: 5, entries: [historyRow({ id: 3 })] })],
     ['an extra row field', historyJSON({ entries: [historyRow({ variant_id: 4 })] })],
-    ['a missing row field', historyJSON({ entries: [{ id: 7, created_at: '2026-11-04T14:20:00Z', lines: 2, total_units: 18, reversed_by: null }] })],
+    ['a missing row field', historyJSON({ entries: [{ id: 7, created_at: '2026-11-04T14:20:00Z', supplier: null, lines: 2, total_units: 18, reversed_by: null }] })],
+    ['a row without a supplier key', historyJSON({ entries: [{ id: 7, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', lines: 2, total_units: 18, reversed_by: null }] })],
+    ['a row supplier with an extra key', historyJSON({ entries: [historyRow({ supplier: { ...supplier, retired: false } })] })],
+    ['a row supplier without a name', historyJSON({ entries: [historyRow({ supplier: { id: 3 } })] })],
+    ['a row supplier with a zero id', historyJSON({ entries: [historyRow({ supplier: { id: 0, name: 'Proveedor del norte' } })] })],
     ['an unsafe id', historyJSON({ entries: [historyRow({ id: 9007199254740992 })] })],
     ['a zero id', historyJSON({ entries: [historyRow({ id: 0 })] })],
     ['rows out of order', historyJSON({ total_entries: 2, entries: [historyRow({ id: 7 }), historyRow({ id: 9 })] })],
@@ -310,13 +356,180 @@ describe('stock catalog read contract', () => {
   });
 });
 
+describe('supplier read contract of the ingress screen', () => {
+  const supplierChoiceJSON = (overrides: Record<string, unknown> = {}) => ({
+    id: 3, name: 'Proveedor del norte', contact: '', retired: false,
+    kinds: ['battery', 'other'], offers: 4, ...overrides });
+  const supplierListJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    suppliers: [supplierChoiceJSON()], page: 1, page_size: 50, total_suppliers: 1, ...overrides });
+  const batteryEntry = (overrides: Record<string, unknown> = {}) => ({
+    variant_id: 4, catalog_entry_id: 2, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
+    battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null, ...overrides });
+  const productEntry = (overrides: Record<string, unknown> = {}) => ({
+    variant_id: 210, catalog_entry_id: 97, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+    battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], ...overrides });
+  const supplierCatalogJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    items: [batteryEntry()], page_size: 500, ...overrides });
+  // The exact body the API answers for a supplier that offers 33 battery entries,
+  // captured from the real handler in internal/httpapi
+  // TestSuppliersOfferedVariantsAtOperatorVolume: the envelope, the page size and
+  // every row value are the server's own, so the decoder is exercised on the reply
+  // the operator's screen actually received.
+  const operatorSupplierCatalogJSON = () => JSON.stringify({
+    items: Array.from({ length: 66 }, (_, index) => {
+      const model = `12N24-${String(Math.floor(index / 2) + 1).padStart(2, '0')}`;
+      const polarity = index % 2 === 0 ? 'L' : 'R';
+      return { variant_id: 194 + index, catalog_entry_id: 98 + Math.floor(index / 2), kind: 'battery',
+        name: `CAR · ${model}`, detail: `35 Ah · ${polarity}`,
+        battery: { brand: 'CAR', model, capacity_ah: '35', polarity }, fields: null };
+    }),
+    page_size: 500,
+  });
+
+  it('builds the frozen supplier list path and the catalogue path of one supplier', () => {
+    expect(stockSupplierPageSize).toBe(50);
+    expect(stockSupplierListPath(1, stockSupplierPageSize)).toBe('/api/suppliers?page=1&page_size=50');
+    expect(supplierCatalogPath(3, 'battery', '')).toBe('/api/suppliers/3/catalog?kind=battery');
+    expect(supplierCatalogPath(3, 'other', 'Agua acidulada'))
+      .toBe('/api/suppliers/3/catalog?kind=other&search=Agua+acidulada');
+    // The picker is that supplier's catalogue only: a non-canonical supplier never builds a path.
+    for (const id of [0, -1, 1.5, Number.NaN, 2_147_483_648]) {
+      expect(() => supplierCatalogPath(id, 'battery', '')).toThrow('Respuesta inválida del servidor.');
+    }
+    expect(() => supplierCatalogPath(3, 'battery', 'x'.repeat(129))).toThrow('Respuesta inválida del servidor.');
+    expect(() => stockSupplierListPath(0, 50)).toThrow('Respuesta inválida del servidor.');
+    expect(() => stockSupplierListPath(1, 51)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('parses the supplier list with its offer count, its kinds and its retirement', () => {
+    const page = parseSupplierList(supplierListJSON({ total_suppliers: 2, suppliers: [
+      supplierChoiceJSON({ kinds: ['other', 'battery'] }),
+      supplierChoiceJSON({ id: 4, name: 'Baterías Sur', retired: true, kinds: [], offers: 0, contact: 'Interno 42' }),
+    ] }));
+    expect(page).toMatchObject({ page: 1, page_size: 50, total_suppliers: 2 });
+    // The kinds are kept in the order the screen offers them, never the wire order.
+    expect(page.suppliers[0]).toEqual({ id: 3, name: 'Proveedor del norte', contact: '', retired: false,
+      kinds: ['battery', 'other'], offers: 4 });
+    expect(page.suppliers[1]).toMatchObject({ id: 4, retired: true, kinds: [], offers: 0 });
+    expect(Object.isFrozen(page)).toBe(true);
+    expect(Object.isFrozen(page.suppliers)).toBe(true);
+    expect(Object.isFrozen(page.suppliers[0])).toBe(true);
+    expect(Object.isFrozen(page.suppliers[0].kinds)).toBe(true);
+  });
+
+  it.each([
+    ['an extra page field', supplierListJSON({ extra: 1 })],
+    ['a missing page field', JSON.stringify({ suppliers: [supplierChoiceJSON()], page: 1, page_size: 50 })],
+    ['a zero page', supplierListJSON({ page: 0 })],
+    ['a page size outside the contract', supplierListJSON({ page_size: 0 })],
+    ['a page size above the requested one', supplierListJSON({ page_size: 51 })],
+    ['a negative total', supplierListJSON({ total_suppliers: -1 })],
+    ['suppliers that are not an array', supplierListJSON({ suppliers: {} })],
+    ['more suppliers than the page size', supplierListJSON({ page_size: 1, total_suppliers: 3,
+      suppliers: [supplierChoiceJSON(), supplierChoiceJSON({ id: 4 })] })],
+    ['a page whose suppliers exceed the total', supplierListJSON({ page: 2, total_suppliers: 1 })],
+    ['an extra supplier field', supplierListJSON({ suppliers: [supplierChoiceJSON({ offers_list: [] })] })],
+    ['a missing supplier field', supplierListJSON({ suppliers: [{ id: 3, name: 'Proveedor del norte', contact: '',
+      retired: false, kinds: ['battery'] }] })],
+    ['a retired supplier listed first', supplierListJSON({ total_suppliers: 2, suppliers: [
+      supplierChoiceJSON({ retired: true }), supplierChoiceJSON({ id: 4 })] })],
+    ['a repeated supplier', supplierListJSON({ total_suppliers: 2, suppliers: [supplierChoiceJSON(), supplierChoiceJSON()] })],
+    ['a non boolean retirement', supplierListJSON({ suppliers: [supplierChoiceJSON({ retired: 'no' })] })],
+    ['an unknown kind', supplierListJSON({ suppliers: [supplierChoiceJSON({ kinds: ['battery', 'gift'] })] })],
+    ['a repeated kind', supplierListJSON({ suppliers: [supplierChoiceJSON({ kinds: ['battery', 'battery'] })] })],
+    ['kinds that are not an array', supplierListJSON({ suppliers: [supplierChoiceJSON({ kinds: 'battery' })] })],
+    ['offers without a kind', supplierListJSON({ suppliers: [supplierChoiceJSON({ kinds: [], offers: 2 })] })],
+    ['kinds without offers', supplierListJSON({ suppliers: [supplierChoiceJSON({ offers: 0 })] })],
+    ['a negative offer count', supplierListJSON({ suppliers: [supplierChoiceJSON({ offers: -1 })] })],
+    ['a blank name', supplierListJSON({ suppliers: [supplierChoiceJSON({ name: '  ' })] })],
+    ['a name with NUL', supplierListJSON({ suppliers: [supplierChoiceJSON({ name: 'norte\u0000' })] })],
+    ['a name over 64 characters', supplierListJSON({ suppliers: [supplierChoiceJSON({ name: 'n'.repeat(65) })] })],
+    ['a contact over 200 characters', supplierListJSON({ suppliers: [supplierChoiceJSON({ contact: 'c'.repeat(201) })] })],
+    ['a contact with NUL', supplierListJSON({ suppliers: [supplierChoiceJSON({ contact: 'a\u0000b' })] })],
+    ['a zero supplier id', supplierListJSON({ suppliers: [supplierChoiceJSON({ id: 0 })] })],
+    ['a duplicated JSON key', '{"suppliers":[],"page":1,"page":2,"page_size":50,"total_suppliers":0}'],
+    ['a non JSON body', '<html>proxy</html>'],
+  ])('rejects a supplier list with %s', (_, raw) => {
+    expect(() => parseSupplierList(raw)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('parses the catalogue of one supplier as the typed identity without stock numbers', () => {
+    const items = parseSupplierCatalog(supplierCatalogJSON(), 'battery');
+    expect(items).toEqual([{ variant_id: 4, catalog_entry_id: 2, kind: 'battery', name: 'TOYO · NS40ZL',
+      detail: '35 Ah · L', battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null }]);
+    expect(Object.isFrozen(items)).toBe(true);
+    expect(Object.isFrozen(items[0])).toBe(true);
+    const products = parseSupplierCatalog(supplierCatalogJSON({ items: [productEntry()] }), 'other');
+    expect(products[0]).toMatchObject({ variant_id: 210, catalog_entry_id: 97, kind: 'other', battery: null });
+    expect(stockSupplierMaxCatalogPageSize).toBe(500);
+  });
+
+  it('parses the operator volume: 33 offered entries as one page of 66 variants', () => {
+    // The frozen contract binds no page size below the one the server publishes, and
+    // this is exactly the reply the reported screen refused.
+    const items = parseSupplierCatalog(operatorSupplierCatalogJSON(), 'battery');
+    expect(items).toHaveLength(66);
+    expect(items[0]).toMatchObject({ variant_id: 194, catalog_entry_id: 98, kind: 'battery',
+      name: 'CAR · 12N24-01', detail: '35 Ah · L' });
+    expect(items[65]).toMatchObject({ variant_id: 259, catalog_entry_id: 130, detail: '35 Ah · R' });
+    // The published bound itself, which is the whole defect: page_size 500 with a
+    // single row was refused while the decoder's bound was smaller.
+    expect(parseSupplierCatalog(supplierCatalogJSON({ page_size: 500 }), 'battery')).toHaveLength(1);
+  });
+
+  it.each([
+    ['an extra field', supplierCatalogJSON({ extra: 1 })],
+    ['a missing page size', JSON.stringify({ items: [batteryEntry()] })],
+    ['a zero page size', supplierCatalogJSON({ page_size: 0 })],
+    ['a page size above the published bound', supplierCatalogJSON({ page_size: 501 })],
+    ['more items than the page size', supplierCatalogJSON({ page_size: 1, items: [batteryEntry(), batteryEntry({ variant_id: 9 })] })],
+    ['items that are not an array', supplierCatalogJSON({ items: {} })],
+    ['an extra item field', supplierCatalogJSON({ items: [batteryEntry({ existing: 14 })] })],
+    ['a missing catalogue entry', supplierCatalogJSON({ items: [{ variant_id: 4, kind: 'battery', name: 'TOYO · NS40ZL',
+      detail: '35 Ah · L', battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null }] })],
+    ['a zero catalogue entry', supplierCatalogJSON({ items: [batteryEntry({ catalog_entry_id: 0 })] })],
+    ['a repeated variant', supplierCatalogJSON({ items: [batteryEntry(), batteryEntry()] })],
+    ['a row of the other kind', supplierCatalogJSON({ items: [productEntry()] })],
+    ['an unknown kind', supplierCatalogJSON({ items: [batteryEntry({ kind: 'gift' })] })],
+    ['a non JSON body', '<html>proxy</html>'],
+  ])('rejects a supplier catalogue with %s', (_, raw) => {
+    expect(() => parseSupplierCatalog(raw, 'battery')).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('admits only the variants of the chosen supplier catalogue into a draft', () => {
+    const items: readonly SupplierCatalogRow[] = parseSupplierCatalog(supplierCatalogJSON(), 'battery');
+    const offered = offeredStockEntryVariantIDs(items);
+    expect([...offered]).toEqual([4]);
+    // A line the supplier does not offer is named, so the screen can refuse it.
+    expect(unofferedStockEntryVariantIDs(offered, [4])).toEqual([]);
+    expect(unofferedStockEntryVariantIDs(offered, [4, 9])).toEqual([9]);
+    expect(stockSupplierNoOffers).toBe('Este proveedor no tiene productos asignados. Asigná sus productos en Catálogo → Proveedores y volvé a intentar.');
+  });
+
+  it('admits only the exact supplier read error code for each status', () => {
+    expect(parseStockSupplierError('{"error":"invalid_request"}', 400)).toBe('invalid_request');
+    expect(parseStockSupplierError('{"error":"unauthenticated"}', 401)).toBe('unauthenticated');
+    expect(parseStockSupplierError('{"error":"forbidden"}', 403)).toBe('forbidden');
+    expect(parseStockSupplierError('{"error":"service_unavailable"}', 503)).toBe('service_unavailable');
+    for (const codes of stockSupplierAdmittedErrors.values()) {
+      expect(codes.length).toBeGreaterThan(0);
+    }
+    for (const [raw, status] of [
+      ['{"error":"not_found"}', 404], ['{"error":"retry_conflict"}', 409],
+      ['{"error":"forbidden","detail":"x"}', 403], ['<html>proxy</html>', 503],
+    ] as const) {
+      expect(() => parseStockSupplierError(raw, status)).toThrow('Respuesta inválida del servidor.');
+    }
+  });
+});
+
 describe('stock counter-entry contract', () => {
   const reversible = (overrides: Partial<StockEntryHistoryRow> = {}): StockEntryHistoryRow => ({
-    id: 7, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', lines: 2, total_units: 18,
+    id: 7, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', supplier: null, lines: 2, total_units: 18,
     reversed_by: null, ...overrides });
   const counterJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     id: 9, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-11-04T14:21:00Z',
-    lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18, ...overrides });
+    supplier, lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18, ...overrides });
 
   it('canonicalizes the mandatory reason and keeps the exact payload', () => {
     expect(canonicalStockEntryReversalInput({ operation_key: 'warehouse_key_0001', reason: '  error de carga  ' }))
@@ -350,7 +563,7 @@ describe('stock counter-entry contract', () => {
   it('parses a counter-entry with negative lines and a negative total', () => {
     const record = parseStockEntryReversalRecord(counterJSON());
     expect(record).toEqual({ id: 9, location_id: 1, note: '', created_by_account_id: 1,
-      created_at: '2026-11-04T14:21:00Z',
+      created_at: '2026-11-04T14:21:00Z', supplier,
       lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18 });
     expect(Object.isFrozen(record)).toBe(true);
     expect(Object.isFrozen(record.lines)).toBe(true);
@@ -439,7 +652,7 @@ describe('stock ingress detail contract', () => {
   const detailJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     id: 6, location_id: 1, note: 'Remito 0002-00045871', created_at: '2026-11-04T14:20:00Z',
     created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
-    lines: [batteryLine()], total_units: 18, ...overrides });
+    supplier, lines: [batteryLine()], total_units: 18, ...overrides });
 
   it('builds the frozen detail path and admits only a canonical document id', () => {
     expect(stockEntryDetailPath(6)).toBe('/api/stock-entries/6');
@@ -456,7 +669,7 @@ describe('stock ingress detail contract', () => {
     }));
     expect(detail).toEqual({ id: 6, location_id: 1, note: 'Remito 0002-00045871',
       created_at: '2026-11-04T14:20:00Z', created_by_account_id: 1, reverses_entry_id: null,
-      reversed_by: null, reason: '',
+      reversed_by: null, reason: '', supplier,
       lines: [
         { variant_id: 7, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
           battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null, quantity: 3 },
@@ -478,6 +691,15 @@ describe('stock ingress detail contract', () => {
     expect(Object.isFrozen(detail.lines[0])).toBe(true);
   });
 
+  it('reads the supplier of a document and the null of a historical one', () => {
+    expect(parseStockEntryDetail(detailJSON()).supplier).toEqual({ id: 3, name: 'Proveedor del norte' });
+    expect(parseStockEntryDetail(detailJSON({ supplier: null })).supplier).toBeNull();
+    const counter = parseStockEntryDetail(detailJSON({ id: 10, note: '', reverses_entry_id: 6,
+      reason: 'error de carga', lines: [batteryLine({ quantity: -18 })], total_units: -18 }));
+    // The counter-entry repeats the supplier of its original, never a new one.
+    expect(counter.supplier).toEqual({ id: 3, name: 'Proveedor del norte' });
+  });
+
   it('parses a reversed document and its counter-entry cross-references', () => {
     const reversed = parseStockEntryDetail(detailJSON({ reversed_by: 10 }));
     expect(reversed.reversed_by).toBe(10);
@@ -497,7 +719,11 @@ describe('stock ingress detail contract', () => {
   it.each([
     ['an extra header field', detailJSON({ location_name: 'Almacén' })],
     ['a missing header field', JSON.stringify({ id: 6, location_id: 1, note: '', created_at: '2026-11-04T14:20:00Z',
-      created_by_account_id: 1, reverses_entry_id: null, reason: '', lines: [batteryLine()], total_units: 18 })],
+      created_by_account_id: 1, reverses_entry_id: null, reason: '', supplier, lines: [batteryLine()], total_units: 18 })],
+    ['a header without a supplier key', JSON.stringify({ id: 6, location_id: 1, note: '', created_at: '2026-11-04T14:20:00Z',
+      created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '', lines: [batteryLine()], total_units: 18 })],
+    ['a supplier with an extra key', detailJSON({ supplier: { ...supplier, retired: true } })],
+    ['a supplier name over 64 characters', detailJSON({ supplier: { id: 3, name: 'n'.repeat(65) } })],
     ['a zero document id', detailJSON({ id: 0 })],
     ['an unsafe document id', detailJSON({ id: 9007199254740992 })],
     ['a document of another location', detailJSON({ location_id: 2 })],
@@ -549,6 +775,13 @@ describe('stock ingress detail contract', () => {
     expect(() => parseStockEntryDetail(raw)).toThrow('Respuesta inválida del servidor.');
   });
 
+  it('matches the sent payload only when the response repeats its supplier', () => {
+    const sent = draft({ supplier_id: 3, lines: [{ variant_id: 4, quantity: 2 }] });
+    const record = parseStockEntryRecord(recordJSON());
+    expect(matchesStockEntryInput(sent, record)).toBe(true);
+    expect(matchesStockEntryInput({ ...sent, supplier_id: 4 }, record)).toBe(false);
+  });
+
   it('admits only the exact detail error code for each status', () => {
     expect(parseStockEntryDetailError('{"error":"invalid_request"}', 400)).toBe('invalid_request');
     expect(parseStockEntryDetailError('{"error":"unauthenticated"}', 401)).toBe('unauthenticated');
@@ -574,5 +807,71 @@ describe('stock ingress detail contract', () => {
     expect(stockEntryDetailErrorMessages.not_found).toContain('no existe');
     expect(stockEntryDetailErrorMessages.network).toContain('No se pudo conectar');
     expect(stockEntryDetailErrorMessages.aborted).toContain('Se interrumpió');
+  });
+});
+
+describe('supplier catalogue grouping', () => {
+  const battery = (variant: number, entry: number, brand: string, model: string, capacity = '35',
+    polarity: 'L' | 'R' = 'L'): SupplierCatalogRow => ({
+    variant_id: variant, catalog_entry_id: entry, kind: 'battery', name: `${brand} · ${model}`,
+    detail: `${capacity} Ah · ${polarity}`,
+    battery: { brand, model, capacity_ah: capacity, polarity }, fields: null });
+  const product = (variant: number, entry: number, name: string, detail: string): SupplierCatalogRow => ({
+    variant_id: variant, catalog_entry_id: entry, kind: 'other', name, detail, battery: null, fields: null });
+  const items: readonly SupplierCatalogRow[] = [
+    battery(4, 11, 'TOYO', 'NS40ZL'), battery(5, 11, 'TOYO', 'NS40ZL', '35', 'R'),
+    battery(8, 12, 'TOYO', 'NS60L', '45'), battery(9, 12, 'TOYO', 'NS60L', '45', 'R'),
+    battery(21, 21, 'WILLARD', '55D23L', '50'), battery(22, 21, 'WILLARD', '55D23L', '50', 'R'),
+  ];
+
+  it('groups by brand with one product per catalogue entry, not one per polarity', () => {
+    const groups = groupSupplierCatalog(items);
+    expect(groups.map(group => ({ key: group.key, label: group.label })))
+      .toEqual([{ key: 'brand:TOYO', label: 'TOYO' }, { key: 'brand:WILLARD', label: 'WILLARD' }]);
+    // 6 variants of 3 products are 3 rows: a product never repeats for its polarity.
+    expect(supplierCatalogProductCount(groups)).toBe(3);
+    expect(groups[0].products.map(entry => entry.catalog_entry_id)).toEqual([11, 12]);
+    expect(groups[0].products[0]).toMatchObject({ name: 'NS40ZL', detail: '35 Ah' });
+    expect(groups[0].products[0].variants.map(variant => variant.variant_id)).toEqual([4, 5]);
+    expect(groups[0].products[1].variants.map(variant => variant.variant_id)).toEqual([8, 9]);
+    expect(Object.isFrozen(groups)).toBe(true);
+    expect(Object.isFrozen(groups[0].products)).toBe(true);
+    expect(Object.isFrozen(groups[0].products[0].variants)).toBe(true);
+  });
+
+  it('collects every other product in the single Otros productos group', () => {
+    const groups = groupSupplierCatalog([
+      product(210, 97, 'Agua acidulada', 'volumen en L: 5 L'),
+      product(211, 98, 'Guantes de nitrilo', 'presentación: pack x12'),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ key: 'other', label: stockEntryOtherGroupLabel });
+    expect(groups[0].products.map(entry => entry.name)).toEqual(['Agua acidulada', 'Guantes de nitrilo']);
+    // A product of another kind keeps its own name and detail as its row.
+    expect(groups[0].products[1]).toMatchObject({ detail: 'presentación: pack x12' });
+    expect(supplierCatalogProductCount(groups)).toBe(2);
+    expect(groupSupplierCatalog([])).toEqual([]);
+  });
+
+  it('adds up the units the draft holds per product and per brand', () => {
+    const groups = groupSupplierCatalog(items);
+    const units = new Map([[4, 3], [5, 2], [8, 1], [21, 7]]);
+    expect(supplierCatalogProductDraftUnits(groups[0].products[0], units)).toBe(5);
+    expect(supplierCatalogProductDraftUnits(groups[0].products[1], units)).toBe(1);
+    expect(supplierCatalogGroupDraftUnits(groups[0], units)).toBe(6);
+    expect(supplierCatalogGroupDraftUnits(groups[1], units)).toBe(7);
+    expect(supplierCatalogGroupDraftUnits(groups[1], new Map())).toBe(0);
+  });
+
+  it('finds the brand group of a variant so the screen opens where the work is', () => {
+    const groups = groupSupplierCatalog(items);
+    expect(supplierCatalogGroupKeyOf(groups, 9)).toBe('brand:TOYO');
+    expect(supplierCatalogGroupKeyOf(groups, 22)).toBe('brand:WILLARD');
+    expect(supplierCatalogGroupKeyOf(groups, 999)).toBeNull();
+  });
+
+  it('keeps the copy of the grouping free of the internal word for variants', () => {
+    expect(stockEntryOtherGroupLabel).toBe('Otros productos');
+    expect(stockEntryOtherGroupLabel).not.toMatch(/variante/i);
   });
 });

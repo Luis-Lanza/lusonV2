@@ -21,6 +21,7 @@ import (
 	"luson/api/internal/sales"
 	"luson/api/internal/stockadjustments"
 	"luson/api/internal/stockentries"
+	"luson/api/internal/suppliers"
 	"luson/api/internal/transfers"
 	"luson/api/internal/webui"
 	"net"
@@ -152,6 +153,13 @@ func run() (result error) {
 	// stores the vertical already uses, it owns only its own path, and every composed surface
 	// keeps its exact behavior.
 	api, err = httpapi.NewWithMetrics(api, service, httpCfg, purchaseStore, closingStore)
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The warehouse supplier administration mounts last: it owns only its own path, it is
+	// the only surface that writes a supplier and its offer set, and every composed surface
+	// keeps its exact behavior.
+	api, err = httpapi.NewWithSuppliers(api, service, httpCfg, suppliers.New(pool))
 	if err != nil {
 		return errors.New("API initialization failed")
 	}

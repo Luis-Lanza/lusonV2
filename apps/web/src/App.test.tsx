@@ -46,6 +46,25 @@ function setup(current: unknown = anonymous, override?: (url: string, init: Requ
     if (url.endsWith('/login')) { current = session; return Promise.resolve(response(session)); }
     if (url.endsWith('/logout')) { current = anonymous; return Promise.resolve(new Response(null, { status: 204 })); }
     if (url.endsWith('/metadata')) return Promise.resolve(response(metadata));
+    // The ingress screen chooses a supplier first and then reads only that
+    // supplier's catalogue: the list and the catalogue of one supplier, never the
+    // whole inventory catalogue.
+    if (url.startsWith('/api/suppliers?')) {
+      const params = new URL(url, 'http://localhost').searchParams;
+      return Promise.resolve(new Response(JSON.stringify({ total_suppliers: 1, page: Number(params.get('page') ?? '1'),
+        page_size: Number(params.get('page_size') ?? '50'),
+        suppliers: [{ id: 3, name: 'Proveedor del norte', contact: '', retired: false,
+          kinds: ['battery', 'other'], offers: 4 }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
+    if (/^\/api\/suppliers\/\d+\/catalog\?/.test(url)) {
+      const params = new URL(url, 'http://localhost').searchParams;
+      return Promise.resolve(new Response(JSON.stringify({ page_size: 50,
+        items: [{ variant_id: 4, catalog_entry_id: 1, kind: params.get('kind') ?? 'battery',
+          name: 'TOYO · NS40ZL', detail: '6.5 Ah · L',
+          battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '6.5', polarity: 'L' }, fields: null }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }
     if (!url.startsWith('/api/inventory?')) throw new Error('Unexpected mocked URL: ' + url);
     const params = new URL(url, 'http://localhost').searchParams;
     const location = metadata.locations.find(l => String(l.id) === params.get('location_id')) ?? identity.location;
@@ -1690,12 +1709,20 @@ describe('stock ingress section', () => {
     expect(window.location.hash).toBe('#/ingresos');
     expect(screen.getByText('Luson Ingresos')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
-    // The screen asks what is arriving first: no catalog is read until the kind is
-    // chosen, and the read that follows carries that kind.
-    expect(mock.mock.calls.some(([url]) => String(url).includes('page_size=50'))).toBe(false);
+    // The screen asks who brings the merchandise first: the supplier strip is the
+    // only read, and no catalogue is read until a supplier is chosen. The strip is
+    // compact because the supplier is a native select, not a list of buttons.
+    const supplierStep = screen.getByRole('region', { name: 'Contexto del documento' });
+    const supplierSelect = await within(supplierStep).findByLabelText('Proveedor') as HTMLSelectElement;
+    const supplierOption = await within(supplierSelect).findByRole('option', { name: /^Proveedor del norte/ }) as HTMLOptionElement;
+    expect(mock.mock.calls.some(([url]) => String(url) === '/api/suppliers?page=1&page_size=50')).toBe(true);
+    expect(mock.mock.calls.some(([url]) => String(url).includes('/catalog?'))).toBe(false);
+    fireEvent.change(supplierSelect, { target: { value: supplierOption.value } });
     fireEvent.click(screen.getByRole('button', { name: /^Baterías/ }));
-    await waitFor(() => expect(mock.mock.calls.some(([url]) => String(url).includes('page_size=50')
-      && String(url).includes('location_id=1') && String(url).includes('kind=battery'))).toBe(true));
+    // The picker is the catalogue of that supplier, read with the chosen kind, and
+    // the whole inventory catalogue is never consulted for it.
+    await waitFor(() => expect(mock.mock.calls.some(([url]) => String(url) === '/api/suppliers/3/catalog?kind=battery')).toBe(true));
+    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/inventory') && String(url).includes('kind=battery'))).toBe(false);
     expect(mock.mock.calls.some(([url]) => String(url) === '/api/stock-entries')).toBe(false);
   });
   it('hides Ingresos from a branch identity and falls back from a typed hash to inventory', async () => {

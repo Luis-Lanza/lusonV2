@@ -26,14 +26,20 @@ import (
 	"luson/api/internal/transfers"
 )
 
-const validStockEntryJSON = `{"operation_key":"http-stock-entry-key-01","note":"compra de proveedor","lines":[{"variant_id":2,"quantity":3},{"variant_id":1,"quantity":1}]}`
+// stockEntrySupplierName is the name of the supplier the HTTP fixture seeds for
+// every document. A fresh database starts the supplier identity at 1 and the
+// fixture refuses to run otherwise, so the request bodies below can state the id
+// they write.
+const stockEntrySupplierName = "Proveedor Central"
+
+const validStockEntryJSON = `{"operation_key":"http-stock-entry-key-01","supplier_id":1,"note":"compra de proveedor","lines":[{"variant_id":2,"quantity":3},{"variant_id":1,"quantity":1}]}`
 
 func stockEntryCart(n, quantity int) string {
 	lines := make([]string, n)
 	for i := range lines {
 		lines[i] = fmt.Sprintf(`{"variant_id":%d,"quantity":%d}`, n-i, quantity)
 	}
-	return `{"operation_key":"http-stock-entry-key-02","lines":[` + strings.Join(lines, ",") + `]}`
+	return `{"operation_key":"http-stock-entry-key-02","supplier_id":1,"lines":[` + strings.Join(lines, ",") + `]}`
 }
 
 func TestStockEntryDecoder(t *testing.T) {
@@ -42,8 +48,10 @@ func TestStockEntryDecoder(t *testing.T) {
 		for _, body := range []string{
 			validStockEntryJSON,
 			" \n" + validStockEntryJSON + " \n",
-			`{"operation_key":"http-stock-entry-key-01","lines":[{"variant_id":1,"quantity":1000000}]}`,
-			`{"lines":[{"variant_id":1,"quantity":1}],"operation_key":"http-stock-entry-key-01"}`,
+			`{"operation_key":"http-stock-entry-key-01","supplier_id":1,"lines":[{"variant_id":1,"quantity":1000000}]}`,
+			`{"lines":[{"variant_id":1,"quantity":1}],"supplier_id":1,"operation_key":"http-stock-entry-key-01"}`,
+			// The supplier is a canonical positive integer up to the bigint bound.
+			replace(`"supplier_id":1`, `"supplier_id":9223372036854775807`),
 			replace(`"http-stock-entry-key-01"`, strconv.Quote(strings.Repeat("a", 128))),
 			replace(`"compra de proveedor"`, strconv.Quote(strings.Repeat("ñ", 500))),
 		} {
@@ -73,6 +81,16 @@ func TestStockEntryDecoder(t *testing.T) {
 		"nested_casefold":          replace(`"quantity":`, `"Quantity":`),
 		"nested_unknown":           replace(`"quantity":`, `"location_id":1,"quantity":`),
 		"missing_key":              replace(`"operation_key":"http-stock-entry-key-01",`, ``),
+		"missing_supplier":         replace(`"supplier_id":1,`, ``),
+		"string_supplier":          replace(`"supplier_id":1`, `"supplier_id":"1"`),
+		"zero_supplier":            replace(`"supplier_id":1`, `"supplier_id":0`),
+		"negative_supplier":        replace(`"supplier_id":1`, `"supplier_id":-1`),
+		"padded_supplier":          replace(`"supplier_id":1`, `"supplier_id":01`),
+		"float_supplier":           replace(`"supplier_id":1`, `"supplier_id":1.0`),
+		"exponent_supplier":        replace(`"supplier_id":1`, `"supplier_id":1e0`),
+		"null_supplier":            replace(`"supplier_id":1`, `"supplier_id":null`),
+		"duplicate_supplier":       replace(`"supplier_id":1`, `"supplier_id":1,"supplier_id":1`),
+		"supplier_overflow":        replace(`"supplier_id":1`, `"supplier_id":9223372036854775808`),
 		"missing_lines":            replace(`,"lines":[{"variant_id":2,"quantity":3},{"variant_id":1,"quantity":1}]`, ``),
 		"null_key":                 replace(`"http-stock-entry-key-01"`, `null`),
 		"null_note":                replace(`"compra de proveedor"`, `null`),
@@ -167,6 +185,7 @@ func TestStockEntryRecord(t *testing.T) {
 	valid := stockentries.Entry{
 		ID: 7, LocationID: 1, Note: "compra", CreatedByAccountID: 1,
 		CreatedAt:  time.Date(2026, 2, 3, 4, 5, 6, 789, time.UTC),
+		Supplier:   &stockentries.Supplier{ID: 3, Name: "Proveedor Central"},
 		Lines:      []stockentries.EntryLine{{VariantID: 1, Quantity: 2}, {VariantID: 3, Quantity: 4}},
 		TotalUnits: 6,
 	}
@@ -178,6 +197,15 @@ func TestStockEntryRecord(t *testing.T) {
 		dto.CreatedByAccountID != 1 || dto.TotalUnits != 6 || len(dto.Lines) != 2 ||
 		dto.Lines[0].VariantID != 1 || dto.Lines[1].Quantity != 4 {
 		t.Fatal("record does not match the frozen contract")
+	}
+	if dto.Supplier == nil || dto.Supplier.ID != 3 || dto.Supplier.Name != "Proveedor Central" {
+		t.Fatal("record does not carry the supplier of the document")
+	}
+	// A historical document has no supplier and is still a valid record.
+	historical := valid
+	historical.Supplier = nil
+	if record, err := stockEntryRecord(historical); err != nil || record.Supplier != nil {
+		t.Fatal("a document without a supplier must stay readable as null")
 	}
 	for name, change := range map[string]func(*stockentries.Entry){
 		"zero_id":          func(e *stockentries.Entry) { e.ID = 0 },
@@ -191,9 +219,19 @@ func TestStockEntryRecord(t *testing.T) {
 		"wrong_total":      func(e *stockentries.Entry) { e.TotalUnits = 7 },
 		"long_note":        func(e *stockentries.Entry) { e.Note = strings.Repeat("a", 501) },
 		"nul_note":         func(e *stockentries.Entry) { e.Note = "a\x00b" },
+		"supplier_zero_id": func(e *stockentries.Entry) { e.Supplier = &stockentries.Supplier{ID: 0, Name: "Proveedor"} },
+		"supplier_negative": func(e *stockentries.Entry) {
+			e.Supplier = &stockentries.Supplier{ID: -1, Name: "Proveedor"}
+		},
+		"supplier_blank_name": func(e *stockentries.Entry) { e.Supplier = &stockentries.Supplier{ID: 1} },
+		"supplier_long_name": func(e *stockentries.Entry) {
+			e.Supplier = &stockentries.Supplier{ID: 1, Name: strings.Repeat("a", 65)}
+		},
+		"supplier_nul_name": func(e *stockentries.Entry) { e.Supplier = &stockentries.Supplier{ID: 1, Name: "Pro\x00veedor"} },
 	} {
 		entry := valid
 		entry.Lines = append([]stockentries.EntryLine(nil), valid.Lines...)
+		entry.Supplier = &stockentries.Supplier{ID: 3, Name: "Proveedor Central"}
 		change(&entry)
 		if _, err := stockEntryRecord(entry); err != stockentries.ErrUnavailable {
 			t.Fatalf("%s must not reach the wire", name)
@@ -282,6 +320,20 @@ func stockEntryFixture(t *testing.T) *stockEntryHTTPFixture {
 	if bootstrap.Provision(ctx, p, credentials) != nil {
 		t.Fatal("stock entry HTTP test provisioning failed")
 	}
+	// Every document of these tests names this supplier, and a fresh database
+	// starts the supplier identity at 1. Its offers cover every catalogue entry
+	// that exists now; a test that adds a product offers it explicitly.
+	var supplier int64
+	if err := p.QueryRow(ctx, "INSERT INTO suppliers(name) VALUES($1) RETURNING id", stockEntrySupplierName).Scan(&supplier); err != nil {
+		t.Fatal("stock entry supplier fixture setup failed")
+	}
+	if supplier != 1 {
+		t.Fatalf("the first supplier must be the fixture supplier: got %d", supplier)
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO supplier_offers(supplier_id,catalog_entry_id)
+ SELECT $1::bigint,id FROM catalog_entries WHERE deleted_at IS NULL`, supplier); err != nil {
+		t.Fatal("stock entry supplier offer fixture setup failed")
+	}
 	// These fixtures model operators who completed their initial password change.
 	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
 		t.Fatal("stock entry HTTP operational fixture setup failed")
@@ -316,6 +368,30 @@ func (f *stockEntryHTTPFixture) stock(t *testing.T) string {
 		t.Fatal("stock entry snapshot failed")
 	}
 	return data
+}
+
+// supplier inserts one supplier and offers it the catalogue entry of each given
+// variant, exactly like the supplier routes write them.
+func (f *stockEntryHTTPFixture) supplier(t *testing.T, name string, variants ...int64) int64 {
+	t.Helper()
+	var id int64
+	if err := f.p.QueryRow(f.ctx, "INSERT INTO suppliers(name) VALUES($1) RETURNING id", name).Scan(&id); err != nil {
+		t.Fatal("supplier fixture setup failed")
+	}
+	for _, variant := range variants {
+		f.offer(t, id, variant)
+	}
+	return id
+}
+
+// offer assigns the catalogue entry of one variant to a supplier: an offer is
+// entry-level, so a variant id is enough to state it.
+func (f *stockEntryHTTPFixture) offer(t *testing.T, supplier, variant int64) {
+	t.Helper()
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO supplier_offers(supplier_id,catalog_entry_id)
+ SELECT $1::bigint,v.catalog_entry_id FROM catalog_variants v WHERE v.id=$2::bigint`, supplier, variant); err != nil {
+		t.Fatalf("supplier offer fixture setup failed: %v", err)
+	}
 }
 
 func (f *stockEntryHTTPFixture) request(actor int, verb, path, body string) *http.Request {
@@ -358,10 +434,10 @@ func stockEntryObject(t *testing.T, w *httptest.ResponseRecorder, status int) ma
 	if w.Code != status || w.Header().Get("Content-Type") != "application/json" || json.Unmarshal(w.Body.Bytes(), &value) != nil {
 		t.Fatalf("stock entry JSON response mismatch: status=%d want=%d", w.Code, status)
 	}
-	if len(value) != 7 {
+	if len(value) != 8 {
 		t.Fatal("document whitelist changed")
 	}
-	for _, key := range []string{"id", "location_id", "note", "created_by_account_id", "created_at", "lines", "total_units"} {
+	for _, key := range []string{"id", "location_id", "note", "supplier", "created_by_account_id", "created_at", "lines", "total_units"} {
 		if value[key] == nil {
 			t.Fatalf("document whitelist incomplete: %s", key)
 		}
@@ -380,6 +456,13 @@ func TestStockEntryHTTPSuccess(t *testing.T) {
 		len(document.Lines) != 2 || document.Lines[0].VariantID != 1 || document.Lines[0].Quantity != 1 ||
 		document.Lines[1].VariantID != 2 || document.Lines[1].Quantity != 3 {
 		t.Fatal("created document does not match the frozen contract")
+	}
+	// The response carries the supplier the document was written with.
+	if document.Supplier == nil || document.Supplier.ID != 1 || document.Supplier.Name != stockEntrySupplierName {
+		t.Fatal("the created document must carry its supplier")
+	}
+	if string(value["supplier"]) != `{"id":1,"name":"`+stockEntrySupplierName+`"}` {
+		t.Fatalf("supplier framing changed: %s", value["supplier"])
 	}
 	if stamp, err := time.Parse(time.RFC3339, document.CreatedAt); err != nil || stamp.UTC().Format(time.RFC3339) != document.CreatedAt {
 		t.Fatal("created_at is not RFC3339")
@@ -401,7 +484,7 @@ func TestStockEntryHTTPSuccess(t *testing.T) {
 	}
 	// An identical replay is 200 with the same document and no new writes.
 	replayed := f.stock(t)
-	w = f.serve(t, f.request(1, "POST", "/api/stock-entries", `{"lines":[{"variant_id":1,"quantity":1},{"variant_id":2,"quantity":3}],"note":"compra de proveedor","operation_key":"http-stock-entry-key-01"}`))
+	w = f.serve(t, f.request(1, "POST", "/api/stock-entries", `{"supplier_id":1,"lines":[{"variant_id":1,"quantity":1},{"variant_id":2,"quantity":3}],"note":"compra de proveedor","operation_key":"http-stock-entry-key-01"}`))
 	stockEntryObject(t, w, 200)
 	var replay stockEntryDTO
 	if json.Unmarshal(w.Body.Bytes(), &replay) != nil || replay.ID != document.ID ||
@@ -438,6 +521,9 @@ func TestStockEntryHTTPRejections(t *testing.T) {
 		"unknown_field":     strings.Replace(validStockEntryJSON, `"note":`, `"location_id":1,"note":`, 1),
 		"duplicate_key":     strings.Replace(validStockEntryJSON, `"note":`, `"note":"a","note":`, 1),
 		"missing_key":       strings.Replace(validStockEntryJSON, `"operation_key":"http-stock-entry-key-01",`, ``, 1),
+		"missing_supplier":  strings.Replace(validStockEntryJSON, `"supplier_id":1,`, ``, 1),
+		"zero_supplier":     strings.Replace(validStockEntryJSON, `"supplier_id":1`, `"supplier_id":0`, 1),
+		"string_supplier":   strings.Replace(validStockEntryJSON, `"supplier_id":1`, `"supplier_id":"1"`, 1),
 		"short_key":         strings.Replace(validStockEntryJSON, `"http-stock-entry-key-01"`, `"short"`, 1),
 		"empty_lines":       strings.Replace(validStockEntryJSON, `[{"variant_id":2,"quantity":3},{"variant_id":1,"quantity":1}]`, `[]`, 1),
 		"duplicate_variant": strings.Replace(validStockEntryJSON, `{"variant_id":1,"quantity":1}`, `{"variant_id":2,"quantity":1}`, 1),
@@ -466,6 +552,8 @@ func TestStockEntryHTTPReplayConflict(t *testing.T) {
 	for name, body := range map[string]string{
 		"note":     strings.Replace(validStockEntryJSON, "compra de proveedor", "otra nota", 1),
 		"quantity": strings.Replace(validStockEntryJSON, `"quantity":3`, `"quantity":4`, 1),
+		// The supplier is part of the canonical payload, exactly like the note.
+		"supplier": strings.Replace(validStockEntryJSON, `"supplier_id":1`, `"supplier_id":999999`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			f.rejected(t, f.request(1, "POST", "/api/stock-entries", body), 409, "retry_conflict")
@@ -476,8 +564,56 @@ func TestStockEntryHTTPReplayConflict(t *testing.T) {
 	}
 }
 
+// A new ingress document always names a supplier the warehouse can still use, and
+// every line must belong to an entry that supplier offers. Each refusal is the
+// wire code of its own rule and writes nothing.
+func TestStockEntryHTTPSupplierRejections(t *testing.T) {
+	f := stockEntryFixture(t)
+	// An unknown supplier is a decision conflict, never a second document.
+	f.rejected(t, f.request(1, "POST", "/api/stock-entries",
+		`{"operation_key":"http-supplier-unknown-01","supplier_id":999999,"lines":[{"variant_id":1,"quantity":1}]}`), 409, "decision_conflict")
+	// A retired supplier cannot admit a new document either.
+	retired := f.supplier(t, "Proveedor Retirado", 1)
+	if _, err := f.p.Exec(f.ctx, "UPDATE suppliers SET deleted_at=now() WHERE id=$1", retired); err != nil {
+		t.Fatal("supplier retirement setup failed")
+	}
+	f.rejected(t, f.request(1, "POST", "/api/stock-entries",
+		fmt.Sprintf(`{"operation_key":"http-supplier-retired-01","supplier_id":%d,"lines":[{"variant_id":1,"quantity":1}]}`, retired)), 409, "decision_conflict")
+	// A line of an entry the supplier does not offer is a rejected payload, and
+	// the offered line beside it is not written either.
+	partial := f.supplier(t, "Proveedor Parcial", 1)
+	existingOne, reservedOne := f.balance(t, 1, 1)
+	existingThree, reservedThree := f.balance(t, 1, 3)
+	for name, body := range map[string]string{
+		"not_offered": fmt.Sprintf(`{"operation_key":"http-supplier-offer-01","supplier_id":%d,"lines":[{"variant_id":3,"quantity":2}]}`, partial),
+		"mixed":       fmt.Sprintf(`{"operation_key":"http-supplier-offer-02","supplier_id":%d,"lines":[{"variant_id":1,"quantity":2},{"variant_id":3,"quantity":2}]}`, partial),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(1, "POST", "/api/stock-entries", body), 400, "invalid_request")
+		})
+	}
+	if got, reserved := f.balance(t, 1, 1); got != existingOne || reserved != reservedOne {
+		t.Fatal("a refused document must not move the offered balance")
+	}
+	if got, reserved := f.balance(t, 1, 3); got != existingThree || reserved != reservedThree {
+		t.Fatal("a refused document must not move the unoffered balance")
+	}
+	if n := f.count(t, "stock_entries"); n != 0 {
+		t.Fatal("a refused document must not persist a document")
+	}
+	if n := f.count(t, "stock_entry_lines"); n != 0 {
+		t.Fatal("a refused document must not persist a line")
+	}
+	// The same supplier still admits the entry it does offer, so the refusal is
+	// the offer and not the supplier.
+	document := f.create(t, fmt.Sprintf(`{"operation_key":"http-supplier-offered-01","supplier_id":%d,"lines":[{"variant_id":1,"quantity":1}]}`, partial))
+	if document.Supplier == nil || document.Supplier.ID != partial || document.Supplier.Name != "Proveedor Parcial" {
+		t.Fatal("the created document must carry its supplier")
+	}
+}
+
 // stockEntryHistoryWire admits only the frozen history shape: four page keys and
-// six summary keys per row, with no per-line detail anywhere.
+// seven summary keys per row, with no per-line detail anywhere.
 func stockEntryHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stockEntryHistoryWireDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -498,16 +634,28 @@ func stockEntryHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stockEntr
 	}
 	canonical := regexp.MustCompile(`^[1-9][0-9]*$`)
 	for _, row := range rows {
-		if len(row) != 6 {
+		if len(row) != 7 {
 			t.Fatal("history row whitelist changed")
 		}
-		for _, key := range []string{"id", "note", "created_at", "lines", "total_units", "reversed_by"} {
+		for _, key := range []string{"id", "note", "supplier", "created_at", "lines", "total_units", "reversed_by"} {
 			if _, ok := row[key]; !ok {
 				t.Fatalf("history row whitelist incomplete: %s", key)
 			}
 		}
 		if reversed := string(row["reversed_by"]); reversed != "null" && !canonical.MatchString(reversed) {
 			t.Fatal("reversed_by must be null or a canonical id")
+		}
+		// The supplier of a row is null or exactly an id and a non-blank name.
+		if supplier := string(row["supplier"]); supplier != "null" {
+			var value map[string]json.RawMessage
+			if json.Unmarshal(row["supplier"], &value) != nil || len(value) != 2 ||
+				!canonical.MatchString(string(value["id"])) {
+				t.Fatal("supplier must be null or an id and a name")
+			}
+			var name string
+			if json.Unmarshal(value["name"], &name) != nil || name == "" {
+				t.Fatal("supplier name is missing")
+			}
 		}
 	}
 	var page stockEntryHistoryWireDTO
@@ -528,16 +676,18 @@ type stockEntryHistoryWireDTO struct {
 }
 
 type stockEntryHistoryRowWireDTO struct {
-	ID         int64  `json:"id"`
-	Note       string `json:"note"`
-	CreatedAt  string `json:"created_at"`
-	Lines      int    `json:"lines"`
-	TotalUnits int64  `json:"total_units"`
-	ReversedBy *int64 `json:"reversed_by"`
+	ID         int64                  `json:"id"`
+	Note       string                 `json:"note"`
+	Supplier   *stockEntrySupplierDTO `json:"supplier"`
+	CreatedAt  string                 `json:"created_at"`
+	Lines      int                    `json:"lines"`
+	TotalUnits int64                  `json:"total_units"`
+	ReversedBy *int64                 `json:"reversed_by"`
 }
 
 // reverse persists a counter-entry exactly like the correction screen will, so
-// the history can be proven to expose it without a reversal route.
+// the history can be proven to expose it without a reversal route. It inherits
+// the supplier of its original, exactly like the store does.
 func (f *stockEntryHTTPFixture) reverse(t *testing.T, original int64, key, reason string, lines ...stockentries.Line) int64 {
 	t.Helper()
 	tx, err := f.p.BeginTx(f.ctx, pgx.TxOptions{})
@@ -546,8 +696,8 @@ func (f *stockEntryHTTPFixture) reverse(t *testing.T, original int64, key, reaso
 	}
 	defer tx.Rollback(context.WithoutCancel(f.ctx))
 	var id int64
-	if err := tx.QueryRow(f.ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,created_by_account_id)
- VALUES($1,1,'',$2,$3,1) RETURNING id`, key, original, reason).Scan(&id); err != nil {
+	if err := tx.QueryRow(f.ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,created_by_account_id,supplier_id)
+ VALUES($1,1,'',$2,$3,1,(SELECT supplier_id FROM stock_entries WHERE id=$2)) RETURNING id`, key, original, reason).Scan(&id); err != nil {
 		t.Fatalf("counter-entry insert failed: %v", err)
 	}
 	for _, line := range lines {
@@ -572,9 +722,9 @@ func TestStockEntryHTTPHistory(t *testing.T) {
 	}
 	ids := make([]int64, 0, 3)
 	for i, body := range []string{
-		`{"operation_key":"http-history-key-0001","note":"Remito 0001","lines":[{"variant_id":1,"quantity":3}]}`,
-		`{"operation_key":"http-history-key-0002","note":"Remito 0002-00045871","lines":[{"variant_id":2,"quantity":14},{"variant_id":1,"quantity":4}]}`,
-		`{"operation_key":"http-history-key-0003","lines":[{"variant_id":2,"quantity":1}]}`,
+		`{"operation_key":"http-history-key-0001","supplier_id":1,"note":"Remito 0001","lines":[{"variant_id":1,"quantity":3}]}`,
+		`{"operation_key":"http-history-key-0002","supplier_id":1,"note":"Remito 0002-00045871","lines":[{"variant_id":2,"quantity":14},{"variant_id":1,"quantity":4}]}`,
+		`{"operation_key":"http-history-key-0003","supplier_id":1,"lines":[{"variant_id":2,"quantity":1}]}`,
 	} {
 		w := f.serve(t, f.request(1, "POST", "/api/stock-entries", body))
 		var document stockEntryDTO
@@ -603,6 +753,12 @@ func TestStockEntryHTTPHistory(t *testing.T) {
 	if page.Entries[0].Note != "" || page.Entries[0].Lines != 1 || page.Entries[0].TotalUnits != 1 {
 		t.Fatal("an empty note and a single line must be summarized exactly")
 	}
+	// Every row carries the supplier of its own document.
+	for _, row := range page.Entries {
+		if row.Supplier == nil || row.Supplier.ID != 1 || row.Supplier.Name != stockEntrySupplierName {
+			t.Fatal("a history row must carry the supplier of its document")
+		}
+	}
 	// The list is a summary: a document's lines never appear here.
 	if body := f.serve(t, f.request(1, "GET", "/api/stock-entries", "")).Body.String(); strings.Contains(body, "variant_id") || strings.Contains(body, "location_id") {
 		t.Fatal("the history must never expose per-line or header detail")
@@ -623,6 +779,10 @@ func TestStockEntryHTTPHistory(t *testing.T) {
 	}
 	if original == nil || original.TotalUnits != 3 || original.ReversedBy == nil || *original.ReversedBy != counter {
 		t.Fatal("a reversed document must expose its counter-entry and keep its total")
+	}
+	// A counter-entry inherits the supplier of its original, so both rows agree.
+	if after.Entries[0].Supplier == nil || original.Supplier == nil || *after.Entries[0].Supplier != *original.Supplier {
+		t.Fatal("the counter-entry row must repeat the supplier of its original")
 	}
 	first := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries?page=1&page_size=10", "")))
 	if first.Page != 1 || first.PageSize != 10 || first.TotalEntries != 4 || len(first.Entries) != 4 {
@@ -715,8 +875,9 @@ func TestStockEntryPage(t *testing.T) {
 	counter := int64(9)
 	stamp := time.Date(2026, 11, 4, 14, 20, 0, 0, time.UTC)
 	valid := stockentries.EntryPage{Page: 1, PageSize: 25, TotalEntries: 2, Entries: []stockentries.EntrySummary{
-		{ID: 9, Note: "", CreatedAt: stamp, Lines: 1, TotalUnits: -2},
-		{ID: 7, Note: "Remito 0002", CreatedAt: stamp, Lines: 2, TotalUnits: 18, ReversedBy: &counter},
+		{ID: 9, Note: "", CreatedAt: stamp, Lines: 1, TotalUnits: -2, Supplier: &stockentries.Supplier{ID: 4, Name: "Proveedor Sur"}},
+		{ID: 7, Note: "Remito 0002", CreatedAt: stamp, Lines: 2, TotalUnits: 18, ReversedBy: &counter,
+			Supplier: &stockentries.Supplier{ID: 4, Name: "Proveedor Sur"}},
 	}}
 	dto, err := stockEntryPage(valid)
 	if err != nil {
@@ -729,12 +890,21 @@ func TestStockEntryPage(t *testing.T) {
 		dto.Entries[0].CreatedAt != "2026-11-04T14:20:00Z" {
 		t.Fatal("a counter-entry row changed shape")
 	}
+	if dto.Entries[0].Supplier == nil || dto.Entries[0].Supplier.ID != 4 || dto.Entries[0].Supplier.Name != "Proveedor Sur" {
+		t.Fatal("a row does not carry its supplier")
+	}
 	if dto.Entries[1].ReversedBy == nil || *dto.Entries[1].ReversedBy != 9 || dto.Entries[1].Lines != 2 {
 		t.Fatal("a reversed row changed shape")
 	}
 	clone := func() stockentries.EntryPage {
 		page := valid
 		page.Entries = append([]stockentries.EntrySummary(nil), valid.Entries...)
+		for i := range page.Entries {
+			if valid.Entries[i].Supplier != nil {
+				supplier := *valid.Entries[i].Supplier
+				page.Entries[i].Supplier = &supplier
+			}
+		}
 		return page
 	}
 	for name, change := range map[string]func(*stockentries.EntryPage){
@@ -754,6 +924,15 @@ func TestStockEntryPage(t *testing.T) {
 		"unsorted":          func(p *stockentries.EntryPage) { p.Entries[0], p.Entries[1] = p.Entries[1], p.Entries[0] },
 		"self_reversal":     func(p *stockentries.EntryPage) { p.Entries[0].ReversedBy = &p.Entries[0].ID },
 		"stale_reversal":    func(p *stockentries.EntryPage) { stale := int64(3); p.Entries[0].ReversedBy = &stale },
+		"supplier_zero_id": func(p *stockentries.EntryPage) {
+			p.Entries[0].Supplier = &stockentries.Supplier{ID: 0, Name: "Proveedor"}
+		},
+		"supplier_blank_name": func(p *stockentries.EntryPage) {
+			p.Entries[0].Supplier = &stockentries.Supplier{ID: 1}
+		},
+		"supplier_long_name": func(p *stockentries.EntryPage) {
+			p.Entries[0].Supplier = &stockentries.Supplier{ID: 1, Name: strings.Repeat("a", 65)}
+		},
 	} {
 		page := clone()
 		change(&page)
@@ -778,6 +957,26 @@ func (f *stockEntryHTTPFixture) count(t *testing.T, table string) int {
 		t.Fatal("count query failed")
 	}
 	return n
+}
+
+// countWhere is count with a fixed predicate of this fixture's own tables.
+func (f *stockEntryHTTPFixture) countWhere(t *testing.T, table, predicate string, args ...any) int {
+	t.Helper()
+	var n int
+	if f.p.QueryRow(f.ctx, "SELECT count(*) FROM "+table+" WHERE "+predicate, args...).Scan(&n) != nil {
+		t.Fatal("count query failed")
+	}
+	return n
+}
+
+// balance is one persisted warehouse balance.
+func (f *stockEntryHTTPFixture) balance(t *testing.T, location, variant int) (int64, int64) {
+	t.Helper()
+	var existing, reserved int64
+	if f.p.QueryRow(f.ctx, "SELECT existing,reserved FROM inventory_balances WHERE location_id=$1 AND variant_id=$2", location, variant).Scan(&existing, &reserved) != nil {
+		t.Fatal("balance read failed")
+	}
+	return existing, reserved
 }
 
 const validStockEntryReversalJSON = `{"operation_key":"http-reverse-key-0001","reason":"error de carga"}`
@@ -898,7 +1097,7 @@ func TestStockEntryHTTPReversal(t *testing.T) {
 	if f.p.QueryRow(f.ctx, "SELECT existing,reserved FROM inventory_balances WHERE location_id=1 AND variant_id=2").Scan(&ingressTwo, &reservedTwo) != nil {
 		t.Fatal("balance read failed")
 	}
-	original := f.create(t, `{"operation_key":"http-reversal-original-1","note":"Remito 0007","lines":[{"variant_id":1,"quantity":3},{"variant_id":2,"quantity":2}]}`)
+	original := f.create(t, `{"operation_key":"http-reversal-original-1","supplier_id":1,"note":"Remito 0007","lines":[{"variant_id":1,"quantity":3},{"variant_id":2,"quantity":2}]}`)
 	w := f.serve(t, f.request(1, "POST", reversalPath(original.ID), validStockEntryReversalJSON))
 	value := stockEntryObject(t, w, 201)
 	var counter stockEntryDTO
@@ -915,6 +1114,14 @@ func TestStockEntryHTTPReversal(t *testing.T) {
 	}
 	if string(value["total_units"]) != "-5" || string(value["note"]) != `""` {
 		t.Fatal("exact counter-entry framing changed")
+	}
+	// The counter-entry inherits the supplier of its original: the reversal body
+	// never carries one.
+	if counter.Supplier == nil || original.Supplier == nil || *counter.Supplier != *original.Supplier {
+		t.Fatal("the counter-entry must inherit the supplier of its original")
+	}
+	if n := f.countWhere(t, "stock_entries", "id=$1 AND supplier_id=1", counter.ID); n != 1 {
+		t.Fatal("the inherited supplier must be persisted with the counter-entry")
 	}
 	if stamp, err := time.Parse(time.RFC3339, counter.CreatedAt); err != nil || stamp.UTC().Format(time.RFC3339) != counter.CreatedAt {
 		t.Fatal("counter-entry created_at is not RFC3339")
@@ -964,7 +1171,7 @@ func TestStockEntryHTTPReversal(t *testing.T) {
 
 func TestStockEntryHTTPReversalRejections(t *testing.T) {
 	f := stockEntryFixture(t)
-	original := f.create(t, `{"operation_key":"http-reversal-refusal-1","lines":[{"variant_id":1,"quantity":2}]}`)
+	original := f.create(t, `{"operation_key":"http-reversal-refusal-1","supplier_id":1,"lines":[{"variant_id":1,"quantity":2}]}`)
 	path := reversalPath(original.ID)
 	f.rejected(t, f.request(0, "POST", path, validStockEntryReversalJSON), 401, "unauthenticated")
 	f.rejected(t, f.request(2, "POST", path, validStockEntryReversalJSON), 403, "forbidden")
@@ -1039,8 +1246,8 @@ func TestStockEntryHTTPReversalRejections(t *testing.T) {
 
 func TestStockEntryHTTPReversalConflicts(t *testing.T) {
 	f := stockEntryFixture(t)
-	first := f.create(t, `{"operation_key":"http-reversal-conflict-1","lines":[{"variant_id":1,"quantity":2}]}`)
-	second := f.create(t, `{"operation_key":"http-reversal-conflict-2","lines":[{"variant_id":2,"quantity":3}]}`)
+	first := f.create(t, `{"operation_key":"http-reversal-conflict-1","supplier_id":1,"lines":[{"variant_id":1,"quantity":2}]}`)
+	second := f.create(t, `{"operation_key":"http-reversal-conflict-2","supplier_id":1,"lines":[{"variant_id":2,"quantity":3}]}`)
 	w := f.serve(t, f.request(1, "POST", reversalPath(first.ID), validStockEntryReversalJSON))
 	stockEntryObject(t, w, 201)
 	var counter stockEntryDTO
@@ -1061,7 +1268,7 @@ func TestStockEntryHTTPReversalConflicts(t *testing.T) {
 
 func TestStockEntryHTTPReversalRejectsUncoveredStock(t *testing.T) {
 	f := stockEntryFixture(t)
-	original := f.create(t, `{"operation_key":"http-reversal-uncovered-1","lines":[{"variant_id":1,"quantity":2},{"variant_id":3,"quantity":4}]}`)
+	original := f.create(t, `{"operation_key":"http-reversal-uncovered-1","supplier_id":1,"lines":[{"variant_id":1,"quantity":2},{"variant_id":3,"quantity":4}]}`)
 	// The stock of the second line was consumed after the ingress.
 	if _, err := f.p.Exec(f.ctx, "UPDATE inventory_balances SET existing=reserved WHERE location_id=1 AND variant_id=3"); err != nil {
 		t.Fatal("consumption setup failed")
@@ -1073,19 +1280,19 @@ func TestStockEntryHTTPReversalRejectsUncoveredStock(t *testing.T) {
 	}
 }
 
-// stockEntryDetailWire admits only the frozen detail shape: ten header keys and
-// seven line keys (the variant identity plus the quantity), with no operation key,
-// cost, account or stored column outside the contract.
+// stockEntryDetailWire admits only the frozen detail shape: eleven header keys
+// and seven line keys (the variant identity plus the quantity), with no operation
+// key, cost, account or stored column outside the contract.
 func stockEntryDetailWire(t *testing.T, w *httptest.ResponseRecorder) stockEntryDetailDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
 		t.Fatalf("detail response mismatch: status=%d want=200", w.Code)
 	}
 	var top map[string]json.RawMessage
-	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 10 {
+	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 11 {
 		t.Fatal("detail whitelist changed")
 	}
-	for _, key := range []string{"id", "location_id", "note", "created_at", "created_by_account_id",
+	for _, key := range []string{"id", "location_id", "note", "supplier", "created_at", "created_by_account_id",
 		"reverses_entry_id", "reversed_by", "reason", "lines", "total_units"} {
 		if _, ok := top[key]; !ok {
 			t.Fatalf("detail whitelist incomplete: %s", key)
@@ -1203,6 +1410,37 @@ func (f *stockEntryHTTPFixture) foreignDocument(t *testing.T) int64 {
 
 func detailPath(id any) string { return fmt.Sprintf("/api/stock-entries/%v", id) }
 
+// historicalDocument persists one warehouse document exactly like the migration
+// before suppliers wrote it: only the supplier trigger is disabled for the window
+// of the insert, so the row keeps a NULL supplier while every other guard
+// (location admission, balances, line sign) still runs.
+func (f *stockEntryHTTPFixture) historicalDocument(t *testing.T) int64 {
+	t.Helper()
+	enable := func() {
+		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		_, _ = f.p.Exec(cleanup, "ALTER TABLE stock_entries ENABLE TRIGGER require_stock_entry_supplier")
+	}
+	t.Cleanup(enable)
+	if _, err := f.p.Exec(f.ctx, "ALTER TABLE stock_entries DISABLE TRIGGER require_stock_entry_supplier"); err != nil {
+		t.Fatal("historical document fixture setup failed")
+	}
+	var id int64
+	if err := f.p.QueryRow(f.ctx, `INSERT INTO stock_entries(operation_key,location_id,note,created_by_account_id)
+ VALUES('http-historical-entry-01',1,'ingreso historico',1) RETURNING id`).Scan(&id); err != nil {
+		enable()
+		t.Fatal("historical document insert failed")
+	}
+	for _, line := range []stockentries.Line{{VariantID: 1, Quantity: 2}, {VariantID: 2, Quantity: 3}} {
+		if _, err := f.p.Exec(f.ctx, "INSERT INTO stock_entry_lines(entry_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(line.VariantID), line.Quantity); err != nil {
+			enable()
+			t.Fatal("historical document line insert failed")
+		}
+	}
+	enable()
+	return id
+}
+
 // seedOtherProduct writes one other product exactly like the catalog route does:
 // a free name, one polarity-less variant that the balance fan-out stocks with
 // zero in every active location, and one typed field.
@@ -1231,8 +1469,9 @@ func seedOtherProduct(t *testing.T, ctx context.Context, p *pgxpool.Pool, name, 
 func TestStockEntryHTTPOtherProduct(t *testing.T) {
 	f := stockEntryFixture(t)
 	variant := seedOtherProduct(t, f.ctx, f.p, "Agua acidulada", "volumen en L", "L", "5")
+	f.offer(t, 1, variant)
 	w := f.serve(t, f.request(1, "POST", "/api/stock-entries",
-		fmt.Sprintf(`{"operation_key":"http-other-entry-key-01","note":"compra de proveedor","lines":[{"variant_id":%d,"quantity":6}]}`, variant)))
+		fmt.Sprintf(`{"operation_key":"http-other-entry-key-01","supplier_id":1,"note":"compra de proveedor","lines":[{"variant_id":%d,"quantity":6}]}`, variant)))
 	stockEntryObject(t, w, 201)
 	var document stockEntryDTO
 	if json.Unmarshal(w.Body.Bytes(), &document) != nil || document.ID < 1 || document.TotalUnits != 6 ||
@@ -1253,8 +1492,8 @@ func TestStockEntryHTTPOtherProduct(t *testing.T) {
 	}
 	// A document whose lines name both kinds is refused whole.
 	for name, lines := range map[string]string{
-		"battery_then_product": fmt.Sprintf(`{"operation_key":"http-other-mixed-key-01","lines":[{"variant_id":1,"quantity":2},{"variant_id":%d,"quantity":3}]}`, variant),
-		"product_then_battery": fmt.Sprintf(`{"operation_key":"http-other-mixed-key-02","lines":[{"variant_id":%d,"quantity":3},{"variant_id":1,"quantity":2}]}`, variant),
+		"battery_then_product": fmt.Sprintf(`{"operation_key":"http-other-mixed-key-01","supplier_id":1,"lines":[{"variant_id":1,"quantity":2},{"variant_id":%d,"quantity":3}]}`, variant),
+		"product_then_battery": fmt.Sprintf(`{"operation_key":"http-other-mixed-key-02","supplier_id":1,"lines":[{"variant_id":%d,"quantity":3},{"variant_id":1,"quantity":2}]}`, variant),
 	} {
 		t.Run(name, func(t *testing.T) {
 			f.rejected(t, f.request(1, "POST", "/api/stock-entries", lines), 400, "invalid_request")
@@ -1265,7 +1504,7 @@ func TestStockEntryHTTPOtherProduct(t *testing.T) {
 	}
 	// The same warehouse still admits the product alone, so the refusal is the
 	// mixing and not the product.
-	second := f.create(t, fmt.Sprintf(`{"operation_key":"http-other-entry-key-02","lines":[{"variant_id":%d,"quantity":1}]}`, variant))
+	second := f.create(t, fmt.Sprintf(`{"operation_key":"http-other-entry-key-02","supplier_id":1,"lines":[{"variant_id":%d,"quantity":1}]}`, variant))
 	if second.TotalUnits != 1 {
 		t.Fatal("a product-only document must still be admitted")
 	}
@@ -1273,7 +1512,7 @@ func TestStockEntryHTTPOtherProduct(t *testing.T) {
 
 func TestStockEntryHTTPDetail(t *testing.T) {
 	f := stockEntryFixture(t)
-	original := f.create(t, `{"operation_key":"http-detail-original-1","note":"Remito 0002-00045871","lines":[{"variant_id":9,"quantity":15},{"variant_id":4,"quantity":3}]}`)
+	original := f.create(t, `{"operation_key":"http-detail-original-1","supplier_id":1,"note":"Remito 0002-00045871","lines":[{"variant_id":9,"quantity":15},{"variant_id":4,"quantity":3}]}`)
 	w := f.serve(t, f.request(1, "GET", detailPath(original.ID), ""))
 	detail := stockEntryDetailWire(t, w)
 	if detail.ID != original.ID || detail.LocationID != 1 || detail.CreatedByAccountID != 1 ||
@@ -1283,6 +1522,10 @@ func TestStockEntryHTTPDetail(t *testing.T) {
 	}
 	if stamp, err := time.Parse(time.RFC3339, detail.CreatedAt); err != nil || stamp.UTC().Format(time.RFC3339) != detail.CreatedAt {
 		t.Fatal("detail created_at is not RFC3339")
+	}
+	// The detail carries the supplier the document names, with its stored name.
+	if detail.Supplier == nil || detail.Supplier.ID != 1 || detail.Supplier.Name != stockEntrySupplierName {
+		t.Fatal("the detail must carry the supplier of the document")
 	}
 	// Lines are ordered by variant id and carry the catalogue identity of each
 	// variant exactly as the inventory read renders it.
@@ -1297,7 +1540,7 @@ func TestStockEntryHTTPDetail(t *testing.T) {
 	}
 	// Nothing stored outside the contract reaches the wire.
 	body := w.Body.String()
-	for _, leaked := range []string{"operation_key", "cost", "supplier", "username", "display_name", "updated_at", "location_name"} {
+	for _, leaked := range []string{"operation_key", "cost", "contact", "username", "display_name", "updated_at", "location_name"} {
 		if strings.Contains(body, leaked) {
 			t.Fatalf("detail leaked a stored field: %s", leaked)
 		}
@@ -1325,6 +1568,10 @@ func TestStockEntryHTTPDetail(t *testing.T) {
 			t.Fatalf("counter-entry line %d has no catalogue identity", line.VariantID)
 		}
 	}
+	// The counter-entry detail repeats the supplier of its original.
+	if counterDetail.Supplier == nil || detail.Supplier == nil || *counterDetail.Supplier != *detail.Supplier {
+		t.Fatal("the counter-entry detail must repeat the supplier of its original")
+	}
 	reversed := stockEntryDetailWire(t, f.serve(t, f.request(1, "GET", detailPath(original.ID), "")))
 	if reversed.ReversedBy == nil || *reversed.ReversedBy != counter.ID || reversed.ReversesEntryID != nil ||
 		reversed.Reason != "" || reversed.TotalUnits != 18 {
@@ -1339,7 +1586,7 @@ func TestStockEntryHTTPDetail(t *testing.T) {
 
 func TestStockEntryHTTPDetailRejections(t *testing.T) {
 	f := stockEntryFixture(t)
-	original := f.create(t, `{"operation_key":"http-detail-refusal-1","lines":[{"variant_id":1,"quantity":2}]}`)
+	original := f.create(t, `{"operation_key":"http-detail-refusal-1","supplier_id":1,"lines":[{"variant_id":1,"quantity":2}]}`)
 	path := detailPath(original.ID)
 	foreign := f.foreignDocument(t)
 	f.rejected(t, f.request(0, "GET", path, ""), 401, "unauthenticated")
@@ -1393,5 +1640,47 @@ func TestStockEntryHTTPDetailRejections(t *testing.T) {
 	}
 	if n := f.count(t, "stock_entries"); n != 2 {
 		t.Fatal("a rejected detail read must not create a document")
+	}
+}
+
+// A document written before suppliers existed keeps a null supplier: it reads,
+// lists and reverses exactly like any other document, and its supplier is null on
+// the wire instead of an invented one.
+func TestStockEntryHTTPHistoricalDocument(t *testing.T) {
+	f := stockEntryFixture(t)
+	existingOne, _ := f.balance(t, 1, 1)
+	id := f.historicalDocument(t)
+	// The detail exposes supplier:null and every other field unchanged.
+	w := f.serve(t, f.request(1, "GET", detailPath(id), ""))
+	detail := stockEntryDetailWire(t, w)
+	if detail.ID != id || detail.Note != "ingreso historico" || detail.TotalUnits != 5 ||
+		len(detail.Lines) != 2 || detail.Supplier != nil {
+		t.Fatal("a historical document must read with a null supplier")
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(w.Body.Bytes(), &raw) != nil || string(raw["supplier"]) != "null" {
+		t.Fatal("the supplier of a historical document must be null on the wire")
+	}
+	// The history row keeps the same null supplier.
+	page := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries", "")))
+	if page.TotalEntries != 1 || len(page.Entries) != 1 || page.Entries[0].ID != id || page.Entries[0].Supplier != nil {
+		t.Fatal("a historical document must be listed with a null supplier")
+	}
+	// It still reverses, and the counter-entry inherits the null supplier: the
+	// reversal body never carries one.
+	w = f.serve(t, f.request(1, "POST", reversalPath(id), validStockEntryReversalJSON))
+	value := stockEntryObject(t, w, 201)
+	var counter stockEntryDTO
+	if json.Unmarshal(w.Body.Bytes(), &counter) != nil || counter.ID <= id {
+		t.Fatal("the counter-entry of a historical document is not decodable")
+	}
+	if counter.Supplier != nil || counter.TotalUnits != -5 || string(value["supplier"]) != "null" {
+		t.Fatal("the counter-entry of a historical document must keep the null supplier")
+	}
+	if n := f.countWhere(t, "stock_entries", "id=$1 AND supplier_id IS NULL", counter.ID); n != 1 {
+		t.Fatal("the counter-entry must persist a null supplier")
+	}
+	if got, _ := f.balance(t, 1, 1); got != existingOne {
+		t.Fatal("the counter-entry must restore the historical ingress")
 	}
 }

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "comments": [
+    {
+      "id": "a40o324f",
+      "file": "01-proveedor-contexto.html",
+      "selector": "#pantalla > div > main > div:nth-of-type(2) > section:nth-of-type(1)",
+      "excerpt": "Catálogo BATEVOL · Baterías 33 productos BUSCAR MARCA, MODELO O CAPACIDAD Productos que ofrece BATEVOL; cada fila elige la polaridad sin repetir el producto PRODUCTO POLARIDAD EN EL DOCUMENTO TOYO · NS40ZL 35 Ah L 2 R 1 3 u. TOYO · NS60L 45 Ah L 0 R 0 0 u. TOYO · BT45L 45 Ah L 4 R 0 4 u. Mostrando 3",
+      "comment": "tengo un problema con todos los mockups que me diseniaste, esta seccion puede crecer mucho, un provedor puede tener 20 o mas productos, entonces se hace muy pequenia!, Necesito alternatvias",
+      "createdAt": "2026-11-20T17:30:44.021Z",
+      "status": "resolved",
+      "sentAt": "2026-11-20T17:30:44.057Z",
+      "resolvedAt": "2026-11-20T17:39:46.768Z",
+      "resolution": "Agregué tres alternativas de crecimiento en el mismo tablero (F scroll propio, G explorador a pantalla completa, H agrupado por marca), cada una modelada con 22 productos y el mismo documento de 7 líneas. El frame actual quedó intacto para comparar."
+    },
+    {
+      "id": "q9ggq75b",
+      "file": "01-proveedor-contexto.html",
+      "selector": "#pantalla > div > main > div:nth-of-type(2) > section:nth-of-type(2)",
+      "excerpt": "Documento BATEVOL · Baterías Sin aplicar Líneas del borrador PRODUCTO CANTIDAD QUITAR TOYO · NS40ZL 35 Ah · Polaridad L × TOYO · NS40ZL 35 Ah · Polaridad R × TOYO · NS60L 45 Ah · Polaridad L × TOYO · BT45L 45 Ah · Polaridad L × WILLARD · 55D23L 50 Ah · Polaridad L × WILLARD · 75D26L 70 Ah · Polarida",
+      "comment": "esto igual debe tener su propio scroll no? puede crecer mucho",
+      "createdAt": "2026-11-20T17:59:32.565Z",
+      "status": "resolved",
+      "sentAt": "2026-11-20T17:59:32.596Z",
+      "resolvedAt": "2026-11-20T18:10:58.035Z",
+      "resolution": "El rail del documento ahora tiene cabecera fija, región de líneas con scroll propio (cabecera de columnas pegada) y pie fijo con totales y Confirmar; agregué un estado con 22 líneas / 60 unidades scrolleadas para probarlo."
+    }
+  ]
+}
