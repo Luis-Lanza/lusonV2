@@ -1709,13 +1709,15 @@ describe('stock ingress section', () => {
     expect(window.location.hash).toBe('#/ingresos');
     expect(screen.getByText('Luson Ingresos')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
-    // The screen asks who brings the merchandise first: the supplier list is the
-    // only read, and no catalogue is read until a supplier is chosen.
-    const supplierStep = screen.getByRole('region', { name: 'Proveedor del ingreso' });
-    await within(supplierStep).findByRole('button', { name: /^Proveedor del norte/ });
+    // The screen asks who brings the merchandise first: the supplier strip is the
+    // only read, and no catalogue is read until a supplier is chosen. The strip is
+    // compact because the supplier is a native select, not a list of buttons.
+    const supplierStep = screen.getByRole('region', { name: 'Contexto del documento' });
+    const supplierSelect = await within(supplierStep).findByLabelText('Proveedor') as HTMLSelectElement;
+    const supplierOption = await within(supplierSelect).findByRole('option', { name: /^Proveedor del norte/ }) as HTMLOptionElement;
     expect(mock.mock.calls.some(([url]) => String(url) === '/api/suppliers?page=1&page_size=50')).toBe(true);
     expect(mock.mock.calls.some(([url]) => String(url).includes('/catalog?'))).toBe(false);
-    fireEvent.click(within(supplierStep).getByRole('button', { name: /^Proveedor del norte/ }));
+    fireEvent.change(supplierSelect, { target: { value: supplierOption.value } });
     fireEvent.click(screen.getByRole('button', { name: /^Baterías/ }));
     // The picker is the catalogue of that supplier, read with the chosen kind, and
     // the whole inventory catalogue is never consulted for it.

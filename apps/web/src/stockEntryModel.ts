@@ -486,6 +486,89 @@ export function parseSupplierCatalog(raw: string, kind: Kind): readonly Supplier
   return Object.freeze(items);
 }
 
+/**
+ * One product of the picker: a catalogue entry and every polarity variant it
+ * offers. The screen shows one row per product, never one row per variant.
+ */
+export interface SupplierCatalogProduct {
+  readonly catalog_entry_id: number; readonly name: string; readonly detail: string;
+  readonly variants: readonly SupplierCatalogRow[];
+}
+/** One collapsible group of the picker: a brand, or the single group of other products. */
+export interface SupplierCatalogGroup {
+  readonly key: string; readonly label: string; readonly products: readonly SupplierCatalogProduct[];
+}
+/** Other products have no brand: they read as one group instead of one group each. */
+export const stockEntryOtherGroupKey = 'other';
+export const stockEntryOtherGroupLabel = 'Otros productos';
+
+// The row of a product inside its group: a battery reads as its model and its
+// capacity (the brand is the group), any other product as its own name and detail.
+function catalogProductName(row: SupplierCatalogRow): string {
+  return row.battery === null ? row.name : row.battery.model;
+}
+function catalogProductDetail(row: SupplierCatalogRow): string {
+  return row.battery === null ? row.detail : `${row.battery.capacity_ah} Ah`;
+}
+function catalogRowGroup(row: SupplierCatalogRow): { key: string; label: string } {
+  if (row.battery === null) return { key: stockEntryOtherGroupKey, label: stockEntryOtherGroupLabel };
+  return { key: `brand:${row.battery.brand}`, label: row.battery.brand };
+}
+
+/**
+ * Groups the catalogue of one supplier client-side: one group per brand, one row
+ * per catalogue entry, every variant of that entry inside its own row. The order
+ * of the reply is kept, so the groups read as the server listed them.
+ */
+export function groupSupplierCatalog(items: readonly SupplierCatalogRow[]): readonly SupplierCatalogGroup[] {
+  const groups: { key: string; label: string; products: SupplierCatalogProduct[] }[] = [];
+  const byKey = new Map<string, { key: string; label: string; products: SupplierCatalogProduct[] }>();
+  const byEntry = new Map<number, SupplierCatalogProduct & { variants: SupplierCatalogRow[] }>();
+  for (const row of items) {
+    const { key, label } = catalogRowGroup(row);
+    let group = byKey.get(key);
+    if (!group) { group = { key, label, products: [] }; byKey.set(key, group); groups.push(group); }
+    let product = byEntry.get(row.catalog_entry_id);
+    if (!product) {
+      product = { catalog_entry_id: row.catalog_entry_id, name: catalogProductName(row),
+        detail: catalogProductDetail(row), variants: [] };
+      byEntry.set(row.catalog_entry_id, product);
+      group.products.push(product);
+    }
+    product.variants.push(row);
+  }
+  return Object.freeze(groups.map(group => Object.freeze({ key: group.key, label: group.label,
+    products: Object.freeze(group.products.map(product => Object.freeze({ catalog_entry_id: product.catalog_entry_id,
+      name: product.name, detail: product.detail, variants: Object.freeze([...product.variants]) }))) })));
+}
+
+/** The rows the picker draws: one per product, whatever the number of variants. */
+export function supplierCatalogProductCount(groups: readonly SupplierCatalogGroup[]): number {
+  return groups.reduce((count, group) => count + group.products.length, 0);
+}
+
+/** The units the draft already holds from one product, across all its polarities. */
+export function supplierCatalogProductDraftUnits(product: SupplierCatalogProduct,
+  units: ReadonlyMap<number, number>): number {
+  return product.variants.reduce((total, variant) => total + (units.get(variant.variant_id) ?? 0), 0);
+}
+
+/** The units the draft already holds from one brand: the group's own aggregate. */
+export function supplierCatalogGroupDraftUnits(group: SupplierCatalogGroup,
+  units: ReadonlyMap<number, number>): number {
+  return group.products.reduce((total, product) => total + supplierCatalogProductDraftUnits(product, units), 0);
+}
+
+/** The group that holds a variant, so the screen opens the brand where the work is. */
+export function supplierCatalogGroupKeyOf(groups: readonly SupplierCatalogGroup[], variantID: number): string | null {
+  for (const group of groups) {
+    if (group.products.some(product => product.variants.some(variant => variant.variant_id === variantID))) {
+      return group.key;
+    }
+  }
+  return null;
+}
+
 /** The exact variants a draft may name: only the ones this supplier offers. */
 export function offeredStockEntryVariantIDs(items: readonly SupplierCatalogRow[]): ReadonlySet<number> {
   return new Set(items.map(item => item.variant_id));

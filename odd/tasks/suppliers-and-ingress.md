@@ -77,6 +77,7 @@ Solo entradas activas; `kind` opcional (`battery`|`other`), `search` opcional so
 - **T4** Web: tab Proveedores + pantalla (alta, edición, retiro, editor de asignación) + API/model + tests. **Worker.** Commit `03d5670`.
 - **T5** Web: Ingresos proveedor-primero (selector, tipos disponibles, catálogo filtrado, historial con proveedor) + tests. **Worker.** Commit `17a21f9`.
 - **T6** Verificación completa, barrido de docs y cierre de la vertical. **Parent inline.** Commit `docs(odd): close the suppliers vertical`.
+- **T7** Web: implementar el diseño elegido para Ingresos (dos colecciones acotadas: catálogo agrupado por marca y documento con scroll propio, ambos con cabecera y pie fijos). **Worker.** Evidencia de diseño en `design/ingresos-proveedor/`. Commit `feat(web): bounded grouped ingress`.
 
 ## Delivery
 La vertical es grande por naturaleza (esquema + dos fronteras + dos pantallas), así que se entrega en cortes por área, cada uno con sus tests al lado del comportamiento:
@@ -116,6 +117,14 @@ Diagnóstico reproducido en fixture, no deducido: `GET /api/suppliers/{id}/catal
 
 Se corrigió **solo el lado equivocado**: el cliente, a 500, con el número publicado en `apps/api/docs/suppliers.md`. Se fijó con el cuerpo real capturado (33 entradas → 66 variantes, ids 194–259) y un rechazo de `page_size: 501`; el server no cambió y se le agregó un test de volumen con identidad de almacén. Commit `fix(web): accept the published supplier catalogue page size`.
 
-**L8** (diseño pedido, textual) — «bien bien, funciona pero ahora necesito que explores bien el frontent en esta seccion de ingresos, siento que la UI UX no esta bien hecha, levantemos un gentle design y dame opciones».
+**L8** (pedido, textual) «bien bien, funciona pero ahora necesito que explores bien el frontent en esta seccion de ingresos, siento que la UI UX no esta bien hecha, levantemos un gentle design y dame opciones».
+
+Diagnóstico de los seis defectos de la pantalla en vivo (tres franjas antes de la primera acción; el control de tipo desapareció y dejó sus explicaciones; 33 productos mostrados como 66 filas por listar variantes; una tabla que es un menú; Confirmar habilitado con cero líneas y lejos del trabajo; jerga interna) y tres direcciones estructurales en `design/ingresos-proveedor/` (proveedor como contexto · documento como remito · carga por teclado). El sistema de diseño se resincronizó desde las 16 hojas reales.
+
+**L9** (comentarios del humano sobre el canvas, textuales) «tengo un problema con todos los mockups que me diseniaste, esta seccion puede crecer mucho, un provedor puede tener 20 o mas productos, entonces se hace muy pequenia!, Necesito alternatvias» y «esto igual debe tener su propio scroll no? puede crecer mucho»; elección: «F+H pa»; y autorización: «belleza arranca ya pero implementarlo en el real no? que opinas?».
+
+Decisión estructural: **las dos colecciones de la pantalla son acotadas** — el catálogo (grupos por marca, buscador y contador fijos, la página no crece) y el documento (cabecera, líneas y pie de totales fijos). Aplicado a los tres tableros con estados de 22 líneas/60 unidades y verificado en Chromium con 7/22/40/60+ líneas. Costo aceptado: el historial sale del viewport principal en dos tableros. Implementación en la app: T7.
+
+**L10** (evidencia del diseño) — el pedido está en L8 y la decisión en L9; esta entrada registra la salida.
 
 Salida: `design/ingresos-proveedor/` con tres direcciones de diseño, no implementación, para el click-through en vivo del humano. `01-proveedor-contexto.html` (proveedor como contexto en el encabezado del documento; tradeoff: mínimo desperdicio vertical y ninguna fila duplicada, pero la polaridad se lee como control de la fila); `02-documento-remito.html` (encabezado tipo remito y el documento al centro; tradeoff: se lee como el papel que llega, pero explorar el catálogo pasa a segundo plano); `03-carga-por-teclado.html` (búsqueda primero y una tecla por polaridad; tradeoff: la más rápida para 20+ líneas, pero exige aprender atajos). Las tres modelan el paso de proveedor, la regla de tipo solo cuando importa, el catálogo agrupado por producto con un único conteo, el documento con totales reales (3 líneas, 7 unidades), la confirmación con su lógica de deshabilitado y el historial con el documento `#1` sin proveedor, más los estados vacío, con líneas, proveedor de dos tipos, proveedor sin productos y pantalla angosta. Antes de dibujarlas se re-sincronizó el sistema visual del proyecto a `design/system.md` y `design/system.html` desde los 16 CSS de `apps/web/src` (69 representaciones de color, sin valores inventados).

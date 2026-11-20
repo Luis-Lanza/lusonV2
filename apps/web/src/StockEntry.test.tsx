@@ -5,20 +5,37 @@ import { stockEntryErrorMessages, stockEntryReversalErrorMessages, stockSupplier
 
 const csrf = 'c'.repeat(43);
 const north = { id: 3, name: 'Proveedor del norte' };
+type Polarity = 'L' | 'R';
 // The catalogue of the picker: the identity of the warehouse and the catalogue
 // entry it belongs to, never a stock number.
-const row = (variant_id: number, model: string, capacity = 35, catalogEntry = 1) => JSON.stringify({
-  variant_id, catalog_entry_id: catalogEntry, kind: 'battery', name: `TOYO · ${model}`, detail: `${capacity} Ah · L`,
-  battery: { brand: 'TOYO', model, capacity_ah: String(capacity), polarity: 'L' }, fields: null,
+const batteryRow = (variantID: number, entryID: number, brand: string, model: string, capacity: number,
+  polarity: Polarity) => JSON.stringify({
+  variant_id: variantID, catalog_entry_id: entryID, kind: 'battery', name: `${brand} · ${model}`,
+  detail: `${capacity} Ah · ${polarity}`,
+  battery: { brand, model, capacity_ah: String(capacity), polarity }, fields: null,
 });
-const productRow = (variant_id: number, name: string, detail: string, catalogEntry = 97) => JSON.stringify({
-  variant_id, catalog_entry_id: catalogEntry, kind: 'other', name, detail, battery: null,
-  fields: [{ name: detail.split(':')[0], kind: 'text', text: detail.split(': ')[1] }],
+const productRow = (variantID: number, entryID: number, name: string, detail: string) => JSON.stringify({
+  variant_id: variantID, catalog_entry_id: entryID, kind: 'other', name, detail, battery: null,
+  fields: [{ name: detail.slice(0, detail.indexOf(':')), kind: 'text', text: detail.slice(detail.indexOf(': ') + 2) }],
 });
 const catalogPage = (items: readonly string[]) => `{"items":[${items.join(',')}],"page_size":500}`;
+const ns40zl = [batteryRow(4, 11, 'TOYO', 'NS40ZL', 35, 'L'), batteryRow(5, 11, 'TOYO', 'NS40ZL', 35, 'R')];
+const ns60l = [batteryRow(8, 12, 'TOYO', 'NS60L', 45, 'L'), batteryRow(9, 12, 'TOYO', 'NS60L', 45, 'R')];
+const willard = [batteryRow(21, 21, 'WILLARD', '55D23L', 50, 'L'), batteryRow(22, 21, 'WILLARD', '55D23L', 50, 'R')];
+// 22 offered rows of batteries: 3 products under TOYO and 1 under WILLARD.
+const batteryItems = [...ns40zl, ...ns60l, ...willard];
 const catalogReply = (search: string) => new Response(
-  catalogPage(search === 'NS60' ? [row(9, 'NS60L', 45)] : search === 'nada' ? [] : [row(4, 'NS40ZL'), row(9, 'NS60L', 45)]),
+  catalogPage(search === 'NS60' ? ns60l : search === 'nada' ? [] : batteryItems),
   { status: 200, headers: { 'Content-Type': 'application/json' } });
+// The operator volume of the reported defect: 33 products of batteries, each one
+// with its two polarities, for 66 variants and 33 rows.
+const volumeItems = Array.from({ length: 33 }, (_, index) => {
+  const brand = `MARCA ${Math.floor(index / 3) + 1}`;
+  const product = `P${index + 1}`;
+  return [batteryRow(1000 + index * 2, 1000 + index, brand, product, 45, 'L'),
+    batteryRow(1001 + index * 2, 1000 + index, brand, product, 45, 'R')];
+}).flat();
+const volumeReply = () => new Response(catalogPage(volumeItems), { status: 200, headers: { 'Content-Type': 'application/json' } });
 const entryReply = () => new Response(JSON.stringify({
   id: 7, location_id: 1, note: 'Remito 0002', created_by_account_id: 1, created_at: '2026-05-01T14:20:00Z',
   supplier: north, lines: [{ variant_id: 4, quantity: 3 }], total_units: 3,
@@ -108,69 +125,76 @@ const detailReply = (overrides: Record<string, unknown> = {}) => new Response(JS
   created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '', supplier: north,
   lines: [detailLineOf(4, 'NS40ZL', 3, '35'), detailLineOf(9, 'NS60L', 15)], total_units: 18, ...overrides,
 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-const counterBody = (id: number) => JSON.stringify({
-  id, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:25:00Z', supplier: north,
-  lines: [{ variant_id: 4, quantity: -3 }, { variant_id: 9, quantity: -15 }], total_units: -18 });
 const openReversal = async (historial: HTMLElement) => {
   fireEvent.click(within(historial).getByRole('button', { name: 'Anular ingreso #6' }));
   return screen.getByRole('dialog', { name: 'Registrar contra-asiento' });
 };
-// Each panel is read on demand: the supplier and the history exist before any
-// kind is chosen, and the picker and the document only exist after.
-const sections = () => ({
-  get proveedor() { return supplierStep(); },
-  get catalogo() { return screen.getByRole('region', { name: 'Catálogo' }); },
-  get documento() { return screen.getByRole('region', { name: 'Documento de ingreso' }); },
-  get historial() { return screen.getByRole('region', { name: 'Historial de ingresos' }); },
-});
-const supplierStep = () => screen.getByRole('region', { name: 'Proveedor del ingreso' });
-const totalFor = (label: string) => within(sections().documento).getByText(label).closest('div');
-const addButton = (model: string) => within(sections().catalogo).getByRole('button', { name: `Agregar TOYO · ${model}` });
-const addProduct = (name: string) => within(sections().catalogo).getByRole('button', { name: `Agregar ${name}` });
+
+// The screen is one context strip, two bounded panels and the ledger below.
+const contextStrip = () => screen.getByRole('region', { name: 'Contexto del documento' });
+const catalogPanel = () => screen.getByRole('region', { name: 'Catálogo' });
+const documentPanel = () => screen.getByRole('region', { name: 'Documento' });
+const historyPanel = () => screen.getByRole('region', { name: 'Historial de ingresos' });
+const supplierSelect = () => within(contextStrip()).getByLabelText('Proveedor') as HTMLSelectElement;
+const kindControl = () => screen.queryByRole('group', { name: 'Tipo de producto del ingreso' });
+const supplierOption = (name: string) =>
+  within(supplierSelect()).getByRole('option', { name: new RegExp(`^${name}`) }) as HTMLOptionElement;
+const groupHead = (label: string) => within(catalogPanel()).getByRole('button', { name: new RegExp(`^${label}`) });
+const polarityButton = (brand: string, model: string, polarity: Polarity) =>
+  within(catalogPanel()).getByRole('button', { name: `Agregar ${brand} ${model} polaridad ${polarity}` });
+const addProduct = (name: string) => within(catalogPanel()).getByRole('button', { name: `Agregar ${name}` });
+const totalFor = (label: 'Líneas' | 'Unidades') =>
+  within(documentPanel()).getByText(label, { selector: 'dt' }).closest('div') as HTMLElement;
+const confirmButton = () => within(documentPanel()).getByRole('button', { name: 'Confirmar ingreso' });
 // The screen asks who brings the merchandise before anything else, so every flow
 // starts by choosing the supplier and then the kind of the document.
-const chooseSupplier = async (name = north.name) =>
-  fireEvent.click(await within(supplierStep()).findByRole('button', { name: new RegExp(`^${name}`) }));
-const choose = (label: 'Baterías' | 'Otros productos') =>
-  fireEvent.click(within(kindStep()).getByRole('button', { name: new RegExp(`^${label}`) }));
-const kindStep = () => screen.getByRole('group', { name: 'Tipo de producto del ingreso' });
+const chooseSupplier = async (name = north.name) => {
+  const select = supplierSelect();
+  await waitFor(() => expect(within(select).getByRole('option', { name: new RegExp(`^${name}`) })).toBeInTheDocument());
+  fireEvent.change(select, { target: { value: supplierOption(name).value } });
+};
+const chooseKind = (label: 'Baterías' | 'Otros productos') => {
+  const control = kindControl();
+  if (control === null) throw new Error('the screen offers no kind control');
+  fireEvent.click(within(control).getByRole('button', { name: label }));
+};
 async function ready(h: ReturnType<typeof harness>) {
   render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
   await chooseSupplier();
-  choose('Baterías');
-  await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
+  chooseKind('Baterías');
+  await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' });
 }
+const productRows = () => Array.from(document.querySelectorAll('tr[data-product-id]'));
 
 describe('stock entry supplier first', () => {
-  it('asks for the supplier before any kind, catalog or document exists', async () => {
+  it('asks for the supplier before any kind, catalogue or document exists', async () => {
     const h = harness();
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
-    const step = supplierStep();
-    expect(within(step).getByRole('status')).toHaveTextContent('Consultando proveedores');
-    const choices = await within(step).findAllByRole('button');
-    expect(choices.map(choice => choice.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'false', 'false']);
-    // The offer count makes an empty supplier obvious before choosing it.
-    expect(within(step).getByText('4 productos ofrecidos')).toBeInTheDocument();
-    expect(within(step).getByText('Sin productos asignados')).toBeInTheDocument();
-    // A retired supplier is listed but never selectable.
-    expect(within(step).getByRole('button', { name: /^Proveedor retirado/ })).toBeDisabled();
+    const strip = contextStrip();
+    expect(supplierSelect()).toBeDisabled();
+    expect(within(strip).getByRole('status')).toHaveTextContent('Consultando proveedores');
+    // The offer count makes an empty supplier obvious before choosing it, a retired
+    // supplier is listed but never selectable, and the placeholder is not a choice.
+    await within(strip).findByRole('option', { name: /^Proveedor del norte · 4 productos/ });
+    expect(within(strip).getAllByRole('option')).toHaveLength(5);
+    expect(supplierOption('Sin productos')).toHaveTextContent('Sin productos asignados');
+    expect(supplierOption('Proveedor retirado')).toBeDisabled();
     // Nothing else exists yet: no kind decision, no picker and no document.
-    expect(screen.queryByRole('group', { name: 'Tipo de producto del ingreso' })).not.toBeInTheDocument();
+    expect(kindControl()).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Catálogo' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Documento de ingreso' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Documento' })).not.toBeInTheDocument();
     expect(screen.getByText('Elegí el proveedor para ver los productos que podés ingresar.')).toBeInTheDocument();
     expect(h.supplierList()).toHaveLength(1);
     expect(h.supplierList()[0].url).toBe('/api/suppliers?page=1&page_size=50');
     expect(h.supplierList()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     expect(h.catalogs()).toHaveLength(0);
-    // Only after choosing a supplier does the kind decision appear and the picker read.
+    // Only after choosing a supplier does the kind decision appear and reading start.
     await chooseSupplier();
-    expect(within(step).getAllByRole('button')).toHaveLength(4);
-    expect(within(kindStep()).getAllByRole('button').map(choice => choice.textContent)).toEqual([
-      expect.stringContaining('Baterías'), expect.stringContaining('Otros productos'),
-    ]);
-    choose('Baterías');
-    await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
+    expect(within(kindControl() as HTMLElement).getAllByRole('button').map(choice => choice.textContent))
+      .toEqual(['Baterías', 'Otros productos']);
+    expect(h.catalogs()).toHaveLength(0);
+    chooseKind('Baterías');
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' });
     expect(h.catalogs()[0].url).toBe('/api/suppliers/3/catalog?kind=battery');
     expect(h.inventory()).toHaveLength(0);
   });
@@ -178,52 +202,55 @@ describe('stock entry supplier first', () => {
   it('offers only the kinds the chosen supplier actually offers', async () => {
     const h = harness();
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
-    // A supplier with a single kind needs no dead button: it is chosen for you.
+    // A supplier with a single kind needs no control and no sentence: the kind is
+    // a chip of its own and it is chosen as soon as the supplier is.
     await chooseSupplier('Baterías Sur');
-    expect(screen.queryByRole('group', { name: 'Tipo de producto del ingreso' })).not.toBeInTheDocument();
-    expect(screen.getByText(/Este proveedor ofrece un solo tipo/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Otros productos/ })).not.toBeInTheDocument();
-    await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
+    expect(kindControl()).not.toBeInTheDocument();
+    expect(within(contextStrip()).getByRole('note', { name: 'Tipo del documento' })).toHaveTextContent('Baterías');
+    expect(screen.queryByRole('button', { name: 'Otros productos' })).not.toBeInTheDocument();
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' });
     expect(h.catalogs()[0].url).toBe('/api/suppliers/4/catalog?kind=battery');
     // A supplier that offers both kinds asks for the kind, and only those two.
     await chooseSupplier();
-    const choices = within(kindStep()).getAllByRole('button');
-    expect(choices).toHaveLength(2);
-    expect(choices[0]).toHaveAttribute('aria-pressed', 'false');
+    expect(within(kindControl() as HTMLElement).getAllByRole('button').map(choice => choice.getAttribute('aria-pressed')))
+      .toEqual(['false', 'false']);
   });
 
   it('reads the picker of the chosen supplier only, never the whole catalogue', async () => {
     const h = harness({ catalog: (search, _kind, supplierID) => supplierID === '4'
-      ? new Response(catalogPage([row(21, '55B24L', 45, 8)]), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      ? new Response(catalogPage([batteryRow(31, 31, 'WILLARD', '55B24L', 45, 'L')]),
+        { status: 200, headers: { 'Content-Type': 'application/json' } })
       : catalogReply(search) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier('Baterías Sur');
-    await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · 55B24L' });
-    expect(within(sections().catalogo).queryByRole('button', { name: 'Agregar TOYO · NS40ZL' })).not.toBeInTheDocument();
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar WILLARD 55B24L polaridad L' });
+    expect(within(catalogPanel()).queryByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' })).not.toBeInTheDocument();
     // Choosing another supplier drops every row of the previous one, so a line of
     // a supplier that does not offer it can never be added.
     await chooseSupplier();
-    choose('Baterías');
-    await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
-    expect(within(sections().catalogo).queryByRole('button', { name: 'Agregar TOYO · 55B24L' })).not.toBeInTheDocument();
+    chooseKind('Baterías');
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' });
+    expect(within(catalogPanel()).queryByRole('button', { name: 'Agregar WILLARD 55B24L polaridad L' })).not.toBeInTheDocument();
     expect(h.catalogs().map(call => call.url)).toEqual([
       '/api/suppliers/4/catalog?kind=battery', '/api/suppliers/3/catalog?kind=battery',
     ]);
     expect(h.inventory()).toHaveLength(0);
   });
 
-  it('names the chosen supplier and its kind in the catalogue request and the document', async () => {
+  it('names the chosen supplier and its kind in the request, the strip and the document', async () => {
     const h = harness();
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    choose('Baterías');
-    const { catalogo, documento } = sections();
-    await within(catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
+    chooseKind('Baterías');
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' });
     expect(h.catalogs()[0].url).toBe('/api/suppliers/3/catalog?kind=battery');
-    expect(within(catalogo).getByText(north.name)).toBeInTheDocument();
+    expect(within(contextStrip()).getByText('4 productos')).toBeInTheDocument();
+    expect(within(catalogPanel()).getByText(new RegExp(`^${north.name} · Baterías`))).toBeInTheDocument();
+    const documento = documentPanel();
     expect(within(documento).getByRole('note', { name: 'Proveedor del documento' })).toHaveTextContent(north.name);
-    fireEvent.change(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'NS60' } });
-    await within(catalogo).findByRole('button', { name: 'Agregar TOYO · NS60L' });
+    expect(within(documento).getByRole('note', { name: 'Tipo del documento' })).toHaveTextContent('Baterías');
+    fireEvent.change(within(catalogPanel()).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'NS60' } });
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS60L polaridad L' });
     expect(h.catalogs().at(-1)?.url).toBe('/api/suppliers/3/catalog?kind=battery&search=NS60');
   });
 
@@ -234,8 +261,9 @@ describe('stock entry supplier first', () => {
     expect(screen.getByText(stockSupplierNoOffers)).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Proveedor sin productos' })).toBeInTheDocument();
     // No picker, no document and no confirmation: nothing can be sent.
+    expect(kindControl()).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Catálogo' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Documento de ingreso' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Documento' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Confirmar ingreso' })).not.toBeInTheDocument();
     expect(h.catalogs()).toHaveLength(0);
     expect(h.posts()).toHaveLength(0);
@@ -244,28 +272,31 @@ describe('stock entry supplier first', () => {
   it('asks for confirmation and only then discards the draft when the supplier changes', async () => {
     const h = harness();
     await ready(h);
-    const { documento } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
-    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
+    const documento = documentPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L'), { target: { value: '3' } });
+    fireEvent.change(within(documento).getByLabelText('Nota (opcional)'), { target: { value: 'Remito 0002' } });
     await chooseSupplier('Baterías Sur');
     const dialog = screen.getByRole('dialog', { name: 'Cambiar de proveedor' });
     expect(within(dialog).getByText(/no se convierten ni se migran/)).toBeInTheDocument();
-    // Nothing changed while the confirmation is open.
-    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(3);
+    // Nothing changed while the confirmation is open: the strip still names the
+    // supplier of the document and its line keeps its quantity.
+    expect(supplierSelect().value).toBe('3');
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).toHaveValue(3);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(3);
-    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
+    expect(supplierSelect().value).toBe('3');
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).toHaveValue(3);
+    expect(within(documento).getByLabelText('Nota (opcional)')).toHaveValue('Remito 0002');
     // The deliberate change discards the whole draft of the other supplier.
     await chooseSupplier('Baterías Sur');
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Cambiar de proveedor' }))
       .getByRole('button', { name: 'Descartar borrador y cambiar proveedor' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
-    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS40ZL')).not.toBeInTheDocument();
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' });
+    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).not.toBeInTheDocument();
     expect(within(documento).getByText('Todavía no agregaste líneas.')).toBeInTheDocument();
-    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('');
+    expect(within(documento).getByLabelText('Nota (opcional)')).toHaveValue('');
     expect(within(documento).getByRole('note', { name: 'Proveedor del documento' })).toHaveTextContent('Baterías Sur');
     expect(h.catalogs().at(-1)?.url).toBe('/api/suppliers/4/catalog?kind=battery');
   });
@@ -274,92 +305,178 @@ describe('stock entry supplier first', () => {
     let failing = true;
     const h = harness({ suppliers: () => failing ? errorReply('service_unavailable', 503) : supplierReply() });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
-    const step = supplierStep();
-    expect(await within(step).findByRole('alert')).toHaveTextContent('No se pudo consultar la lista de proveedores');
+    const strip = contextStrip();
+    expect(await within(strip).findByRole('alert')).toHaveTextContent('No se pudo consultar la lista de proveedores');
     expect(screen.queryByRole('region', { name: 'Catálogo' })).not.toBeInTheDocument();
     failing = false;
-    fireEvent.click(within(step).getByRole('button', { name: 'Reintentar proveedores' }));
-    await within(step).findByRole('button', { name: /^Proveedor del norte/ });
+    fireEvent.click(within(strip).getByRole('button', { name: 'Reintentar proveedores' }));
+    await waitFor(() => expect(within(strip).getByRole('option', { name: /^Proveedor del norte/ })).toBeInTheDocument());
     expect(h.supplierList()).toHaveLength(2);
   });
 });
 
-describe('stock entry catalog', () => {
-  it('reads the supplier catalog once, then again for the typed search', async () => {
+describe('stock entry catalogue', () => {
+  it('groups 66 variants of 33 products into 33 rows under their brand groups', async () => {
+    const h = harness({ catalog: () => volumeReply() });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await chooseSupplier();
+    chooseKind('Baterías');
+    await waitFor(() => expect(catalogPanel().querySelectorAll('.stock-group-head')).toHaveLength(11));
+    expect(within(catalogPanel()).getAllByText('33 productos').length).toBeGreaterThan(0);
+    const heads = Array.from(catalogPanel().querySelectorAll<HTMLButtonElement>('.stock-group-head'));
+    expect(heads).toHaveLength(11);
+    for (const head of heads) expect(head).toHaveTextContent('3 productos');
+    // Default order: the group where the work starts, open; everything else closed.
+    expect(heads[0]).toHaveAttribute('aria-expanded', 'true');
+    expect(heads.slice(1).every(head => head.getAttribute('aria-expanded') === 'false')).toBe(true);
+    expect(productRows()).toHaveLength(3);
+    // The whole catalogue is 33 rows: one per product, never one per polarity.
+    fireEvent.click(within(catalogPanel()).getByRole('button', { name: 'Ver todos los productos (33)' }));
+    const rows = productRows();
+    expect(rows).toHaveLength(33);
+    expect(new Set(rows.map(row => row.getAttribute('data-product-id'))).size).toBe(33);
+    expect(within(catalogPanel()).getAllByRole('button', { name: /polaridad/ })).toHaveLength(66);
+    // The footer counts products, never polarities.
+    expect(catalogPanel().querySelector('.stock-catalog-foot')).toHaveTextContent('33 productos');
+  });
+
+  it('collapses and expands a brand group with aria-expanded', async () => {
+    const h = harness();
+    await ready(h);
+    const toyo = groupHead('TOYO');
+    const willardHead = groupHead('WILLARD');
+    expect(toyo).toHaveAttribute('aria-expanded', 'true');
+    expect(willardHead).toHaveAttribute('aria-expanded', 'false');
+    expect(productRows()).toHaveLength(2);
+    fireEvent.click(willardHead);
+    expect(willardHead).toHaveAttribute('aria-expanded', 'true');
+    expect(productRows()).toHaveLength(3);
+    fireEvent.click(toyo);
+    expect(toyo).toHaveAttribute('aria-expanded', 'false');
+    expect(within(catalogPanel()).queryByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' })).not.toBeInTheDocument();
+    fireEvent.click(toyo);
+    expect(toyo).toHaveAttribute('aria-expanded', 'true');
+    expect(polarityButton('TOYO', 'NS40ZL', 'L')).toBeInTheDocument();
+  });
+
+  it('opens every group with Ver todos los productos (N)', async () => {
+    const h = harness();
+    await ready(h);
+    fireEvent.click(within(catalogPanel()).getByRole('button', { name: 'Ver todos los productos (3)' }));
+    expect(groupHead('TOYO')).toHaveAttribute('aria-expanded', 'true');
+    expect(groupHead('WILLARD')).toHaveAttribute('aria-expanded', 'true');
+    expect(productRows()).toHaveLength(3);
+  });
+
+  it('reads the supplier catalogue once, then again for the typed search', async () => {
     const h = harness();
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    choose('Baterías');
-    const { catalogo } = sections();
-    expect(within(catalogo).getByRole('status')).toHaveTextContent('Consultando el catálogo del proveedor');
-    await within(catalogo).findByText('TOYO · NS40ZL');
-    expect(within(catalogo).getByText('35 Ah')).toBeInTheDocument();
-    // The supplier catalogue carries no stock numbers of its own.
-    expect(within(catalogo).getAllByRole('columnheader').map(head => head.textContent))
-      .toEqual(['Producto', 'Capacidad', 'Polaridad', 'Acción']);
-    expect(within(catalogo).queryByText('Stock actual')).not.toBeInTheDocument();
+    chooseKind('Baterías');
+    expect(within(catalogPanel()).getByRole('status')).toHaveTextContent('Consultando el catálogo del proveedor');
+    await within(catalogPanel()).findByText('NS40ZL');
+    expect(within(catalogPanel()).getByText('35 Ah')).toBeInTheDocument();
+    // The supplier catalogue carries no stock numbers of its own, and its rows are
+    // products with one control per polarity.
+    expect(within(catalogPanel()).getAllByRole('columnheader').map(head => head.textContent))
+      .toEqual(['Producto', 'Polaridad', 'En el documento']);
+    expect(within(catalogPanel()).queryByText('Stock actual')).not.toBeInTheDocument();
     expect(h.catalogs()[0].url).toBe('/api/suppliers/3/catalog?kind=battery');
     expect(h.catalogs()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
-    fireEvent.change(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'NS60' } });
-    await within(catalogo).findByRole('button', { name: 'Agregar TOYO · NS60L' });
+    fireEvent.change(within(catalogPanel()).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'NS60' } });
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar TOYO NS60L polaridad L' });
     expect(h.catalogs().at(-1)?.url).toBe('/api/suppliers/3/catalog?kind=battery&search=NS60');
-    expect(within(catalogo).queryByRole('button', { name: 'Agregar TOYO · NS40ZL' })).not.toBeInTheDocument();
-    fireEvent.change(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'nada' } });
-    await within(catalogo).findByText('Sin coincidencias en el catálogo.');
+    expect(within(catalogPanel()).queryByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' })).not.toBeInTheDocument();
+    fireEvent.change(within(catalogPanel()).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'nada' } });
+    await within(catalogPanel()).findByText('Sin coincidencias en el catálogo.');
+    expect(within(catalogPanel()).queryByRole('button', { name: /Ver todos los productos/ })).not.toBeInTheDocument();
   });
 
-  it('reports an unavailable catalog and reads it again on demand', async () => {
+  it('reports an unavailable catalogue and reads it again on demand', async () => {
     let failing = true;
     const h = harness({ catalog: search => failing ? errorReply('service_unavailable', 503) : catalogReply(search) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    choose('Baterías');
-    const { catalogo } = sections();
+    chooseKind('Baterías');
+    const catalogo = catalogPanel();
     expect(await within(catalogo).findByRole('alert')).toHaveTextContent('No se pudo consultar el catálogo del proveedor elegido');
     failing = false;
     fireEvent.click(within(catalogo).getByRole('button', { name: 'Reintentar catálogo' }));
-    await within(catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
+    await within(catalogo).findByRole('button', { name: 'Agregar TOYO NS40ZL polaridad L' });
     expect(h.catalogs()).toHaveLength(2);
   });
 });
 
 describe('stock entry document', () => {
-  it('adds a variant once and increments it instead of duplicating the line', async () => {
+  it('adds a line by polarity to that exact variant and the counters follow', async () => {
     const h = harness();
     await ready(h);
-    const { documento } = sections();
+    const documento = documentPanel();
     expect(within(documento).getByText('Todavía no agregaste líneas.')).toBeInTheDocument();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.click(addButton('NS40ZL'));
+    expect(totalFor('Líneas')).toHaveTextContent(/Líneas\s*0/);
+    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*0/);
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    // The same polarity increments its own line instead of adding a second row.
     expect(within(documento).getAllByLabelText(/^Cantidad de /)).toHaveLength(1);
-    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(2);
-    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*1/);
-    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*2/);
-    expect(within(documento).getByRole('status')).toHaveTextContent('TOYO · NS40ZL ya estaba en el documento: ahora 2 unidades.');
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).toHaveValue(2);
+    expect(within(documento).getByRole('status'))
+      .toHaveTextContent('TOYO · NS40ZL polaridad L ya estaba en el documento: ahora 2 unidades.');
+    // The other polarity of the same product is its own line, never another product.
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'R'));
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad R')).toHaveValue(1);
+    expect(totalFor('Líneas')).toHaveTextContent(/Líneas\s*2/);
+    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*3/);
+    // The counters of the catalogue footer follow the same draft.
+    expect(catalogPanel().querySelector('.stock-catalog-foot'))
+      .toHaveTextContent('3 productos · 2 líneas en el documento · 3 u.');
+    // The brand header aggregates what the draft already holds from that brand.
+    expect(groupHead('TOYO')).toHaveTextContent('3 u.');
+    fireEvent.click(confirmButton());
+    await waitFor(() => expect(h.posts()).toHaveLength(1));
+    expect(JSON.parse(String(h.posts()[0].init.body))).toMatchObject({
+      supplier_id: 3, lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 5, quantity: 1 }],
+    });
+  });
+
+  it('zero lines leaves the confirmation disabled with its reason wired by aria-describedby', async () => {
+    const h = harness();
+    await ready(h);
+    const documento = documentPanel();
+    const confirm = confirmButton();
+    expect(confirm).toBeDisabled();
+    const reason = document.getElementById(confirm.getAttribute('aria-describedby') ?? '');
+    expect(reason).toBeInTheDocument();
+    expect(reason).toHaveTextContent('Agregá al menos una línea para confirmar. El stock no se toca hasta que confirmes.');
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    expect(confirmButton()).toBeEnabled();
+    expect(document.getElementById(confirmButton().getAttribute('aria-describedby') ?? ''))
+      .toHaveTextContent('Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.');
+    expect(within(documento).getByText('Sin aplicar')).toBeInTheDocument();
   });
 
   it('updates the totals when a quantity is edited or a line is removed', async () => {
     const h = harness();
     await ready(h);
-    const { documento } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.click(addButton('NS60L'));
-    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '5' } });
-    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*2/);
+    const documento = documentPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.click(polarityButton('TOYO', 'NS60L', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L'), { target: { value: '5' } });
+    expect(totalFor('Líneas')).toHaveTextContent(/Líneas\s*2/);
     expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*6/);
-    fireEvent.click(within(documento).getByRole('button', { name: 'Quitar TOYO · NS60L' }));
-    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS60L')).not.toBeInTheDocument();
-    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*1/);
+    fireEvent.click(within(documento).getByRole('button', { name: 'Quitar TOYO · NS60L polaridad L' }));
+    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS60L polaridad L')).not.toBeInTheDocument();
+    expect(totalFor('Líneas')).toHaveTextContent(/Líneas\s*1/);
     expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*5/);
   });
 
   it('refuses an invalid quantity without sending anything', async () => {
     const h = harness();
     await ready(h);
-    const { documento } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '0' } });
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    const documento = documentPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L'), { target: { value: '0' } });
+    fireEvent.click(confirmButton());
     expect(within(documento).getByRole('status')).toHaveTextContent('Cantidad inválida: ingresá un entero entre 1 y 1.000.000 en cada línea.');
     expect(h.posts()).toHaveLength(0);
   });
@@ -367,12 +484,12 @@ describe('stock entry document', () => {
   it('confirms the exact payload with its supplier, shows the new document number and clears the draft', async () => {
     const h = harness();
     await ready(h);
-    const { documento } = sections();
+    const documento = documentPanel();
     const before = h.catalogs().length;
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
-    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L'), { target: { value: '3' } });
+    fireEvent.change(within(documento).getByLabelText('Nota (opcional)'), { target: { value: 'Remito 0002' } });
+    fireEvent.click(confirmButton());
     await waitFor(() => expect(h.posts()).toHaveLength(1));
     const post = h.posts()[0];
     expect(post.init).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store' });
@@ -383,8 +500,8 @@ describe('stock entry document', () => {
     });
     expect(await within(documento).findByText(/Ingreso confirmado: documento 7/)).toBeInTheDocument();
     expect(within(documento).getByRole('status')).toHaveTextContent('Ingreso confirmado: documento 7 · 3 unidades.');
-    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('');
-    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*0/);
+    expect(within(documento).getByLabelText('Nota (opcional)')).toHaveValue('');
+    expect(totalFor('Líneas')).toHaveTextContent(/Líneas\s*0/);
     expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*0/);
     await waitFor(() => expect(h.catalogs().length).toBeGreaterThan(before));
     expect(h.catalogs().at(-1)?.url).toBe('/api/suppliers/3/catalog?kind=battery');
@@ -393,16 +510,16 @@ describe('stock entry document', () => {
   it('keeps the typed document and the same operation key when the outcome is uncertain', async () => {
     const h = harness({ create: () => errorReply('service_unavailable', 503) });
     await ready(h);
-    const { documento } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
-    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    const documento = documentPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L'), { target: { value: '3' } });
+    fireEvent.change(within(documento).getByLabelText('Nota (opcional)'), { target: { value: 'Remito 0002' } });
+    fireEvent.click(confirmButton());
     await waitFor(() => expect(within(documento).getByRole('status')).toHaveTextContent(stockEntryErrorMessages.service_unavailable));
     expect(within(documento).queryByText(/Ingreso confirmado/)).not.toBeInTheDocument();
-    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(3);
-    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).toHaveValue(3);
+    expect(within(documento).getByLabelText('Nota (opcional)')).toHaveValue('Remito 0002');
+    fireEvent.click(confirmButton());
     await waitFor(() => expect(h.posts()).toHaveLength(2));
     // The replay is the same intent: the same key and the same supplier.
     expect(h.posts()[1].init.body).toBe(h.posts()[0].init.body);
@@ -412,9 +529,9 @@ describe('stock entry document', () => {
   it('reports a supplier that is no longer available without keeping the key', async () => {
     const h = harness({ create: () => errorReply('decision_conflict', 409) });
     await ready(h);
-    const { documento } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    const documento = documentPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.click(confirmButton());
     await waitFor(() => expect(within(documento).getByRole('status'))
       .toHaveTextContent(stockEntryErrorMessages.decision_conflict));
     expect(h.posts()).toHaveLength(1);
@@ -424,23 +541,67 @@ describe('stock entry document', () => {
     let resolve!: (value: Response) => void;
     const h = harness({ create: () => new Promise<Response>(yes => { resolve = yes; }) });
     await ready(h);
-    const { documento } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
-    const confirm = within(documento).getByRole('button', { name: 'Confirmar ingreso' });
-    fireEvent.click(confirm);
-    await waitFor(() => expect(within(documento).getByRole('button', { name: 'Confirmar ingreso' })).toBeDisabled());
+    const documento = documentPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L'), { target: { value: '3' } });
+    fireEvent.click(confirmButton());
+    await waitFor(() => expect(confirmButton()).toBeDisabled());
     expect(within(documento).getByRole('status')).toHaveTextContent('Confirmando ingreso…');
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    fireEvent.click(confirmButton());
     expect(h.posts()).toHaveLength(1);
     resolve(entryReply());
     await within(documento).findByText(/Ingreso confirmado: documento 7/);
-    expect(within(documento).getByRole('button', { name: 'Confirmar ingreso' })).toBeEnabled();
+    // The confirmed draft is empty again, so the same rule that starts the screen
+    // disables it: zero lines cannot be confirmed twice.
+    expect(confirmButton()).toBeDisabled();
+  });
+});
+
+describe('stock entry bounded panels', () => {
+  it('bounds the catalogue and the document with their own scroll regions and pinned footers', async () => {
+    const h = harness();
+    await ready(h);
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    const catalogo = catalogPanel();
+    const documento = documentPanel();
+    // The catalogue: the search above the scroll, the table head inside it and the
+    // counters pinned in a footer that is not part of the scrolling region.
+    const catalogScroll = within(catalogo).getByRole('region', { name: 'Productos del catálogo' });
+    expect(catalogScroll).toHaveClass('stock-catalog-scroll');
+    expect(catalogScroll).not.toContainElement(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'));
+    expect(catalogScroll).toContainElement(within(catalogo).getAllByRole('columnheader')[0]);
+    const catalogFoot = catalogo.querySelector('.stock-catalog-foot') as HTMLElement;
+    expect(catalogFoot).toBeInTheDocument();
+    expect(catalogScroll).not.toContainElement(catalogFoot);
+    expect(catalogFoot).toHaveTextContent('3 productos · 1 línea en el documento · 1 u.');
+    // The document: the context and the note above, the lines in their own region
+    // with its column header, and the totals with the confirm in the pinned footer.
+    const docScroll = within(documento).getByRole('region', { name: 'Líneas del documento' });
+    expect(docScroll).toHaveClass('stock-doc-scroll');
+    expect(docScroll).toContainElement(within(documento).getByRole('columnheader', { name: 'Cantidad' }));
+    expect(docScroll).not.toContainElement(within(documento).getByLabelText('Nota (opcional)'));
+    const docFoot = documento.querySelector('.stock-doc-foot') as HTMLElement;
+    expect(docFoot).toBeInTheDocument();
+    expect(docScroll).not.toContainElement(docFoot);
+    expect(docFoot).toContainElement(confirmButton());
+    expect(docFoot).toHaveTextContent('Líneas');
+    expect(docFoot).toHaveTextContent('Unidades');
+  });
+
+  it('keeps the operator copy free of the removed words and the removed kind step', async () => {
+    const h = harness();
+    await ready(h);
+    expect(document.body.textContent).not.toMatch(/variante/i);
+    expect(document.body.textContent).not.toMatch(/borrador local/i);
+    expect(within(documentPanel()).getByText('Sin aplicar')).toBeInTheDocument();
+    // No sentence explains a kind step that only exists when both kinds are offered.
+    expect(screen.queryByText(/Queda elegido automáticamente/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Elegí el tipo de producto/)).not.toBeInTheDocument();
+    expect(screen.getByText('Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.')).toBeInTheDocument();
   });
 });
 
 describe('stock ingress history', () => {
-  const historySections = () => sections().historial;
   const cellsOf = (row: HTMLElement) => within(row).getAllByRole('cell').map(cell => cell.textContent);
 
   it('lists the newest documents first with the applied and reversed tags', async () => {
@@ -456,8 +617,7 @@ describe('stock ingress history', () => {
     } });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    choose('Baterías');
-    const historial = historySections();
+    const historial = historyPanel();
     expect(within(historial).getByRole('status')).toHaveTextContent('Consultando el historial de ingresos');
     release();
     await within(historial).findByText('#9');
@@ -481,7 +641,7 @@ describe('stock ingress history', () => {
     ]) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    const historial = historySections();
+    const historial = historyPanel();
     await within(historial).findByText('#8');
     const rows = within(historial).getAllByRole('row').slice(1);
     expect(cellsOf(rows[0])[6]).toBe(north.name);
@@ -495,7 +655,7 @@ describe('stock ingress history', () => {
     const h = harness({ history: () => historyReply([]) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    const historial = historySections();
+    const historial = historyPanel();
     expect(await within(historial).findByText('Todavía no hay ingresos registrados.')).toBeInTheDocument();
     expect(within(historial).queryByRole('table')).not.toBeInTheDocument();
   });
@@ -505,7 +665,7 @@ describe('stock ingress history', () => {
     const h = harness({ history: () => failing ? errorReply('service_unavailable', 503) : historyReply(defaultHistoryRows) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    const historial = historySections();
+    const historial = historyPanel();
     expect(await within(historial).findByRole('alert')).toHaveTextContent('No se pudo consultar el historial de ingresos');
     expect(within(historial).queryByRole('table')).not.toBeInTheDocument();
     failing = false;
@@ -519,7 +679,7 @@ describe('stock ingress history', () => {
       Number(query.get('page_size')), 60) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    const historial = historySections();
+    const historial = historyPanel();
     await within(historial).findByText('#6');
     expect(h.histories()[0].url).toBe('/api/stock-entries?page=1&page_size=25');
     fireEvent.click(within(historial).getByRole('button', { name: 'Siguiente página' }));
@@ -539,12 +699,13 @@ describe('stock ingress history', () => {
       create: () => { confirmed = true; return entryReply(); },
     });
     await ready(h);
-    const { documento, historial } = sections();
+    const documento = documentPanel();
+    const historial = historyPanel();
     await within(historial).findByText('#6');
     expect(within(historial).queryByText('#7')).not.toBeInTheDocument();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L'), { target: { value: '3' } });
+    fireEvent.click(confirmButton());
     await within(historial).findByText('#7');
     expect(h.histories().length).toBeGreaterThan(1);
     const rows = within(historial).getAllByRole('row').slice(1);
@@ -555,18 +716,18 @@ describe('stock ingress history', () => {
   it('keeps the typed document when the history read fails', async () => {
     const h = harness({ history: () => errorReply('service_unavailable', 503) });
     await ready(h);
-    const { documento, historial } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
+    const documento = documentPanel();
+    const historial = historyPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Nota (opcional)'), { target: { value: 'Remito 0002' } });
     expect(await within(historial).findByRole('alert')).toHaveTextContent('No se pudo consultar el historial de ingresos');
-    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(1);
-    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).toHaveValue(1);
+    expect(within(documento).getByLabelText('Nota (opcional)')).toHaveValue('Remito 0002');
     expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*1/);
   });
 });
 
 describe('stock counter-entry', () => {
-  const historial = () => sections().historial;
   const rowsWithAction = () => [
     historyRow(9, 'Remito 0003', 1, 4, null, north),
     historyRow(8, 'Remito 0002', 2, 18, 10, north),
@@ -580,20 +741,20 @@ describe('stock counter-entry', () => {
     const h = harness({ history: () => historyReply(rowsWithAction()) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    expect(within(historial()).getAllByRole('button', { name: /^Anular ingreso/ }).map(button => button.getAttribute('aria-label')))
+    await within(historyPanel()).findByText('#6');
+    expect(within(historyPanel()).getAllByRole('button', { name: /^Anular ingreso/ }).map(button => button.getAttribute('aria-label')))
       .toEqual(['Anular ingreso #9', 'Anular ingreso #6']);
-    expect(within(historial()).queryByRole('button', { name: 'Anular ingreso #8' })).not.toBeInTheDocument();
+    expect(within(historyPanel()).queryByRole('button', { name: 'Anular ingreso #8' })).not.toBeInTheDocument();
     // A counter-entry (negative units) is never reversible.
-    expect(within(historial()).queryByRole('button', { name: 'Anular ingreso #7' })).not.toBeInTheDocument();
+    expect(within(historyPanel()).queryByRole('button', { name: 'Anular ingreso #7' })).not.toBeInTheDocument();
   });
 
   it('opens an accessible dialog that explains the immutable original and moves focus', async () => {
     const h = harness({ history: () => historyReply(rowsWithAction()) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     expect(dialog).toHaveAttribute('aria-modal', 'true');
     expect(within(dialog).getByText(/documento nuevo con las mismas líneas en negativo/)).toBeInTheDocument();
     expect(within(dialog).getByText(/El original nunca cambia/)).toBeInTheDocument();
@@ -605,15 +766,15 @@ describe('stock counter-entry', () => {
     expect(reasonBox(dialog)).toHaveAttribute('maxlength', '500');
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(within(historial()).getByRole('button', { name: 'Anular ingreso #6' })).toHaveFocus();
+    expect(within(historyPanel()).getByRole('button', { name: 'Anular ingreso #6' })).toHaveFocus();
   });
 
   it('refuses a blank reason without sending anything', async () => {
     const h = harness({ history: () => historyReply(rowsWithAction()) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     fireEvent.change(reasonBox(dialog), { target: { value: '   ' } });
     fireEvent.click(confirm(dialog));
     expect(within(dialog).getByRole('alert')).toHaveTextContent('El motivo es obligatorio');
@@ -630,8 +791,8 @@ describe('stock counter-entry', () => {
     });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     fireEvent.change(reasonBox(dialog), { target: { value: '  error de carga  ' } });
     fireEvent.click(confirm(dialog));
     await waitFor(() => expect(h.reversals()).toHaveLength(1));
@@ -645,19 +806,19 @@ describe('stock counter-entry', () => {
     });
     // The dialog closes, the history is refreshed and the result is announced.
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(await within(historial()).findByText(/Contra-asiento registrado: documento 10 · -18 unidades/)).toBeInTheDocument();
+    expect(await within(historyPanel()).findByText(/Contra-asiento registrado: documento 10 · -18 unidades/)).toBeInTheDocument();
     expect(h.histories().length).toBeGreaterThan(1);
-    const rows = within(historial()).getAllByRole('row').slice(1);
+    const rows = within(historyPanel()).getAllByRole('row').slice(1);
     expect(rows.map(row => within(row).getAllByRole('cell')[0].textContent)).toEqual(['#10', '#6']);
-    expect(within(historial()).queryByRole('button', { name: 'Anular ingreso #6' })).not.toBeInTheDocument();
+    expect(within(historyPanel()).queryByRole('button', { name: 'Anular ingreso #6' })).not.toBeInTheDocument();
   });
 
   it('reverses a historical document that has no supplier', async () => {
     const h = harness({ history: () => historyReply([historyRow(6, 'Remito 0002', 2, 18)]) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
     fireEvent.click(confirm(dialog));
     await waitFor(() => expect(h.reversals()).toHaveLength(1));
@@ -671,8 +832,8 @@ describe('stock counter-entry', () => {
       reverse: () => errorReply('insufficient_stock', 409) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
     fireEvent.click(confirm(dialog));
     await waitFor(() => expect(within(dialog).getByRole('alert'))
@@ -688,8 +849,8 @@ describe('stock counter-entry', () => {
       reverse: () => { calls += 1; return calls === 1 ? errorReply('service_unavailable', 503) : counterReply(); } });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
     fireEvent.click(confirm(dialog));
     await waitFor(() => expect(within(dialog).getByRole('alert')).toHaveTextContent(stockEntryReversalErrorMessages.service_unavailable));
@@ -711,13 +872,13 @@ describe('stock counter-entry', () => {
     });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
     fireEvent.click(confirm(dialog));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(await within(historial()).findByText(stockEntryReversalErrorMessages.decision_conflict)).toBeInTheDocument();
-    await within(historial()).findByText('#10');
+    expect(await within(historyPanel()).findByText(stockEntryReversalErrorMessages.decision_conflict)).toBeInTheDocument();
+    await within(historyPanel()).findByText('#10');
   });
 
   it('disables the action while the reversal is in flight', async () => {
@@ -726,8 +887,8 @@ describe('stock counter-entry', () => {
       reverse: () => new Promise<Response>(yes => { resolve = yes; }) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    const dialog = await openReversal(historial());
+    await within(historyPanel()).findByText('#6');
+    const dialog = await openReversal(historyPanel());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
     fireEvent.click(confirm(dialog));
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Confirmar contra-asiento' })).toBeDisabled());
@@ -740,7 +901,6 @@ describe('stock counter-entry', () => {
 });
 
 describe('stock ingress detail', () => {
-  const historial = () => sections().historial;
   // Each listed document has its own detail, so a stale reply would be visible.
   const defaultDetail = (id: string) => id === '9'
     ? detailReply({ id: 9, note: 'Remito 0003', lines: [detailLineOf(4, '95D31L', 4, '90')], total_units: 4 })
@@ -749,7 +909,7 @@ describe('stock ingress detail', () => {
         lines: [detailLineOf(4, 'NS40ZL', -3, '35'), detailLineOf(9, 'NS60L', -15)], total_units: -18 })
       : detailReply();
   const rowsWithDetail = () => [historyRow(9, 'Remito 0003', 1, 4, null, north), historyRow(7, '', 2, -18), historyRow(6, 'Remito 0002', 2, 18)];
-  const detailButton = (id: number) => within(historial()).getByRole('button', { name: `Ver detalle del ingreso #${id}` });
+  const detailButton = (id: number) => within(historyPanel()).getByRole('button', { name: `Ver detalle del ingreso #${id}` });
   const openDetail = async (id: number) => {
     fireEvent.click(detailButton(id));
     return screen.getByRole('dialog', { name: `Detalle del ingreso #${id}` });
@@ -760,8 +920,8 @@ describe('stock ingress detail', () => {
       historyRow(7, 'Remito 0002', 2, 18, 10), historyRow(6, '', 3, 6)]) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
-    expect(within(historial()).getAllByRole('button', { name: /^Ver detalle del ingreso/ })
+    await within(historyPanel()).findByText('#6');
+    expect(within(historyPanel()).getAllByRole('button', { name: /^Ver detalle del ingreso/ })
       .map(button => button.getAttribute('aria-label')))
       .toEqual(['Ver detalle del ingreso #9', 'Ver detalle del ingreso #7', 'Ver detalle del ingreso #6']);
   });
@@ -770,7 +930,7 @@ describe('stock ingress detail', () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
+    await within(historyPanel()).findByText('#6');
     fireEvent.click(detailButton(6));
     const dialog = screen.getByRole('dialog', { name: 'Detalle del ingreso #6' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -797,7 +957,7 @@ describe('stock ingress detail', () => {
       detail: id => id === '9' ? defaultDetail(id) : detailReply({ supplier: null }) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#9');
+    await within(historyPanel()).findByText('#9');
     const withSupplier = await openDetail(9);
     await within(withSupplier).findByText('TOYO · 95D31L');
     expect(within(withSupplier).getByText('Proveedor')).toBeInTheDocument();
@@ -818,7 +978,7 @@ describe('stock ingress detail', () => {
     });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#8');
+    await within(historyPanel()).findByText('#8');
     const dialog = await openDetail(8);
     await within(dialog).findByText('Agua acidulada');
     const lines = within(dialog).getAllByRole('row').slice(1)
@@ -834,7 +994,7 @@ describe('stock ingress detail', () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#7');
+    await within(historyPanel()).findByText('#7');
     const dialog = await openDetail(7);
     await within(dialog).findByText(/error de carga/);
     expect(within(dialog).getByText('Contra-asiento del documento')).toBeInTheDocument();
@@ -852,7 +1012,7 @@ describe('stock ingress detail', () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
+    await within(historyPanel()).findByText('#6');
     const first = await openDetail(6);
     await within(first).findByText('TOYO · NS60L');
     fireEvent.keyDown(first, { key: 'Escape' });
@@ -871,7 +1031,7 @@ describe('stock ingress detail', () => {
       detail: id => { if (failing) { failing = false; return errorReply('service_unavailable', 503); } return defaultDetail(id); } });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
+    await within(historyPanel()).findByText('#6');
     const dialog = await openDetail(6);
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('No pudimos traer el detalle de este ingreso');
     expect(within(dialog).queryByRole('table')).not.toBeInTheDocument();
@@ -884,7 +1044,7 @@ describe('stock ingress detail', () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
+    await within(historyPanel()).findByText('#6');
     const dialog = await openDetail(6);
     await within(dialog).findByText('TOYO · NS60L');
     expect(dialog).toHaveFocus();
@@ -901,11 +1061,11 @@ describe('stock ingress detail', () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    await within(historial()).findByText('#6');
+    await within(historyPanel()).findByText('#6');
     const dialog = await openDetail(6);
     await within(dialog).findByText('TOYO · NS60L');
     fireEvent.keyDown(dialog, { key: 'Escape' });
-    fireEvent.click(within(historial()).getByRole('button', { name: 'Anular ingreso #6' }));
+    fireEvent.click(within(historyPanel()).getByRole('button', { name: 'Anular ingreso #6' }));
     const reversal = screen.getByRole('dialog', { name: 'Registrar contra-asiento' });
     fireEvent.change(within(reversal).getByLabelText('Motivo del contra-asiento'), { target: { value: 'error de carga' } });
     fireEvent.click(within(reversal).getByRole('button', { name: 'Confirmar contra-asiento' }));
@@ -915,58 +1075,57 @@ describe('stock ingress detail', () => {
   });
 });
 
-describe('stock entry kind first', () => {
+describe('stock entry other products', () => {
   const productReply = (search: string) => new Response(
     catalogPage(search === 'nada' ? []
-      : search === 'x12' ? [productRow(211, 'Guantes de nitrilo', 'presentación: pack x12')]
-        : [productRow(210, 'Agua acidulada', 'volumen en L: 5 L'), productRow(211, 'Guantes de nitrilo', 'presentación: pack x12')]),
+      : search === 'x12' ? [productRow(211, 98, 'Guantes de nitrilo', 'presentación: pack x12')]
+        : [productRow(210, 97, 'Agua acidulada', 'volumen en L: 5 L'),
+          productRow(211, 98, 'Guantes de nitrilo', 'presentación: pack x12')]),
     { status: 200, headers: { 'Content-Type': 'application/json' } });
 
-  it('asks what is arriving before it shows any catalog or document', async () => {
+  it('asks for the kind before reading anything and offers only the two kinds', async () => {
     const h = harness({ catalog: search => productReply(search) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    const step = kindStep();
-    const choices = within(step).getAllByRole('button').map(button => button.getAttribute('aria-pressed'));
-    expect(choices).toEqual(['false', 'false']);
-    expect(within(step).getByText('Con marca, modelo, capacidad y polaridad.')).toBeInTheDocument();
-    expect(within(step).getByText('Del catálogo libre: nombre y sus campos propios.')).toBeInTheDocument();
+    const control = kindControl() as HTMLElement;
+    expect(within(control).getAllByRole('button').map(button => button.getAttribute('aria-pressed')))
+      .toEqual(['false', 'false']);
     // Nothing has been read and no document exists until the kind is chosen.
     expect(screen.queryByRole('region', { name: 'Catálogo' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Documento de ingreso' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Documento' })).not.toBeInTheDocument();
     expect(h.catalogs()).toHaveLength(0);
     // The chosen kind is what the picker reads and what the document declares.
-    choose('Otros productos');
-    const { catalogo, documento } = sections();
-    expect(within(step).getByRole('button', { name: /^Otros productos/ })).toHaveAttribute('aria-pressed', 'true');
-    expect(await within(catalogo).findByText('Agua acidulada')).toBeInTheDocument();
+    chooseKind('Otros productos');
+    expect(within(control).getByRole('button', { name: 'Otros productos' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await within(catalogPanel()).findByText('Agua acidulada')).toBeInTheDocument();
     expect(h.catalogs()[0].url).toBe('/api/suppliers/3/catalog?kind=other');
-    expect(within(documento).getByRole('note', { name: 'Tipo del documento' })).toHaveTextContent('Otros productos');
+    expect(within(documentPanel()).getByRole('note', { name: 'Tipo del documento' })).toHaveTextContent('Otros productos');
   });
 
-  it('offers the product table with its own columns and search hint', async () => {
+  it('collects every other product in the single Otros productos group', async () => {
     const h = harness({ catalog: search => productReply(search) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    choose('Otros productos');
-    const { catalogo } = sections();
-    await within(catalogo).findByText('Agua acidulada');
-    expect(within(catalogo).getAllByRole('columnheader').map(head => head.textContent))
-      .toEqual(['Producto', 'Detalle', 'Acción']);
+    chooseKind('Otros productos');
+    const catalogo = catalogPanel();
+    const head = await within(catalogo).findByRole('button', { name: /^Otros productos/ });
+    expect(head).toHaveAttribute('aria-expanded', 'true');
+    expect(head).toHaveTextContent('2 productos');
+    // A product of another kind is added by its own name, with no polarity at all.
+    expect(within(catalogo).getAllByRole('columnheader').map(column => column.textContent))
+      .toEqual(['Producto', 'Agregar', 'En el documento']);
     expect(within(catalogo).getByText('volumen en L: 5 L')).toBeInTheDocument();
-    fireEvent.change(within(catalogo).getByLabelText('Buscar nombre o dato del producto'), { target: { value: 'x12' } });
-    await within(catalogo).findByRole('button', { name: 'Agregar Guantes de nitrilo' });
-    expect(h.catalogs().at(-1)?.url).toBe('/api/suppliers/3/catalog?kind=other&search=x12');
-    expect(within(catalogo).queryByText('Agua acidulada')).not.toBeInTheDocument();
+    expect(within(catalogo).queryByRole('button', { name: /polaridad/ })).not.toBeInTheDocument();
+    expect(within(catalogo).getAllByRole('button', { name: /^Agregar / })).toHaveLength(2);
   });
 
   it('adds a product line with its name and detail and sends only a variant and a quantity', async () => {
     const h = harness({ catalog: search => productReply(search) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
     await chooseSupplier();
-    choose('Otros productos');
-    const { documento } = sections();
-    await within(sections().catalogo).findByRole('button', { name: 'Agregar Agua acidulada' });
+    chooseKind('Otros productos');
+    const documento = documentPanel();
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar Agua acidulada' });
     fireEvent.click(addProduct('Agua acidulada'));
     expect(within(documento).getByLabelText('Cantidad de Agua acidulada')).toHaveValue(1);
     expect(within(documento).getByText('Agua acidulada')).toBeInTheDocument();
@@ -975,7 +1134,7 @@ describe('stock entry kind first', () => {
     expect(within(documento).queryByText(/Ah/)).not.toBeInTheDocument();
     expect(within(documento).queryByText(/Polaridad/)).not.toBeInTheDocument();
     fireEvent.change(within(documento).getByLabelText('Cantidad de Agua acidulada'), { target: { value: '20' } });
-    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    fireEvent.click(confirmButton());
     await waitFor(() => expect(h.posts()).toHaveLength(1));
     expect(JSON.parse(String(h.posts()[0].init.body))).toEqual({
       operation_key: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/), supplier_id: 3, lines: [{ variant_id: 210, quantity: 20 }],
@@ -985,40 +1144,30 @@ describe('stock entry kind first', () => {
   it('asks for confirmation and discards the draft when the kind changes with a line', async () => {
     const h = harness({ catalog: (search, kind) => kind === 'other' ? productReply(search) : catalogReply(search) });
     await ready(h);
-    const { documento } = sections();
-    fireEvent.click(addButton('NS40ZL'));
-    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
-    choose('Otros productos');
+    const documento = documentPanel();
+    fireEvent.click(polarityButton('TOYO', 'NS40ZL', 'L'));
+    fireEvent.change(within(documento).getByLabelText('Nota (opcional)'), { target: { value: 'Remito 0002' } });
+    chooseKind('Otros productos');
     const dialog = screen.getByRole('dialog', { name: 'Cambiar el tipo del ingreso' });
     expect(within(dialog).getByText(/nunca mezcla los dos tipos/)).toBeInTheDocument();
     expect(within(dialog).getByText(/no se convierten ni se migran/)).toBeInTheDocument();
     // Nothing changed while the confirmation is open.
     expect(h.catalogs().at(-1)?.url).toContain('kind=battery');
-    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(1);
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).toHaveValue(1);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(1);
-    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).toHaveValue(1);
+    expect(within(documento).getByLabelText('Nota (opcional)')).toHaveValue('Remito 0002');
     // The deliberate change discards the draft of the other kind.
-    choose('Otros productos');
+    chooseKind('Otros productos');
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Cambiar el tipo del ingreso' }))
       .getByRole('button', { name: 'Descartar borrador y cambiar tipo' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    await within(sections().catalogo).findByRole('button', { name: 'Agregar Agua acidulada' });
+    await within(catalogPanel()).findByRole('button', { name: 'Agregar Agua acidulada' });
     expect(h.catalogs().at(-1)?.url).toContain('kind=other');
-    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS40ZL')).not.toBeInTheDocument();
+    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS40ZL polaridad L')).not.toBeInTheDocument();
     expect(within(documento).getByText('Todavía no agregaste líneas.')).toBeInTheDocument();
-    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('');
+    expect(within(documento).getByLabelText('Nota (opcional)')).toHaveValue('');
     expect(within(documento).getByRole('note', { name: 'Tipo del documento' })).toHaveTextContent('Otros productos');
-  });
-
-  it('keeps the two existing copy strings word for word', async () => {
-    const h = harness();
-    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
-    await chooseSupplier();
-    choose('Baterías');
-    const { documento } = sections();
-    expect(screen.getByText('Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.')).toBeInTheDocument();
-    expect(documento).toHaveTextContent('Todo o nada: si una línea es inválida no se aplica ninguna. Una vez confirmado, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.');
   });
 });

@@ -11,6 +11,8 @@ import {
   validStockQuantity, offeredStockEntryVariantIDs, parseStockSupplierError, parseSupplierCatalog, parseSupplierList,
   stockSupplierAdmittedErrors, stockSupplierListPath, stockSupplierMaxCatalogPageSize, stockSupplierNoOffers,
   stockSupplierPageSize, supplierCatalogPath, unofferedStockEntryVariantIDs,
+  groupSupplierCatalog, supplierCatalogGroupDraftUnits, supplierCatalogGroupKeyOf, supplierCatalogProductCount,
+  supplierCatalogProductDraftUnits, stockEntryOtherGroupLabel,
   type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalInput, type SupplierCatalogRow,
 } from './stockEntryModel';
 
@@ -805,5 +807,71 @@ describe('stock ingress detail contract', () => {
     expect(stockEntryDetailErrorMessages.not_found).toContain('no existe');
     expect(stockEntryDetailErrorMessages.network).toContain('No se pudo conectar');
     expect(stockEntryDetailErrorMessages.aborted).toContain('Se interrumpió');
+  });
+});
+
+describe('supplier catalogue grouping', () => {
+  const battery = (variant: number, entry: number, brand: string, model: string, capacity = '35',
+    polarity: 'L' | 'R' = 'L'): SupplierCatalogRow => ({
+    variant_id: variant, catalog_entry_id: entry, kind: 'battery', name: `${brand} · ${model}`,
+    detail: `${capacity} Ah · ${polarity}`,
+    battery: { brand, model, capacity_ah: capacity, polarity }, fields: null });
+  const product = (variant: number, entry: number, name: string, detail: string): SupplierCatalogRow => ({
+    variant_id: variant, catalog_entry_id: entry, kind: 'other', name, detail, battery: null, fields: null });
+  const items: readonly SupplierCatalogRow[] = [
+    battery(4, 11, 'TOYO', 'NS40ZL'), battery(5, 11, 'TOYO', 'NS40ZL', '35', 'R'),
+    battery(8, 12, 'TOYO', 'NS60L', '45'), battery(9, 12, 'TOYO', 'NS60L', '45', 'R'),
+    battery(21, 21, 'WILLARD', '55D23L', '50'), battery(22, 21, 'WILLARD', '55D23L', '50', 'R'),
+  ];
+
+  it('groups by brand with one product per catalogue entry, not one per polarity', () => {
+    const groups = groupSupplierCatalog(items);
+    expect(groups.map(group => ({ key: group.key, label: group.label })))
+      .toEqual([{ key: 'brand:TOYO', label: 'TOYO' }, { key: 'brand:WILLARD', label: 'WILLARD' }]);
+    // 6 variants of 3 products are 3 rows: a product never repeats for its polarity.
+    expect(supplierCatalogProductCount(groups)).toBe(3);
+    expect(groups[0].products.map(entry => entry.catalog_entry_id)).toEqual([11, 12]);
+    expect(groups[0].products[0]).toMatchObject({ name: 'NS40ZL', detail: '35 Ah' });
+    expect(groups[0].products[0].variants.map(variant => variant.variant_id)).toEqual([4, 5]);
+    expect(groups[0].products[1].variants.map(variant => variant.variant_id)).toEqual([8, 9]);
+    expect(Object.isFrozen(groups)).toBe(true);
+    expect(Object.isFrozen(groups[0].products)).toBe(true);
+    expect(Object.isFrozen(groups[0].products[0].variants)).toBe(true);
+  });
+
+  it('collects every other product in the single Otros productos group', () => {
+    const groups = groupSupplierCatalog([
+      product(210, 97, 'Agua acidulada', 'volumen en L: 5 L'),
+      product(211, 98, 'Guantes de nitrilo', 'presentación: pack x12'),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ key: 'other', label: stockEntryOtherGroupLabel });
+    expect(groups[0].products.map(entry => entry.name)).toEqual(['Agua acidulada', 'Guantes de nitrilo']);
+    // A product of another kind keeps its own name and detail as its row.
+    expect(groups[0].products[1]).toMatchObject({ detail: 'presentación: pack x12' });
+    expect(supplierCatalogProductCount(groups)).toBe(2);
+    expect(groupSupplierCatalog([])).toEqual([]);
+  });
+
+  it('adds up the units the draft holds per product and per brand', () => {
+    const groups = groupSupplierCatalog(items);
+    const units = new Map([[4, 3], [5, 2], [8, 1], [21, 7]]);
+    expect(supplierCatalogProductDraftUnits(groups[0].products[0], units)).toBe(5);
+    expect(supplierCatalogProductDraftUnits(groups[0].products[1], units)).toBe(1);
+    expect(supplierCatalogGroupDraftUnits(groups[0], units)).toBe(6);
+    expect(supplierCatalogGroupDraftUnits(groups[1], units)).toBe(7);
+    expect(supplierCatalogGroupDraftUnits(groups[1], new Map())).toBe(0);
+  });
+
+  it('finds the brand group of a variant so the screen opens where the work is', () => {
+    const groups = groupSupplierCatalog(items);
+    expect(supplierCatalogGroupKeyOf(groups, 9)).toBe('brand:TOYO');
+    expect(supplierCatalogGroupKeyOf(groups, 22)).toBe('brand:WILLARD');
+    expect(supplierCatalogGroupKeyOf(groups, 999)).toBeNull();
+  });
+
+  it('keeps the copy of the grouping free of the internal word for variants', () => {
+    expect(stockEntryOtherGroupLabel).toBe('Otros productos');
+    expect(stockEntryOtherGroupLabel).not.toMatch(/variante/i);
   });
 });

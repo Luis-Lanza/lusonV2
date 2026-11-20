@@ -7,9 +7,11 @@ import {
   canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason,
   newStockEntryOperationKey, stockEntryDetailErrorMessages, stockEntryErrorMessages,
   stockEntryFailureIsDefinite, stockEntryHistoryDefaultPageSize, stockEntryHistoryMaxPage, stockEntryHistoryPageSizes,
-  stockEntryHistoryUnavailable, stockEntryKindDescriptions, stockEntryKindLabels, stockEntryKinds, stockEntryMaxNote,
+  stockEntryHistoryUnavailable, stockEntryKindLabels, stockEntryKinds, stockEntryMaxNote,
   stockEntryMaxQuantity, stockEntryMaxReason,
   stockEntryReversalErrorMessages, stockEntryReversalFailureIsDefinite, stockEntryReversible,
+  groupSupplierCatalog, supplierCatalogGroupDraftUnits, supplierCatalogGroupKeyOf, supplierCatalogProductCount,
+  supplierCatalogProductDraftUnits,
   stockSupplierDraftNotOffered, stockSupplierNoOffers, stockSupplierPageSize, stockSupplierRequired,
   unofferedStockEntryVariantIDs, validStockQuantity,
   type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryDetailLine, type StockEntryErrorCode,
@@ -61,23 +63,30 @@ const supplierCatalogUnavailable =
 // the name and the detail the server composes from its typed fields.
 const detailBatteryLines = (lines: readonly StockEntryDetailLine[]) =>
   lines.flatMap(line => line.battery === null ? [] : [{ line, battery: line.battery }]);
-// The picker only ever holds the kind of the document, so each table reads the
-// rows of its own shape and labels a product without inventing a battery.
-const supplierBatteryRows = (items: readonly SupplierCatalogRow[]) =>
-  items.flatMap(item => item.battery === null ? [] : [{ item, battery: item.battery }]);
 // What the supplier brings in, said before choosing it, so an empty supplier is
-// obvious and never a surprise inside the picker.
+// obvious and never a surprise inside the picker. One count per concept: the
+// catalogue counts products and the document counts lines.
 const offerCount = (choice: SupplierChoice) => choice.offers === 0
   ? 'Sin productos asignados'
-  : `${choice.offers} ${choice.offers === 1 ? 'producto ofrecido' : 'productos ofrecidos'}`;
+  : `${choice.offers} ${choice.offers === 1 ? 'producto' : 'productos'}`;
 const supplierName = (supplier: { readonly name: string } | null) => supplier === null ? 'sin proveedor' : supplier.name;
+const countLabel = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+// The accessible name of a picker row. A battery is named by its brand and model
+// because the row no longer repeats the brand inside the group.
+const variantName = (row: SupplierCatalogRow) => row.battery === null ? row.name : `${row.battery.brand} ${row.battery.model}`;
+// The draft names the exact variant, so the two lines of one product (its two
+// polarities) are never two controls with the same accessible name.
+const lineName = (line: VariantIdentity) =>
+  line.battery === null ? line.name : `${line.name} polaridad ${line.battery.polarity}`;
+const lineDetail = (line: VariantIdentity) =>
+  line.battery === null ? line.detail : `${line.battery.capacity_ah} Ah · Polaridad ${line.battery.polarity}`;
 
 export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEntryProps) {
   const api = useMemo(() => createStockEntryAPI(fetcher), [fetcher]);
   // The document names the supplier whose products it brings in: the supplier is
   // chosen first and nothing is read or saved until it is.
   const [supplier, setSupplier] = useState<SupplierChoice | null>(null);
-  const [supplierSwitch, setSupplierSwitch] = useState<{ next: SupplierChoice; trigger: HTMLButtonElement } | null>(null);
+  const [supplierSwitch, setSupplierSwitch] = useState<{ next: SupplierChoice; trigger: HTMLElement } | null>(null);
   const supplierDialog = useRef<HTMLElement>(null);
   const [suppliersState, setSuppliersState] = useState<SupplierState>(
     { phase: 'loading', page: null, problem: supplierUnavailable });
@@ -91,6 +100,10 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   const [revision, setRevision] = useState(0);
   const [catalog, setCatalog] = useState<CatalogState>(
     { phase: 'loading', items: [], problem: supplierCatalogUnavailable });
+  // The catalogue is shown as products grouped by brand (H): the group where the
+  // operator is working opens by default, everything else stays collapsed, and
+  // 'all' is the state the "Ver todos los productos" row sets.
+  const [expandedGroups, setExpandedGroups] = useState<readonly string[] | 'all' | null>(null);
   const [lines, setLines] = useState<readonly DocumentLine[]>([]);
   const [note, setNote] = useState('');
   const [status, setStatus] = useState('');
@@ -173,6 +186,17 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     return () => controller.abort();
   }, [api, supplier, kind, search, revision]);
 
+  const catalogGroups = useMemo(() => groupSupplierCatalog(catalog.items), [catalog.items]);
+  // A group key of a catalogue that is gone is dropped, so a search never leaves
+  // every group closed behind it.
+  useEffect(() => {
+    setExpandedGroups(current => {
+      if (current === null || current === 'all') return current;
+      const kept = current.filter(key => catalogGroups.some(group => group.key === key));
+      return kept.length === current.length ? current : kept;
+    });
+  }, [catalogGroups]);
+
   useEffect(() => {
     const controller = new AbortController();
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
@@ -225,11 +249,12 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     setKind(next.kinds.length === 1 ? next.kinds[0] : null);
     setSearch('');
     setCatalog({ phase: 'loading', items: [], problem: supplierCatalogUnavailable });
+    setExpandedGroups(null);
     setLines([]);
     setNote('');
     setStatus('');
   }
-  function chooseSupplier(next: SupplierChoice, trigger: HTMLButtonElement) {
+  function chooseSupplier(next: SupplierChoice, trigger: HTMLElement) {
     if (busy || pending.current || supplierSwitch || kindSwitch || next.retired || next.id === supplier?.id) return;
     // With nothing typed the change costs nothing; a draft with a line is
     // discarded only after the deliberate confirmation.
@@ -253,6 +278,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     setKind(next);
     setKindSwitch(null);
     setSearch('');
+    setExpandedGroups(null);
     setLines([]);
     setNote('');
     setStatus('');
@@ -276,20 +302,25 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     if (kindSwitch) kindDialog.current?.focus();
   }, [kindSwitch]);
 
-  function add(row: SupplierCatalogRow) {
+  function add(row: SupplierCatalogRow, groupKey: string | null) {
     // Only a row of the chosen supplier's catalogue is a line of this document.
     if (!offered.current.has(row.variant_id)) { setStatus(stockSupplierDraftNotOffered); return; }
     forgetAttempt();
+    // Adding never hides the row that was just used: an explicit grouping keeps
+    // the group of the new line open.
+    setExpandedGroups(current => current === null || current === 'all' || groupKey === null
+      || current.includes(groupKey) ? current : [...current, groupKey]);
+    const label = lineName(identityOf(row));
     const current = lines.find(line => line.variant_id === row.variant_id);
     if (current) {
       const previous = Number(current.quantity);
       const quantity = validStockQuantity(previous) ? Math.min(previous + 1, stockEntryMaxQuantity) : 1;
       setLines(lines.map(line => line.variant_id === row.variant_id ? { ...line, quantity: String(quantity) } : line));
-      setStatus(`${row.name} ya estaba en el documento: ahora ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}.`);
+      setStatus(`${label} ya estaba en el documento: ahora ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}.`);
       return;
     }
     setLines([...lines, { ...identityOf(row), quantity: '1' }]);
-    setStatus(`${row.name} agregado al documento.`);
+    setStatus(`${label} agregado al documento.`);
   }
   function setQuantity(variant: number, value: string) {
     if (!/^\d{0,7}$/.test(value)) return;
@@ -464,12 +495,27 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   // Only the kinds this supplier actually offers are offered here: choosing it
   // never shows a kind that would open an empty catalogue.
   const offeredKinds = supplier === null ? [] : stockEntryKinds.filter(option => supplier.kinds.includes(option));
-  const catalogCount = kind === 'other'
-    ? `${catalog.items.length} ${catalog.items.length === 1 ? 'producto' : 'productos'}`
-    : `${catalog.items.length} ${catalog.items.length === 1 ? 'variante' : 'variantes'}`;
-  // The picker only ever holds the kind of the document, so each table reads the
-  // rows of its own shape: the battery table exactly as it is today.
-  const batteryCatalog = kind === 'battery' ? supplierBatteryRows(catalog.items) : [];
+  // The picker reads products, so the counters and the rows count products even
+  // when the catalogue answered two polarities for one of them.
+  const catalogProducts = supplierCatalogProductCount(catalogGroups);
+  const draftUnits = new Map(lines.map(line => [line.variant_id,
+    validStockQuantity(Number(line.quantity)) ? Number(line.quantity) : 0] as const));
+  // The group where the operator is working: the brand of the most recently added
+  // line, or the first group while the document is empty.
+  const lastLine = lines.length > 0 ? lines[lines.length - 1] : null;
+  const activeGroupKey = (lastLine === null ? null : supplierCatalogGroupKeyOf(catalogGroups, lastLine.variant_id))
+    ?? (catalogGroups.length > 0 ? catalogGroups[0].key : null);
+  const openGroupKeys = expandedGroups === null
+    ? (activeGroupKey === null ? [] : [activeGroupKey])
+    : expandedGroups === 'all' ? catalogGroups.map(group => group.key) : expandedGroups;
+  const groupIsOpen = (key: string) => openGroupKeys.includes(key);
+  // A group header opens and closes its own rows in place; with every group open
+  // it closes only the one that was clicked.
+  function toggleGroup(key: string) {
+    setExpandedGroups(groupIsOpen(key)
+      ? openGroupKeys.filter(candidate => candidate !== key)
+      : [...openGroupKeys, key]);
+  }
   const historyRows = history.phase === 'ready' && history.page ? history.page.entries : [];
   // A detail is only ever rendered for the document that asked for it.
   const detailView = detail && detailLoad.id === detail.row.id ? detailLoad : null;
@@ -491,32 +537,40 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       <h1 id="stock-entry-title">Nuevo ingreso de stock</h1>
       <p>Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.</p>
     </header>
-    {/* The screen starts by asking who brings the merchandise: no kind, no
-        catalog and no document exist until the supplier is chosen (S4). */}
-    <section className="stock-entry-panel stock-supplier-panel" aria-labelledby="stock-supplier-step-title"
+    {/* One compact strip: the supplier is the context of the document, and the
+        kind is a fact when the supplier offers one and a control only when it
+        offers both. No sentence explains a step that does not exist (S4). */}
+    <section className="stock-entry-panel stock-context" aria-label="Contexto del documento"
       aria-busy={suppliersState.phase === 'loading'}>
-      <div className="stock-panel-head">
-        <div><h2 id="stock-supplier-step-title">Proveedor del ingreso</h2>
-          <p className="stock-hint">Elegí primero el proveedor: el ingreso solo admite los productos que ese proveedor ofrece.</p></div>
-        <span className="stock-tag">{supplier === null ? 'Sin elegir' : supplier.name}</span>
-      </div>
-      {suppliersState.phase === 'loading' && <p className="stock-message" role="status">Consultando proveedores…</p>}
+      <label className="stock-context-field stock-context-supplier" htmlFor="stock-supplier">Proveedor
+        <select id="stock-supplier" value={supplier?.id ?? ''} disabled={busy || suppliersState.phase !== 'ready'}
+          onChange={event => {
+            const next = supplierChoices.find(choice => String(choice.id) === event.target.value);
+            if (next) chooseSupplier(next, event.currentTarget);
+          }}>
+          <option value="">Elegí un proveedor</option>
+          {supplierChoices.map(choice => <option key={choice.id} value={choice.id} disabled={choice.retired}>
+            {choice.name} · {offerCount(choice)}{choice.retired ? ' · Retirado' : ''}
+          </option>)}
+        </select>
+      </label>
+      <span className="stock-tag">{supplier === null ? 'Sin elegir' : offerCount(supplier)}</span>
+      {kind !== null && offeredKinds.length === 1 && <span className="stock-chip" role="note"
+        aria-label="Tipo del documento">{stockEntryKindLabels[kind]}</span>}
+      {offeredKinds.length > 1 && <div className="stock-context-kind" role="group" aria-label="Tipo de producto del ingreso">
+        {offeredKinds.map(option => <button type="button" key={option} className="stock-context-kind-choice"
+          aria-pressed={kind === option} disabled={busy}
+          onClick={event => chooseKind(option, event.currentTarget)}>{stockEntryKindLabels[option]}</button>)}
+      </div>}
+      {supplier !== null && supplier.offers === 0 && <span className="stock-tag">Sin productos</span>}
+      {suppliersState.phase === 'loading' && <p className="stock-hint" role="status">Consultando proveedores…</p>}
       {suppliersState.phase === 'error' && <p className="stock-message" role="alert">{suppliersState.problem}
         <button type="button" disabled={busy} onClick={() => setSuppliersRevision(value => value + 1)}>Reintentar proveedores</button></p>}
       {suppliersState.phase === 'ready' && supplierChoices.length === 0 &&
         <p className="stock-message">Todavía no hay proveedores cargados. Creá uno en Catálogo → Proveedores y volvé a intentar.</p>}
-      {supplierChoices.length > 0 && <div className="stock-supplier-list" role="group" aria-label="Proveedor del ingreso">
-        {supplierChoices.map(choice => <button type="button" key={choice.id} className="stock-supplier-choice"
-          aria-pressed={supplier?.id === choice.id} disabled={busy || choice.retired}
-          onClick={event => chooseSupplier(choice, event.currentTarget)}>
-          <strong>{choice.name}</strong>
-          <span>{offerCount(choice)}</span>
-          {choice.retired && <span className="stock-tag">Retirado</span>}
-        </button>)}
-      </div>}
+      {supplier === null && suppliersState.phase === 'ready' && supplierChoices.length > 0 &&
+        <p className="stock-hint" role="status">Elegí el proveedor para ver los productos que podés ingresar.</p>}
     </section>
-    {supplier === null && suppliersState.phase === 'ready' && supplierChoices.length > 0 &&
-      <p className="stock-hint" role="status">Elegí el proveedor para ver los productos que podés ingresar.</p>}
     {/* A supplier without assigned products cannot receive an ingress: it says so
         instead of opening a picker that could never fill a document (S5). */}
     {supplier !== null && supplier.offers === 0 && <section className="stock-entry-panel stock-empty-panel"
@@ -527,99 +581,135 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       </div>
       <p className="stock-message">{stockSupplierNoOffers}</p>
     </section>}
-    {supplier !== null && offeredKinds.length > 1 && <div className="stock-kind-step" role="group"
-      aria-label="Tipo de producto del ingreso">
-      {offeredKinds.map(option => <button type="button" key={option} className="stock-kind-choice"
-        aria-pressed={kind === option} disabled={busy}
-        onClick={event => chooseKind(option, event.currentTarget)}>
-        <span className="stock-kind-dot" aria-hidden="true" />
-        <span><strong>{stockEntryKindLabels[option]}</strong><span>{stockEntryKindDescriptions[option]}</span></span>
-      </button>)}
-    </div>}
-    {/* A single offered kind needs no decision and no dead button: it is chosen
-        as soon as the supplier is, and the document declares it. */}
-    {supplier !== null && offeredKinds.length === 1 && <p className="stock-hint" role="status">
-      Este proveedor ofrece un solo tipo: <strong>{stockEntryKindLabels[offeredKinds[0]]}</strong>. Queda elegido automáticamente.
-    </p>}
-    {supplier !== null && offeredKinds.length > 1 && kind === null &&
-      <p className="stock-hint" role="status">Elegí el tipo de producto para ver el catálogo y el documento.</p>}
-    {kind !== null && <p className="stock-kind-line">Este ingreso es de <strong>{stockEntryKindLabels[kind]}</strong>. Un documento nunca mezcla los dos tipos. {lines.length > 0 && 'Cambiar el tipo pide confirmación y descarta el borrador.'}</p>}
-    {supplier !== null && kind !== null && <div className="stock-entry-grid">
-      <section className="stock-entry-panel" aria-labelledby="stock-catalog-title" aria-busy={catalog.phase === 'loading'}>
+    {supplier !== null && kind !== null && <div className="stock-entry-panels">
+      {/* The catalogue is a bounded region: the search above it, the column head
+          pinned inside its own scroll and the counters in a footer of its own, so
+          a supplier with 40 products never grows the page (F). Its order is the
+          brand groups of H: the group of the last added line open. */}
+      <section className="stock-entry-panel stock-catalog-panel" aria-labelledby="stock-catalog-title"
+        aria-busy={catalog.phase === 'loading'}>
         <div className="stock-panel-head">
-          <div><h2 id="stock-catalog-title">Catálogo</h2><p className="stock-hint">{supplier.name}</p></div>
-          <span className="stock-tag">{catalog.phase === 'ready' ? catalogCount : 'Proveedor'}</span>
+          <div><h2 id="stock-catalog-title">Catálogo</h2>
+            <p className="stock-hint">{`${supplier.name} · ${stockEntryKindLabels[kind]} · ${countLabel(catalogGroups.length,
+              kind === 'battery' ? 'marca' : 'grupo', kind === 'battery' ? 'marcas' : 'grupos')}`}</p></div>
+          <span className="stock-tag">{countLabel(catalogProducts, 'producto', 'productos')}</span>
         </div>
         <label className="stock-search">{kind === 'other' ? 'Buscar nombre o dato del producto' : 'Buscar marca, modelo o capacidad'}
           <input type="search" value={search} placeholder={kind === 'other' ? 'Agua acidulada, 5 L' : 'NS40ZL, TOYO, 45 Ah'}
             onChange={event => setSearch(event.target.value)} />
         </label>
-        {catalog.phase === 'ready' && catalog.items.length > 0 && <div className="stock-table-wrap">
-          <table className="stock-table">
-            <caption className="sr-only">{kind === 'other' ? 'Productos que ofrece el proveedor elegido' : 'Variantes que ofrece el proveedor elegido'}</caption>
-            {kind === 'other'
-              ? <>
-                <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th><th scope="col">Acción</th></tr></thead>
-                <tbody>{catalog.items.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}>
-                  <td data-label="Producto"><strong>{row.name}</strong></td>
-                  <td data-label="Detalle">{row.detail}</td>
-                  <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${row.name}`} onClick={() => add(row)}>Agregar</button></td>
-                </tr>)}</tbody>
-              </>
-              : <>
-                <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Acción</th></tr></thead>
-                <tbody>{batteryCatalog.map(({ item: row, battery }) => <tr key={row.variant_id} data-variant-id={row.variant_id}>
-                  <td data-label="Producto"><strong>{row.name}</strong></td>
-                  <td data-label="Capacidad">{battery.capacity_ah} Ah</td>
-                  <td data-label="Polaridad"><span className="polarity">{battery.polarity}</span></td>
-                  <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${row.name}`} onClick={() => add(row)}>Agregar</button></td>
-                </tr>)}</tbody>
-              </>}
-          </table>
-        </div>}
+        {catalog.phase === 'ready' && catalog.items.length > 0 && <>
+          <section className="stock-catalog-scroll" aria-label="Productos del catálogo">
+            <div className="stock-groups">
+              {catalogGroups.map((group, index) => {
+                const open = groupIsOpen(group.key);
+                const headID = `stock-group-head-${index}`;
+                const panelID = `stock-group-panel-${index}`;
+                const groupUnits = supplierCatalogGroupDraftUnits(group, draftUnits);
+                return <div className="stock-group" key={group.key} data-group-key={group.key}>
+                  <button type="button" id={headID} className="stock-group-head" aria-expanded={open}
+                    aria-controls={panelID} onClick={() => toggleGroup(group.key)}>
+                    <span className="stock-group-label">{group.label}</span>
+                    <span className="stock-tag">{countLabel(group.products.length, 'producto', 'productos')}</span>
+                    {groupUnits > 0 && <span className="stock-tag wine">{groupUnits} u.</span>}
+                    <span className="stock-group-mark" aria-hidden="true">▾</span>
+                  </button>
+                  <div className="stock-group-body" id={panelID}>
+                    {open && <table className="stock-table stock-catalog-table">
+                      <caption className="sr-only">{`Productos ${group.label} que ofrece ${supplier.name}`}</caption>
+                      <thead><tr>
+                        <th scope="col">Producto</th>
+                        <th scope="col">{kind === 'other' ? 'Agregar' : 'Polaridad'}</th>
+                        <th scope="col" className="stock-num">En el documento</th>
+                      </tr></thead>
+                      <tbody>{group.products.map(product => {
+                        const productUnits = supplierCatalogProductDraftUnits(product, draftUnits);
+                        return <tr key={product.catalog_entry_id} data-product-id={product.catalog_entry_id}>
+                          <td data-label="Producto"><strong>{product.name}</strong><small>{product.detail}</small></td>
+                          <td data-label={kind === 'other' ? 'Agregar' : 'Polaridad'}>
+                            {kind === 'other'
+                              ? <button type="button" className="stock-add" aria-label={`Agregar ${product.name}`}
+                                onClick={() => { const variant = product.variants[0]; if (variant) add(variant, group.key); }}>Agregar</button>
+                              : <div className="stock-polarities">{product.variants.flatMap(variant => variant.battery === null ? [] : [
+                                <button key={variant.variant_id} type="button" className="stock-polarity"
+                                  aria-label={`Agregar ${variantName(variant)} polaridad ${variant.battery.polarity}`}
+                                  data-variant-id={variant.variant_id}
+                                  data-in={draftUnits.has(variant.variant_id) ? 'true' : 'false'}
+                                  onClick={() => add(variant, group.key)}>
+                                  <span aria-hidden="true">{variant.battery.polarity}</span>
+                                  <span aria-hidden="true" className="stock-polarity-count">{draftUnits.get(variant.variant_id) ?? 0}</span>
+                                </button>])}</div>}
+                          </td>
+                          <td data-label="En el documento" className="stock-num"><strong>{`${productUnits} u.`}</strong></td>
+                        </tr>;
+                      })}</tbody>
+                    </table>}
+                  </div>
+                </div>;
+              })}
+            </div>
+            <button type="button" className="stock-group-all" onClick={() => setExpandedGroups('all')}>
+              Ver todos los productos ({catalogProducts})
+            </button>
+          </section>
+          <div className="stock-catalog-foot">
+            <p><b>{countLabel(catalogProducts, 'producto', 'productos')}</b> · <b>{countLabel(lines.length, 'línea', 'líneas')}</b> en el documento · <b>{totalUnits} u.</b></p>
+            <p>{countLabel(catalogGroups.length, kind === 'battery' ? 'marca' : 'grupo', kind === 'battery' ? 'marcas' : 'grupos')} · un producto que no aparezca acá no se puede ingresar: se asigna en Catálogo → Proveedores.</p>
+          </div>
+        </>}
         {catalog.phase === 'loading' && <p className="stock-message" role="status">Consultando el catálogo del proveedor…</p>}
         {catalog.phase === 'error' && <p className="stock-message" role="alert">{catalog.problem}
           <button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>Reintentar catálogo</button></p>}
         {catalog.phase === 'ready' && catalog.items.length === 0 && <p className="stock-message">Sin coincidencias en el catálogo.</p>}
-        <p className="stock-hint">Estos son todos los productos que ofrece el proveedor elegido. Un producto que no aparezca acá no se puede ingresar: primero se le asigna en Catálogo → Proveedores.</p>
       </section>
-      <section className="stock-entry-panel" aria-labelledby="stock-document-title">
-        <div className="stock-panel-head">
-          <div><h2 id="stock-document-title">Documento de ingreso</h2><p className="stock-hint">Se numera al confirmar.</p></div>
-          <div className="stock-doc-tags">
-            <span className="stock-chip" role="note" aria-label="Proveedor del documento">{supplier.name}</span>
-            <span className="stock-chip" role="note" aria-label="Tipo del documento">{kind === null ? '' : stockEntryKindLabels[kind]}</span>
-            <span className="stock-tag wine">Borrador local</span>
+      {/* The document gets the same bounded treatment: the context and the note
+          pinned above, the lines in their own scroll with a sticky column head,
+          and the totals with the confirmation pinned below (F). */}
+      <section className="stock-entry-panel stock-document-panel" aria-labelledby="stock-document-title">
+        <div className="stock-doc-head">
+          <div className="stock-doc-title">
+            <h2 id="stock-document-title">Documento</h2>
+            <p className="stock-doc-context">
+              <span className="stock-chip" role="note" aria-label="Proveedor del documento">{supplier.name}</span>
+              <span className="stock-chip" role="note" aria-label="Tipo del documento">{stockEntryKindLabels[kind]}</span>
+              <span className="stock-chip">Sin aplicar</span>
+            </p>
           </div>
+          <label className="stock-note">Nota (opcional)
+            <input value={note} maxLength={stockEntryMaxNote} placeholder="Remito 0002-00045871"
+              onChange={event => { forgetAttempt(); setNote(event.target.value); }} />
+          </label>
         </div>
-        <label className="stock-note">Nota del documento (opcional)
-          <input value={note} maxLength={stockEntryMaxNote} placeholder="Remito 0002-00045871"
-            onChange={event => { forgetAttempt(); setNote(event.target.value); }} />
-        </label>
-        {lines.length > 0 && <div className="stock-table-wrap">
-          <table className="stock-table stock-lines">
-            <caption className="sr-only">Líneas que se aplican al stock</caption>
-            <thead><tr><th scope="col">Producto</th><th scope="col">Cantidad</th><th scope="col">Quitar</th></tr></thead>
-            <tbody>{lines.map(line => <tr key={line.variant_id}>
-              <td data-label="Producto"><strong>{line.name}</strong><small>{line.battery === null
-                ? line.detail : `${line.battery.capacity_ah} Ah · Polaridad ${line.battery.polarity}`}</small></td>
-              <td data-label="Cantidad"><input className="stock-quantity" type="number" inputMode="numeric" min={1} max={stockEntryMaxQuantity} step={1}
-                aria-label={`Cantidad de ${line.name}`} value={line.quantity}
-                onChange={event => setQuantity(line.variant_id, event.target.value)} /></td>
-              <td data-label="Quitar"><button type="button" className="stock-remove" aria-label={`Quitar ${line.name}`} onClick={() => removeLine(line.variant_id)}>Quitar</button></td>
-            </tr>)}</tbody>
-          </table>
-        </div>}
-        {lines.length === 0 && <p className="stock-message">Todavía no agregaste líneas.</p>}
-        <div className="stock-totalbar">
+        <section className="stock-doc-scroll" aria-label="Líneas del documento">
+          {lines.length > 0
+            ? <table className="stock-table stock-lines">
+              <caption className="sr-only">Líneas del documento</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col" className="stock-num">Cantidad</th>
+                <th scope="col"><span className="sr-only">Quitar</span></th></tr></thead>
+              <tbody>{lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                <td data-label="Producto"><strong>{line.name}</strong><small>{lineDetail(line)}</small></td>
+                <td data-label="Cantidad" className="stock-num"><input className="stock-quantity" type="number" inputMode="numeric"
+                  min={1} max={stockEntryMaxQuantity} step={1}
+                  aria-label={`Cantidad de ${lineName(line)}`} value={line.quantity}
+                  onChange={event => setQuantity(line.variant_id, event.target.value)} /></td>
+                <td data-label="Quitar"><button type="button" className="stock-remove"
+                  aria-label={`Quitar ${lineName(line)}`} onClick={() => removeLine(line.variant_id)}>×</button></td>
+              </tr>)}</tbody>
+            </table>
+            : <p className="stock-message">Todavía no agregaste líneas.</p>}
+        </section>
+        <div className="stock-doc-foot">
           <dl className="stock-totals">
-            <div><dt>Variantes</dt><dd>{lines.length}</dd></div>
-            <div><dt>Unidades</dt><dd>{totalUnits}</dd></div>
+            <div><dt>Líneas</dt><dd>{lines.length}</dd></div>
+            <div className="stock-units-total"><dt>Unidades</dt><dd>{totalUnits}</dd></div>
           </dl>
-          <button type="button" className="primary" disabled={busy} onClick={() => void confirm()}>Confirmar ingreso</button>
+          <button type="button" className="primary stock-confirm" disabled={busy || lines.length === 0}
+            aria-describedby="stock-confirm-reason" onClick={() => void confirm()}>Confirmar ingreso</button>
+          <p className="stock-note" id="stock-confirm-reason">{lines.length === 0
+            ? 'Agregá al menos una línea para confirmar. El stock no se toca hasta que confirmes.'
+            : 'Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.'}</p>
+          <p role="status" className="stock-status">{status}</p>
         </div>
-        <p role="status" className="stock-status">{status}</p>
-        <p className="stock-notices">Todo o nada: si una línea es inválida no se aplica ninguna. Una vez confirmado, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.</p>
       </section>
     </div>}
     <section className="stock-entry-panel stock-history" aria-labelledby="stock-history-title" aria-busy={history.phase === 'loading'}>
