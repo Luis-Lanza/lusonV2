@@ -15,7 +15,7 @@ const productRow = (variant_id: number, name: string, detail: string, catalogEnt
   variant_id, catalog_entry_id: catalogEntry, kind: 'other', name, detail, battery: null,
   fields: [{ name: detail.split(':')[0], kind: 'text', text: detail.split(': ')[1] }],
 });
-const catalogPage = (items: readonly string[]) => `{"items":[${items.join(',')}],"page_size":50}`;
+const catalogPage = (items: readonly string[]) => `{"items":[${items.join(',')}],"page_size":500}`;
 const catalogReply = (search: string) => new Response(
   catalogPage(search === 'NS60' ? [row(9, 'NS60L', 45)] : search === 'nada' ? [] : [row(4, 'NS40ZL'), row(9, 'NS60L', 45)]),
   { status: 200, headers: { 'Content-Type': 'application/json' } });

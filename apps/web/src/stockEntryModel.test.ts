@@ -367,7 +367,22 @@ describe('supplier read contract of the ingress screen', () => {
     variant_id: 210, catalog_entry_id: 97, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
     battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], ...overrides });
   const supplierCatalogJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
-    items: [batteryEntry()], page_size: 50, ...overrides });
+    items: [batteryEntry()], page_size: 500, ...overrides });
+  // The exact body the API answers for a supplier that offers 33 battery entries,
+  // captured from the real handler in internal/httpapi
+  // TestSuppliersOfferedVariantsAtOperatorVolume: the envelope, the page size and
+  // every row value are the server's own, so the decoder is exercised on the reply
+  // the operator's screen actually received.
+  const operatorSupplierCatalogJSON = () => JSON.stringify({
+    items: Array.from({ length: 66 }, (_, index) => {
+      const model = `12N24-${String(Math.floor(index / 2) + 1).padStart(2, '0')}`;
+      const polarity = index % 2 === 0 ? 'L' : 'R';
+      return { variant_id: 194 + index, catalog_entry_id: 98 + Math.floor(index / 2), kind: 'battery',
+        name: `CAR · ${model}`, detail: `35 Ah · ${polarity}`,
+        battery: { brand: 'CAR', model, capacity_ah: '35', polarity }, fields: null };
+    }),
+    page_size: 500,
+  });
 
   it('builds the frozen supplier list path and the catalogue path of one supplier', () => {
     expect(stockSupplierPageSize).toBe(50);
@@ -444,13 +459,27 @@ describe('supplier read contract of the ingress screen', () => {
     expect(Object.isFrozen(items[0])).toBe(true);
     const products = parseSupplierCatalog(supplierCatalogJSON({ items: [productEntry()] }), 'other');
     expect(products[0]).toMatchObject({ variant_id: 210, catalog_entry_id: 97, kind: 'other', battery: null });
-    expect(stockSupplierMaxCatalogPageSize).toBeGreaterThanOrEqual(50);
+    expect(stockSupplierMaxCatalogPageSize).toBe(500);
+  });
+
+  it('parses the operator volume: 33 offered entries as one page of 66 variants', () => {
+    // The frozen contract binds no page size below the one the server publishes, and
+    // this is exactly the reply the reported screen refused.
+    const items = parseSupplierCatalog(operatorSupplierCatalogJSON(), 'battery');
+    expect(items).toHaveLength(66);
+    expect(items[0]).toMatchObject({ variant_id: 194, catalog_entry_id: 98, kind: 'battery',
+      name: 'CAR · 12N24-01', detail: '35 Ah · L' });
+    expect(items[65]).toMatchObject({ variant_id: 259, catalog_entry_id: 130, detail: '35 Ah · R' });
+    // The published bound itself, which is the whole defect: page_size 500 with a
+    // single row was refused while the decoder's bound was smaller.
+    expect(parseSupplierCatalog(supplierCatalogJSON({ page_size: 500 }), 'battery')).toHaveLength(1);
   });
 
   it.each([
     ['an extra field', supplierCatalogJSON({ extra: 1 })],
     ['a missing page size', JSON.stringify({ items: [batteryEntry()] })],
     ['a zero page size', supplierCatalogJSON({ page_size: 0 })],
+    ['a page size above the published bound', supplierCatalogJSON({ page_size: 501 })],
     ['more items than the page size', supplierCatalogJSON({ page_size: 1, items: [batteryEntry(), batteryEntry({ variant_id: 9 })] })],
     ['items that are not an array', supplierCatalogJSON({ items: {} })],
     ['an extra item field', supplierCatalogJSON({ items: [batteryEntry({ existing: 14 })] })],

@@ -95,8 +95,13 @@ export const stockEntryKindDescriptions: Record<Kind, string> = {
 export const stockCatalogPageSize = 50;
 /** One page of suppliers is all the picker asks for, and it asks for the maximum. */
 export const stockSupplierPageSize = 50;
-/** The catalogue of one supplier is a single server-capped page, never paged here. */
-export const stockSupplierMaxCatalogPageSize = 200;
+/**
+ * The catalogue of one supplier is a single server-capped page, never paged here.
+ * The bound is the page size the server publishes (500 variants: 200 assignable
+ * entries at most two polarities each), never a smaller local guess: a decoder
+ * stricter than that reply refuses the whole picker.
+ */
+export const stockSupplierMaxCatalogPageSize = 500;
 export const stockSupplierMaxID = 2_147_483_647;
 export const stockSupplierMaxName = 64;
 export const stockSupplierMaxContact = 200;

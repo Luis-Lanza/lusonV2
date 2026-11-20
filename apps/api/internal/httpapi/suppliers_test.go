@@ -275,6 +275,51 @@ func TestSuppliersRoutesShapes(t *testing.T) {
 			`"kinds":["battery","other"],"offers":2}],"page":1,"page_size":10,"total_suppliers":1}`+"\n")
 }
 
+// TestSuppliersOfferedVariantsAtOperatorVolume reproduces the reported ingress picker
+// read at the volume the operator's supplier has: 33 offered battery entries, each one
+// expanding to its two polarities, so the offered-variant read publishes 66 rows in one
+// page. It is the volume reproduction, not a guess: the same handler, the same store and
+// the same warehouse identity the screen uses.
+func TestSuppliersOfferedVariantsAtOperatorVolume(t *testing.T) {
+	f := suppliersFixture(t)
+	supplier := f.created(t, 1, "BATEVOL", "")
+	const entries = 33
+	ids := make([]string, 0, entries)
+	for i := 0; i < entries; i++ {
+		entry, _, _ := f.batteryEntry(t, fmt.Sprintf("12N24-%02d", i+1))
+		ids = append(ids, fmt.Sprintf("%d", entry))
+	}
+	w := f.serve(t, f.request(1, http.MethodPut, fmt.Sprintf("/api/suppliers/%d/offers", supplier),
+		`{"catalog_entry_ids":[`+strings.Join(ids, ",")+`]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("assigning 33 entries answered %d %s", w.Code, w.Body.String())
+	}
+
+	w = f.serve(t, f.request(1, http.MethodGet,
+		fmt.Sprintf("/api/suppliers/%d/catalog?kind=battery", supplier), ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("the picker read at operator volume answered %d %s", w.Code, w.Body.String())
+	}
+	var page struct {
+		Items []struct {
+			VariantID int64 `json:"variant_id"`
+		} `json:"items"`
+		PageSize int `json:"page_size"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &page) != nil {
+		t.Fatalf("the picker read at operator volume is not JSON: %s", w.Body.String())
+	}
+	if page.PageSize != suppliers.OfferedVariantsPageSize || len(page.Items) != entries*2 {
+		t.Fatalf("the picker read at operator volume published page_size=%d with %d rows, want %d and %d",
+			page.PageSize, len(page.Items), suppliers.OfferedVariantsPageSize, entries*2)
+	}
+	for i, item := range page.Items {
+		if item.VariantID < 1 || (i > 0 && item.VariantID <= page.Items[i-1].VariantID) {
+			t.Fatalf("the picker read at operator volume published an unordered row at %d", i)
+		}
+	}
+}
+
 // Only the warehouse administrator is admitted; everything else is refused before
 // any method, framing or body decision and before the store is asked.
 func TestSuppliersAuthority(t *testing.T) {
