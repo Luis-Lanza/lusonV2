@@ -239,6 +239,23 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
 .group-all{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;min-height:48px;padding:8px 16px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:#FFFFFF;color:var(--wine);font-size:12px;font-weight:600}
 .group-all:hover{background:var(--tint)}
 
+/* ===== the document rail gets the catalogue's bounded treatment:
+   context pinned above, the lines in their own scroll, totals and confirm pinned below ===== */
+.doc-bounded{position:static;align-self:stretch;height:100%;min-height:0;overflow:hidden}
+/* in an auto-height screen the shared row is content-sized, so the column's bound is its stated height:
+   the empty column matches the catalogue it sits next to, the grouped one keeps its 7-line height */
+.doc-bounded.short{height:576px}
+.doc-bounded.tall{height:696px}
+.doc-body{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden}
+.doc-ctx{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.doc-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--muted) var(--page)}
+.doc-scroll:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+.doc-scroll thead th{position:sticky;top:0;z-index:1}
+.doc-scroll .tbl td{padding:4px 8px}
+.doc-foot{flex:0 0 auto;display:flex;flex-direction:column;gap:10px}
+.doc-count{font-size:11px;line-height:16px;color:var(--muted)}
+.doc-count b{color:#242124;font-variant-numeric:tabular-nums}
+
 @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -455,14 +472,16 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
         </div>
       </section>
 
-      <!-- document: the summary sticks and confirms, close to the list -->
-      <section class="panel rail rail-f" aria-labelledby="doc-title">
+      <!-- document: same bounded treatment as the catalogue — the context above and the totals with the
+           confirm below never move; the lines scroll between them, so 40 lines cost the page no height -->
+      <section class="panel rail rail-f doc-bounded" aria-labelledby="doc-title">
         <div class="panel-head">
-          <div><h2 id="doc-title">Documento</h2><p>BATEVOL · Baterías</p></div>
+          <div><h2 id="doc-title">Documento</h2><p class="doc-ctx"><span class="chip">BATEVOL</span><span class="chip">Baterías</span></p></div>
           <span class="chip">Sin aplicar</span>
         </div>
+        <div class="doc-scroll" id="doc-lines" role="region" aria-label="Líneas del documento" tabindex="0">
         <table class="tbl lines">
-          <caption class="sr-only">Líneas del borrador</caption>
+          <caption class="sr-only">Líneas del documento</caption>
           <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
           <tbody>
             <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad L</small></td>
@@ -488,12 +507,15 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
               <td><button type="button" class="icon" aria-label="Quitar MOURA 95D31L polaridad L">×</button></td></tr>
           </tbody>
         </table>
-        <dl class="totals">
-          <div><dt>Líneas</dt><dd>7</dd></div>
-          <div class="units"><dt>Unidades</dt><dd>41</dd></div>
-        </dl>
-        <button type="button" class="primary big">Confirmar ingreso</button>
-        <p class="note" id="confirm-note-live">Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+        </div>
+        <div class="doc-foot">
+          <dl class="totals">
+            <div><dt>Líneas</dt><dd>7</dd></div>
+            <div class="units"><dt>Unidades</dt><dd>41</dd></div>
+          </dl>
+          <button type="button" class="primary big" aria-describedby="confirm-note-live">Confirmar ingreso</button>
+          <p class="note" id="confirm-note-live">Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+        </div>
       </section>
     </div>
   </main>
@@ -503,14 +525,15 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
 <!-- ============ direction notes ============ -->
 <section class="notes" aria-labelledby="notas-01">
   <h2 id="notas-01">Dirección 01 · Proveedor como contexto</h2>
-  <p class="lead">El proveedor deja de ser un paso y pasa a ser el encabezado del documento. El tipo solo aparece como control cuando el proveedor ofrece los dos; el resumen y la confirmación viven en la columna pegada, junto al trabajo. El catálogo ya no estira la pantalla: es un contenedor acotado con scroll propio (F) y su orden por defecto son los grupos de marca con su cantidad, colapsados salvo el grupo en uso, con una fila «Ver todos los productos (22)» (H). Los 22 productos de BATEVOL entran sin que la página crezca, y 40 entrarían igual.</p>
-  <p><strong>Tradeoff:</strong> la pantalla nunca crece y 22 productos caben como índice de seis marcas, pero el catálogo gana un scroll interno, las filas quedan detrás de un clic y la página ya no tiene lugar para el historial dentro del mismo alto: se conserva en los estados C y E.</p>
+  <p class="lead">El proveedor deja de ser un paso y pasa a ser el encabezado del documento. El tipo solo aparece como control cuando el proveedor ofrece los dos; el resumen y la confirmación viven en la columna pegada, junto al trabajo. El catálogo ya no estira la pantalla: es un contenedor acotado con scroll propio (F) y su orden por defecto son los grupos de marca con su cantidad, colapsados salvo el grupo en uso, con una fila «Ver todos los productos (22)» (H). Los 22 productos de BATEVOL entran sin que la página crezca, y 40 entrarían igual. La columna del documento recibe el mismo trato: el contexto queda arriba, las líneas corren en su propia región y los totales con la confirmación quedan al pie.</p>
+  <p><strong>Tradeoff:</strong> la pantalla nunca crece y 22 productos caben como índice de seis marcas, pero el catálogo gana un scroll interno, el documento suma el suyo, las filas quedan detrás de un clic y la página ya no tiene lugar para el historial dentro del mismo alto: se conserva en los estados C y E.</p>
   <h3>Los defectos del punto de partida, uno por uno</h3>
   <ul>
     <li><strong>Tres franjas apiladas:</strong> una sola franja de contexto de 90 px (proveedor, tipo, nota, estado). Ya no hay bloque de proveedor a ancho completo, ni la frase de elección automática, ni el aviso rosa.</li>
     <li><strong>El paso de tipo eliminado:</strong> no queda ninguna oración que explique un control que no existe. Con un solo tipo, el tipo es un dato (<span class="chip">Baterías</span>) sin texto alrededor.</li>
     <li><strong>Catálogo duplicado:</strong> un producto por fila, agrupado por marca con su cantidad. La polaridad es un control de la fila y cada producto muestra su total de unidades; un solo número, «22 productos», sin contar cada polaridad como un producto aparte.</li>
     <li><strong>Sección que crecía sin límite:</strong> el catálogo es una región acotada con scroll propio —búsqueda arriba, cabecera de columnas fija y contador al pie—, así que la página mide siempre lo mismo con 22 o con 40 productos.</li>
+    <li><strong>El documento también crecía:</strong> la columna del documento tiene la misma estructura acotada —contexto arriba, líneas con scroll propio y cabecera de columnas fija, totales y confirmación al pie—, así que un remito de 40 líneas no empuja la confirmación fuera de la pantalla. El estado F lo dibuja con 22 líneas y 60 unidades.</li>
     <li><strong>Tabla que no decidía:</strong> desaparece la columna «Agregar». La acción es la polaridad, y el total por producto queda en la misma línea.</li>
     <li><strong>Documento vacío y botón engañoso:</strong> el documento es la columna pegada con totales y confirmación; en el estado sin líneas el botón está deshabilitado y dice por qué.</li>
     <li><strong>Jerga interna:</strong> «Sin aplicar» en vez de la jerga de borrador, «22 productos» en vez de duplicar el conteo, y una sola frase corriente sobre el todo-o-nada junto al botón.</li>
@@ -521,6 +544,7 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
     <li>Foco visible de 2 px con 3 px de separación; sobre el botón vino el contorno pasa a blanco.</li>
     <li>La polaridad dice su nombre completo en el nombre accesible, incluido el 0 cuando no hay unidades.</li>
     <li>El catálogo acotado es una región con su propia barra de scroll: la búsqueda y el contador no se van con el scroll, y cada grupo se abre con <code>summary</code>, que ya trae teclado y estado expandido.</li>
+    <li>La región de líneas del documento es enfocable con Tab, con anillo de foco visible y su cabecera de columnas fija adentro; el contexto de arriba y los totales del pie nunca se van con el scroll.</li>
     <li>Sin movimiento: la lámina es estática y respeta <code>prefers-reduced-motion</code>.</li>
   </ul>
 </section>
@@ -819,6 +843,142 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
     </div>
   </figure>
 
+  <figure class="state">
+    <figcaption>
+      <h3>Estado F · El documento con 22 líneas, en scroll propio</h3>
+      <p>Un remito puede traer 40 líneas y la columna del documento crecía con ellas hasta empujar los totales y la confirmación fuera de la pantalla. Acá tiene la misma estructura acotada que el catálogo: arriba quedan fijos el proveedor, el tipo y el estado; la cabecera de columnas queda fija dentro del scroll; y al pie quedan los totales, la confirmación y la frase de inmutabilidad. El documento tiene <strong>22 líneas y 60 unidades</strong>, la suma real de las cantidades dibujadas, y la región está a mitad de la lista: el pie dice en qué filas está parado y cuántas quedan abajo. La columna y la página miden lo mismo que con 7 líneas.</p>
+      <p>La «F» de este estado es el documento; la «alternativa F» de más abajo es el contenedor del catálogo. El catálogo de la izquierda va en lista plana con su propio scroll para que la atención quede en la columna del documento.</p>
+    </figcaption>
+    <div class="screen">
+      <aside class="sidebar">
+        <div>
+          <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+          <nav class="nav" aria-label="Navegación principal">
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+            <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+          </nav>
+        </div>
+        <div class="side-foot">
+          <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+          <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </aside>
+      <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main">
+        <div class="head">
+          <small>ALMACÉN / INGRESOS</small>
+          <h1>Nuevo ingreso de stock</h1>
+          <p>Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.</p>
+        </div>
+        <section class="docbar" aria-label="Contexto del documento">
+          <div class="field sup">
+            <span id="ef-sup">Proveedor</span>
+            <button type="button" class="select" aria-haspopup="listbox" aria-expanded="false"><span><b>BATEVOL</b><i>22 productos</i></span><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+          </div>
+          <div class="field tipo"><span id="ef-tipo">Tipo</span><p class="static"><span class="chip">Baterías</span></p></div>
+          <div class="field nota"><label class="lbl" for="ef-nota">Nota (opcional)</label><input id="ef-nota" value="Remito 0002-00045871"></div>
+        </section>
+        <div class="ws-f">
+          <section class="panel cat-f" aria-labelledby="ef-cat">
+            <div class="panel-head">
+              <div><h2 id="ef-cat">Catálogo</h2><p>BATEVOL · Baterías · 6 marcas · cada fila elige la polaridad</p></div>
+              <span class="tag">22 productos</span>
+            </div>
+            <label class="search">Buscar marca, modelo o capacidad
+              <input type="search" placeholder="NS40ZL, TOYO, 45 Ah">
+            </label>
+            <div class="f-scroll" id="ef-cat-scroll" data-scroller>
+              <table class="tbl">
+                <caption class="sr-only">Productos que ofrece BATEVOL; cada fila elige la polaridad sin repetir el producto</caption>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Polaridad</th><th scope="col" class="num">En el documento</th></tr></thead>
+                <tbody>
+                  <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 2"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">2</span></button></div></td><td class="num"><strong>8 u.</strong></td></tr>
+                  <tr><td><strong>TOYO · NS60L</strong><small>45 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60L polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button></div></td><td class="num"><strong>5 u.</strong></td></tr>
+                  <tr><td><strong>TOYO · BT45L</strong><small>45 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button><button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>3 u.</strong></td></tr>
+                  <tr><td><strong>TOYO · NS40L</strong><small>35 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>2 u.</strong></td></tr>
+                  <tr><td><strong>TOYO · NS60R</strong><small>45 Ah</small></td><td><div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60R polaridad R. En el documento: 4"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">4</span></button></div></td><td class="num"><strong>4 u.</strong></td></tr>
+                  <tr><td><strong>TOYO · 55B24L</strong><small>45 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO 55B24L polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button><button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>3 u.</strong></td></tr>
+                  <tr><td><strong>TOYO · 55B24R</strong><small>45 Ah</small></td><td><div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>0 u.</strong></td></tr>
+                  <tr><td><strong>TOYO · 95D31L</strong><small>90 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO 95D31L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>2 u.</strong></td></tr>
+                  <tr><td><strong>WILLARD · 55D23L</strong><small>50 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 55D23L polaridad L. En el documento: 5"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">5</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>5 u.</strong></td></tr>
+                  <tr><td><strong>WILLARD · 75D26L</strong><small>70 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 75D26L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>2 u.</strong></td></tr>
+                  <tr><td><strong>WILLARD · 55D23R</strong><small>50 Ah</small></td><td><div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 55D23R polaridad R. En el documento: 2"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">2</span></button></div></td><td class="num"><strong>2 u.</strong></td></tr>
+                  <tr><td><strong>WILLARD · 75D26R</strong><small>70 Ah</small></td><td><div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>0 u.</strong></td></tr>
+                  <tr><td><strong>WILLARD · 95D31R</strong><small>90 Ah</small></td><td><div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 95D31R polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button></div></td><td class="num"><strong>1 u.</strong></td></tr>
+                  <tr><td><strong>WILLARD · 105D31L</strong><small>95 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 105D31L polaridad L. En el documento: 1"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">1</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>1 u.</strong></td></tr>
+                  <tr><td><strong>MOURA · 95D31L</strong><small>90 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 95D31L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button><button type="button" class="pol" aria-label="Agregar MOURA 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>4 u.</strong></td></tr>
+                  <tr><td><strong>MOURA · 75D26L</strong><small>70 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 75D26L polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>2 u.</strong></td></tr>
+                  <tr><td><strong>MOURA · 55D23L</strong><small>50 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 55D23L polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button><button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>6 u.</strong></td></tr>
+                  <tr><td><strong>BOSCH · S4</strong><small>50 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar BOSCH S4 polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>2 u.</strong></td></tr>
+                  <tr><td><strong>BOSCH · S5</strong><small>70 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar BOSCH S5 polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button><button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>3 u.</strong></td></tr>
+                  <tr><td><strong>VARTA · D24</strong><small>60 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar VARTA D24 polaridad L. En el documento: 3"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">3</span></button><button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>3 u.</strong></td></tr>
+                  <tr><td><strong>VARTA · D31</strong><small>90 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar VARTA D31 polaridad L. En el documento: 1"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">1</span></button><button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>1 u.</strong></td></tr>
+                  <tr><td><strong>HELIAR · HD45</strong><small>45 Ah</small></td><td><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar HELIAR HD45 polaridad L. En el documento: 1"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">1</span></button><button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></td><td class="num"><strong>1 u.</strong></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="f-foot">
+              <p><b>22 productos</b> · <b>22</b> líneas en el documento · <b>60 u.</b></p>
+              <p>Filas <span data-range="ef-cat-scroll">1–8</span> de 22 · <span data-below="ef-cat-scroll">14</span> más abajo</p>
+            </div>
+          </section>
+
+          <section class="panel rail rail-f doc-bounded" aria-labelledby="ef-doc">
+            <div class="panel-head">
+              <div><h2 id="ef-doc">Documento</h2><p class="doc-ctx"><span class="chip">BATEVOL</span><span class="chip">Baterías</span></p></div>
+              <span class="chip">Sin aplicar</span>
+            </div>
+            <div class="doc-scroll" id="ef-lines" role="region" aria-label="Líneas del documento" tabindex="0" data-scroller data-start="7">
+              <table class="tbl lines">
+                <caption class="sr-only">Líneas del documento: 22 líneas, 60 unidades</caption>
+                <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
+                <tbody>
+                  <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de TOYO NS40ZL polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar TOYO NS40ZL polaridad L">×</button></td></tr>
+                  <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah · Polaridad R</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO NS40ZL polaridad R"></td><td><button type="button" class="icon" aria-label="Quitar TOYO NS40ZL polaridad R">×</button></td></tr>
+                  <tr><td><strong>TOYO · NS60L</strong><small>45 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO NS60L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar TOYO NS60L polaridad L">×</button></td></tr>
+                  <tr><td><strong>TOYO · NS60L</strong><small>45 Ah · Polaridad R</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de TOYO NS60L polaridad R"></td><td><button type="button" class="icon" aria-label="Quitar TOYO NS60L polaridad R">×</button></td></tr>
+                  <tr><td><strong>TOYO · BT45L</strong><small>45 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de TOYO BT45L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar TOYO BT45L polaridad L">×</button></td></tr>
+                  <tr><td><strong>TOYO · NS40L</strong><small>35 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO NS40L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar TOYO NS40L polaridad L">×</button></td></tr>
+                  <tr><td><strong>TOYO · NS60R</strong><small>45 Ah · Polaridad R</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO NS60R polaridad R"></td><td><button type="button" class="icon" aria-label="Quitar TOYO NS60R polaridad R">×</button></td></tr>
+                  <tr><td><strong>TOYO · 55B24L</strong><small>45 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de TOYO 55B24L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar TOYO 55B24L polaridad L">×</button></td></tr>
+                  <tr><td><strong>TOYO · 95D31L</strong><small>90 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO 95D31L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar TOYO 95D31L polaridad L">×</button></td></tr>
+                  <tr><td><strong>WILLARD · 55D23L</strong><small>50 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="5" aria-label="Cantidad de WILLARD 55D23L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar WILLARD 55D23L polaridad L">×</button></td></tr>
+                  <tr><td><strong>WILLARD · 75D26L</strong><small>70 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de WILLARD 75D26L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar WILLARD 75D26L polaridad L">×</button></td></tr>
+                  <tr><td><strong>WILLARD · 55D23R</strong><small>50 Ah · Polaridad R</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de WILLARD 55D23R polaridad R"></td><td><button type="button" class="icon" aria-label="Quitar WILLARD 55D23R polaridad R">×</button></td></tr>
+                  <tr><td><strong>WILLARD · 95D31R</strong><small>90 Ah · Polaridad R</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de WILLARD 95D31R polaridad R"></td><td><button type="button" class="icon" aria-label="Quitar WILLARD 95D31R polaridad R">×</button></td></tr>
+                  <tr><td><strong>WILLARD · 105D31L</strong><small>95 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de WILLARD 105D31L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar WILLARD 105D31L polaridad L">×</button></td></tr>
+                  <tr><td><strong>MOURA · 95D31L</strong><small>90 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de MOURA 95D31L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar MOURA 95D31L polaridad L">×</button></td></tr>
+                  <tr><td><strong>MOURA · 75D26L</strong><small>70 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de MOURA 75D26L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar MOURA 75D26L polaridad L">×</button></td></tr>
+                  <tr><td><strong>MOURA · 55D23L</strong><small>50 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de MOURA 55D23L polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar MOURA 55D23L polaridad L">×</button></td></tr>
+                  <tr><td><strong>BOSCH · S4</strong><small>50 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de BOSCH S4 polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar BOSCH S4 polaridad L">×</button></td></tr>
+                  <tr><td><strong>BOSCH · S5</strong><small>70 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de BOSCH S5 polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar BOSCH S5 polaridad L">×</button></td></tr>
+                  <tr><td><strong>VARTA · D24</strong><small>60 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="3" aria-label="Cantidad de VARTA D24 polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar VARTA D24 polaridad L">×</button></td></tr>
+                  <tr><td><strong>VARTA · D31</strong><small>90 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de VARTA D31 polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar VARTA D31 polaridad L">×</button></td></tr>
+                  <tr><td><strong>HELIAR · HD45</strong><small>45 Ah · Polaridad L</small></td><td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de HELIAR HD45 polaridad L"></td><td><button type="button" class="icon" aria-label="Quitar HELIAR HD45 polaridad L">×</button></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="doc-foot">
+              <dl class="totals">
+                <div><dt>Líneas</dt><dd>22</dd></div>
+                <div class="units"><dt>Unidades</dt><dd>60</dd></div>
+              </dl>
+              <p class="doc-count" id="ef-count">Mostrando las filas <b data-range="ef-lines">8–14</b> de 22 · <b data-below="ef-lines">8</b> más abajo</p>
+              <button type="button" class="primary big" aria-describedby="ef-confirm-note">Confirmar ingreso</button>
+              <p class="note" id="ef-confirm-note">Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </figure>
+
   <h2 id="crecimiento">Alternativas para un catálogo que crece</h2>
   <p class="states-note">El comentario del tablero era justo: un proveedor real puede ofrecer 20 o más productos y la sección se quedaba sin lugar. Las tres alternativas dibujan el mismo caso —<strong>BATEVOL, 22 productos de baterías, 7 líneas en el documento y 41 unidades</strong>— y resuelven el crecimiento de maneras distintas: acotando el panel, dando el ancho al explorador o agrupando por marca. <strong>La decisión fue F como contenedor y H como orden por defecto</strong>, y esa combinación es ahora el frame principal; F, G y H quedan abajo como evidencia, con G descartada. Ninguna cambia el modelo del producto: se repite la forma real de la fila (marca, modelo, capacidad, polaridad L/R y unidades) con códigos plausibles.</p>
 
@@ -991,8 +1151,9 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
           <p>Filas <span data-range="f1-scroll">7–14</span> de 22 · <span data-below="f1-scroll">8</span> más abajo</p>
         </div>
           </section>
-      <section class="panel rail rail-f" aria-labelledby="f1-doc">
+      <section class="panel rail rail-f doc-bounded" aria-labelledby="f1-doc">
         <div class="panel-head"><div><h2 id="f1-doc">Documento</h2><p>BATEVOL · Baterías</p></div><span class="chip">Sin aplicar</span></div>
+      <div class="doc-scroll" id="f1-lines" role="region" aria-label="Líneas del documento" tabindex="0">
       <table class="tbl lines">
         <caption class="sr-only">Líneas del borrador</caption>
         <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
@@ -1020,9 +1181,12 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
             <td><button type="button" class="icon" aria-label="Quitar MOURA 95D31L polaridad L">×</button></td></tr>
         </tbody>
       </table>
+      </div>
+      <div class="doc-foot">
         <dl class="totals"><div><dt>Líneas</dt><dd>7</dd></div><div class="units"><dt>Unidades</dt><dd>41</dd></div></dl>
-        <button type="button" class="primary big">Confirmar ingreso</button>
-        <p class="note">Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+        <button type="button" class="primary big" aria-describedby="f1-doc-note">Confirmar ingreso</button>
+        <p class="note" id="f1-doc-note">Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+      </div>
       </section>
         </div>
       </main>
@@ -1190,12 +1354,16 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
               <p>Filas <span data-range="f2-scroll">1–6</span> de 22 · <span data-below="f2-scroll">16</span> más abajo</p>
             </div>
           </section>
-      <section class="panel rail rail-f" aria-labelledby="f2-doc">
+      <section class="panel rail rail-f doc-bounded short" aria-labelledby="f2-doc">
         <div class="panel-head"><div><h2 id="f2-doc">Documento</h2><p>BATEVOL · Baterías</p></div><span class="chip">Sin aplicar</span></div>
-        <div class="empty"><strong>Todavía no hay líneas</strong><span>Elegí la polaridad en la fila del producto y la línea aparece acá.</span></div>
-        <dl class="totals"><div><dt>Líneas</dt><dd>0</dd></div><div class="units"><dt>Unidades</dt><dd>0</dd></div></dl>
-        <button type="button" class="primary big" disabled aria-describedby="f2-why">Confirmar ingreso</button>
-        <p class="note" id="f2-why">Agregá al menos una línea para confirmar. El stock no se toca hasta que confirmes.</p>
+        <div class="doc-body">
+          <div class="empty"><strong>Todavía no hay líneas</strong><span>Elegí la polaridad en la fila del producto y la línea aparece acá.</span></div>
+        </div>
+        <div class="doc-foot">
+          <dl class="totals"><div><dt>Líneas</dt><dd>0</dd></div><div class="units"><dt>Unidades</dt><dd>0</dd></div></dl>
+          <button type="button" class="primary big" disabled aria-describedby="f2-why">Confirmar ingreso</button>
+          <p class="note" id="f2-why">Agregá al menos una línea para confirmar. El stock no se toca hasta que confirmes.</p>
+        </div>
       </section>
         </div>
       </main>
@@ -1913,8 +2081,9 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
               <p>Cada grupo se abre y se cierra en su lugar</p>
             </div>
           </section>
-      <section class="panel rail rail-f" aria-labelledby="h1-doc">
+      <section class="panel rail rail-f doc-bounded tall" aria-labelledby="h1-doc">
         <div class="panel-head"><div><h2 id="h1-doc">Documento</h2><p>BATEVOL · Baterías</p></div><span class="chip">Sin aplicar</span></div>
+      <div class="doc-scroll" id="h1-lines" role="region" aria-label="Líneas del documento" tabindex="0">
       <table class="tbl lines">
         <caption class="sr-only">Líneas del borrador</caption>
         <thead><tr><th scope="col">Producto</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
@@ -1942,9 +2111,12 @@ kbd{font-family:inherit;font-size:11px;padding:2px 6px;border:1px solid var(--bo
             <td><button type="button" class="icon" aria-label="Quitar MOURA 95D31L polaridad L">×</button></td></tr>
         </tbody>
       </table>
+      </div>
+      <div class="doc-foot">
         <dl class="totals"><div><dt>Líneas</dt><dd>7</dd></div><div class="units"><dt>Unidades</dt><dd>41</dd></div></dl>
-        <button type="button" class="primary big">Confirmar ingreso</button>
-        <p class="note">Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+        <button type="button" class="primary big" aria-describedby="h1-doc-note">Confirmar ingreso</button>
+        <p class="note" id="h1-doc-note">Se aplica todo junto; al confirmar el documento queda fijo y se corrige con un contra-asiento.</p>
+      </div>
       </section>
         </div>
       </main>

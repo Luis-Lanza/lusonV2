@@ -6,21 +6,21 @@
     {
       "file": "01-proveedor-contexto.html",
       "title": "Proveedor como contexto",
-      "tradeoff": "La alternativa elegida F+H: el catálogo es un contenedor acotado con scroll propio —búsqueda y cabecera de columnas fijas, contador al pie— y su orden por defecto son las marcas con su cantidad, colapsadas salvo el grupo en uso, con una fila «Ver todos los productos (22)». La página nunca crece y 22 productos entran como índice de seis marcas; el costo es un scroll interno, las filas detrás de un clic y el historial fuera de la vista principal.",
+      "tradeoff": "La alternativa elegida F+H con las dos colecciones acotadas: el catálogo es un contenedor con scroll propio —búsqueda y cabecera de columnas fijas, contador al pie— ordenado por marcas con su cantidad, y el documento tiene la misma estructura —contexto arriba, líneas en su propia región con cabecera fija, totales y confirmación al pie—, así que la página nunca crece con 22 productos ni con 22 líneas. El costo es doble: dos scrolls internos, las filas detrás de un clic y el historial fuera de la vista principal.",
       "width": 1440,
-      "height": 1000
+      "height": 1360
     },
     {
       "file": "02-documento-remito.html",
       "title": "El documento como remito",
-      "tradeoff": "El mismo contenedor F+H adaptado a este tablero: el encabezado sigue siendo el papel del proveedor y el documento el objeto central, mientras el buscador compacto acota sus resultados con scroll propio, contador al pie y orden por marca con cantidades. Se lee como el remito que el operador tiene en la mano, pero explorar 22 productos pasa a segundo plano: la columna angosta obliga a buscar o abrir un grupo.",
+      "tradeoff": "El mismo contenedor F+H adaptado a este tablero, con las dos colecciones acotadas: el buscador compacto acota sus resultados con scroll propio, contador al pie y orden por marca, y el documento es un remito donde el encabezado —número, fecha, proveedor, tipo y nota— queda fuera del scroll, las líneas corren en su propia región con la cabecera de columnas fija y el pie con totales, nota y Confirmar ingreso queda pegado abajo. Se lee como el papel que el operador tiene en la mano y confirmar nunca se va de la pantalla; el costo es que un remito de 22 líneas ya no se lee entero de una vez, y explorar los productos pasa a segundo plano porque la columna angosta obliga a buscar o abrir un grupo.",
       "width": 1440,
       "height": 1000
     },
     {
       "file": "03-carga-por-teclado.html",
       "title": "Carga por teclado",
-      "tradeoff": "La dirección de teclado con la corrección F+H: la búsqueda sigue primero y L/R siguen agregando en la fila resaltada, pero la lista de lo disponible es una región acotada con scroll propio, contador al pie y grupos de marca, y la leyenda suma saltar de grupo y abrirlo o cerrarlo. La más rápida para 20 o más líneas, al precio de más atajos que aprender y de una lista que ya no cabe entera en pantalla.",
+      "tradeoff": "La dirección de teclado con la corrección F+H y las dos colecciones acotadas: la lista de lo disponible es una región con scroll propio, contador al pie y grupos de marca, y el comprobante tiene encabezado fijo, líneas en su propia región con cabecera de columnas visible y pegada, y totales con confirmación al pie, así que 22 líneas no empujan Ctrl+Enter fuera de la vista. La más rápida para 20 o más líneas, al precio de más atajos que aprender —también los del agrupado—, de dos regiones que se recorren con el teclado y de una lista y un comprobante que ya no caben enteros en pantalla.",
       "width": 1440,
       "height": 1000
     }
