@@ -1,0 +1,28 @@
+{
+  "title": "Ingresos de stock con proveedor",
+  "brief": "Pantalla de Ingresos del Almacén de Luson V2, después de que la vertical de proveedores hiciera obligatorio el proveedor. El administrador de almacén trabaja en escritorio y carga una entrega de 5 a 40 líneas recibida de un proveedor; el éxito es terminar con un documento confirmado e inmutable, viendo de un vistazo qué proveedor, qué tipo, cuántas unidades y que nada inválido se coló.",
+  "feature": "odd/tasks/suppliers-and-ingress.md",
+  "artboards": [
+    {
+      "file": "01-proveedor-contexto.html",
+      "title": "Proveedor como contexto",
+      "tradeoff": "La alternativa elegida F+H: el catálogo es un contenedor acotado con scroll propio —búsqueda y cabecera de columnas fijas, contador al pie— y su orden por defecto son las marcas con su cantidad, colapsadas salvo el grupo en uso, con una fila «Ver todos los productos (22)». La página nunca crece y 22 productos entran como índice de seis marcas; el costo es un scroll interno, las filas detrás de un clic y el historial fuera de la vista principal.",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "file": "02-documento-remito.html",
+      "title": "El documento como remito",
+      "tradeoff": "El mismo contenedor F+H adaptado a este tablero: el encabezado sigue siendo el papel del proveedor y el documento el objeto central, mientras el buscador compacto acota sus resultados con scroll propio, contador al pie y orden por marca con cantidades. Se lee como el remito que el operador tiene en la mano, pero explorar 22 productos pasa a segundo plano: la columna angosta obliga a buscar o abrir un grupo.",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "file": "03-carga-por-teclado.html",
+      "title": "Carga por teclado",
+      "tradeoff": "La dirección de teclado con la corrección F+H: la búsqueda sigue primero y L/R siguen agregando en la fila resaltada, pero la lista de lo disponible es una región acotada con scroll propio, contador al pie y grupos de marca, y la leyenda suma saltar de grupo y abrirlo o cerrarlo. La más rápida para 20 o más líneas, al precio de más atajos que aprender y de una lista que ya no cabe entera en pantalla.",
+      "width": 1440,
+      "height": 1000
+    }
+  ]
+}

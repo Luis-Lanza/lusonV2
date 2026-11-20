@@ -1,0 +1,818 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ingresos · 02 El documento como remito</title>
+<style>
+:root{--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:#242124;font:14px/1.45 Inter, sans-serif}
+h1,h2,h3,h4,p,figure,figcaption,dl,dd,dt,ul,li{margin:0;padding:0}
+ul{list-style:none}
+a{color:inherit}
+button{font:inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--muted);border-radius:4px;background:#FFFFFF;color:#242124;padding:8px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button:disabled{cursor:not-allowed;background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button.primary:disabled{background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+:is(button,a,input,select,summary):focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+button.primary:focus-visible{outline-color:#FFFFFF;outline-offset:-4px}
+input{font:inherit;color:#242124;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:8px 12px;min-height:44px;width:100%}
+input::placeholder{color:var(--muted);opacity:1}
+input:disabled{background:#EFEDEF;color:#595459;border-color:#AAA5AA}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.skip{position:absolute;left:-9999px;top:0;z-index:100;background:#FFFFFF;color:var(--wine);border:2px solid var(--wine);border-radius:4px;padding:12px 16px}
+.skip:focus{left:16px;top:16px}
+
+.screen{position:relative;width:1440px;height:1000px;display:grid;grid-template-columns:240px minmax(0,1fr);grid-template-rows:56px minmax(0,1fr);background:var(--page);border:1px solid var(--border);overflow:hidden}
+.screen.auto{height:auto;grid-template-rows:56px auto;overflow:visible}
+.sidebar{grid-row:1/3;background:#FFFFFF;border-right:1px solid var(--border);display:flex;flex-direction:column;justify-content:space-between;padding:12px}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px 12px;border-bottom:1px solid var(--border)}
+.logo{width:32px;height:32px;border-radius:4px;background:var(--wine);color:#FFFFFF;display:grid;place-items:center;font-weight:700;font-size:18px;flex-shrink:0}
+.brand strong{display:block;font-size:18px;line-height:22px;color:var(--wine)}
+.brand small{display:block;font-size:11px;line-height:16px;color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:4px;margin-top:12px}
+.nav a,.nav button{display:flex;align-items:center;gap:8px;font-size:12px;padding:8px 12px;min-height:36px;text-decoration:none;color:#242124;border:0;background:none;width:100%;text-align:left;border-radius:0;justify-content:flex-start}
+.nav a:hover,.nav button:hover{background:var(--tint)}
+.nav a[aria-current="page"],.nav button[aria-current="page"]{background:var(--tint);border-left:2px solid var(--wine);color:var(--wine);font-weight:600}
+.ic{width:20px;height:20px;flex-shrink:0}
+.badge{margin-left:auto;min-width:20px;padding:2px 6px;border:1px solid var(--border);border-radius:999px;background:var(--page);color:var(--muted);font-size:11px;font-weight:700;line-height:16px;text-align:center}
+.side-foot{border-top:1px solid var(--border);padding-top:12px}
+.identity{display:flex;flex-direction:column;padding:8px;background:var(--page);border:1px solid var(--border);font-size:12px}
+.identity small{color:var(--muted);margin-top:2px;font-size:11px}
+.logout{border:0;justify-content:flex-start;padding:8px 12px;width:100%;color:var(--muted);font-size:12px;margin-top:8px;min-height:36px}
+.topbar{grid-column:2;display:flex;align-items:center;justify-content:space-between;padding:0 24px 0 16px;background:#FFFFFF;border-bottom:1px solid var(--border)}
+.topbar strong{font-size:18px}
+.loc{display:inline-flex;align-items:center;gap:4px;color:var(--muted);font-size:12px}
+.loc b{color:#242124}
+.main{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow:hidden;padding:24px 24px 20px 40px;display:flex;flex-direction:column;gap:16px}
+.screen.auto .main{overflow:visible}
+
+.head small{display:block;font-size:11px;letter-spacing:.04em;color:var(--muted)}
+.head h1{font-size:22px;font-weight:600;letter-spacing:-.015em;margin-top:4px}
+.tag{display:inline-block;padding:4px 8px;background:var(--page);border:1px solid var(--border);border-radius:3px;color:var(--muted);font-size:11px;white-space:nowrap}
+.tag.ok{background:#EDF7F0;color:#22633B;font-weight:600}
+.chip{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;background:var(--tint);color:var(--wine);font-size:11.5px;font-weight:600;white-space:nowrap}
+.lbl,.field > span{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.static{min-height:44px;display:flex;align-items:center}
+.select{justify-content:space-between;text-align:left;gap:12px;padding:6px 10px;width:100%}
+.select b{display:block;font-size:14px;line-height:18px}
+.select i{display:block;font-style:normal;font-size:11px;line-height:15px;color:var(--muted)}
+.select .ico{width:20px;height:20px;color:var(--muted)}
+
+/* the remito: the paper the operator receives */
+.remito{background:#FFFFFF;border:1px solid var(--border);border-top:2px solid var(--wine);border-radius:4px;box-shadow:0 1px 2px #2421240D;padding:14px 20px;display:flex;flex-direction:column;gap:12px}
+.remito-top{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px dashed var(--border);padding-bottom:10px}
+.remito h2{font-size:20px;font-weight:600;letter-spacing:-.02em;margin-top:2px}
+.docnum{display:flex;gap:28px;margin:0;flex-wrap:wrap}
+.docnum div{display:flex;flex-direction:column;gap:2px}
+.docnum dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.docnum dd{margin:0;font-size:13px;color:var(--muted)}
+.remito-fields{display:grid;grid-template-columns:250px 170px minmax(0,1fr);align-items:start}
+.remito-fields > div{padding:0 16px;border-left:1px solid var(--border);min-width:0}
+.remito-fields > div:first-child{padding-left:0;border-left:0}
+.remito-fields .field.tipo{width:auto}
+
+.workspace{display:grid;grid-template-columns:360px minmax(0,1fr);gap:16px;align-items:start;min-width:0}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;box-shadow:0 1px 2px #2421240D;padding:18px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.panel-head h2{font-size:18px;font-weight:600}
+.panel-head p{font-size:12px;color:var(--muted);margin-top:2px}
+.search{display:flex;flex-direction:column;gap:6px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.search input{font-size:13px;text-transform:none;letter-spacing:0}
+.catrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.catrow:last-of-type{border-bottom:0}
+.catrow strong{display:block;font-size:13px}
+.catrow small{display:block;font-size:11px;color:var(--muted);margin-top:1px}
+.pols{display:flex;gap:6px}
+.pol{min-width:48px;min-height:44px;padding:0 6px;gap:4px;border-color:var(--muted);font-weight:600}
+.pol .cnt{font-size:11px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums}
+.pol[data-in="true"],.pol[aria-pressed="true"]{background:var(--tint);border-color:var(--wine);color:var(--wine)}
+.pol[data-in="true"] .cnt{color:var(--wine)}
+.hint{font-size:12px;line-height:1.6;color:var(--muted)}
+
+.doc .tbl{width:100%;border-collapse:collapse;font-size:13px}
+.doc .tbl th:nth-child(2){width:104px}
+.doc .tbl th:nth-child(3){width:152px}
+.doc .tbl th:nth-child(4){width:64px}
+.tbl th{text-align:left;text-transform:uppercase;font-size:11px;font-weight:600;letter-spacing:.03em;background:var(--page);color:var(--muted);height:36px;padding:0 12px;border-bottom:1px solid var(--border)}
+.tbl td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+.tbl tbody tr:last-child td{border-bottom:0}
+.tbl td strong{font-size:13px}
+.tbl td small{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.tbl .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.polarity{display:inline-flex;justify-content:center;align-items:center;padding:3px 7px;background:var(--page);border:1px solid var(--border);border-radius:3px;font-size:11px}
+.qty{width:84px;min-height:44px;text-align:right;font-variant-numeric:tabular-nums;padding:6px 8px}
+.icon{width:44px;min-width:44px;padding:0;border-color:var(--border);color:var(--muted);font-size:16px}
+.icon:hover{background:var(--tint);color:var(--wine)}
+.doc-foot{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:12px;margin-top:2px}
+.totals{display:flex;align-items:flex-end;gap:28px}
+.totals dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.totals dd{margin-top:2px;font-size:20px;font-variant-numeric:tabular-nums}
+.totals .units dd{font-size:24px;font-weight:700;letter-spacing:-.02em}
+.confirm{display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:0}
+.big{min-height:44px;padding:10px 18px;font-size:14px;min-width:200px}
+.note{font-size:11px;line-height:16px;color:var(--muted);text-align:right;max-width:34ch}
+.empty{display:flex;flex-direction:column;gap:6px;padding:18px;background:var(--page);border:1px dashed var(--border);border-radius:4px}
+.empty strong{font-size:13px}
+.empty span{font-size:12px;color:var(--muted);line-height:16px}
+.hist{padding:16px 20px}
+.proveedor-none{font-size:12px;color:var(--muted)}
+.actions{display:flex;gap:8px}
+.sm{min-height:44px;padding:0 10px;font-size:12px;white-space:nowrap}
+.sm.wine{color:var(--wine);border-color:var(--border);font-weight:600}
+
+.notes{width:1440px;padding:28px 40px 8px;display:grid;gap:10px}
+.notes h2{font-size:20px;font-weight:600}
+.notes h3{font-size:13px;font-weight:600;margin-top:6px}
+.notes p,.notes li{font-size:13px;line-height:1.6;max-width:110ch}
+.notes .lead{color:var(--muted)}
+.notes ul{display:grid;gap:6px;padding-left:18px;list-style:disc}
+.notes code{font-family:inherit;font-size:12px;color:var(--wine)}
+.states{width:1440px;display:grid;gap:28px;padding:8px 0 56px}
+.states > h2,.state > figcaption,.narrow-wrap{padding-left:40px;padding-right:40px}
+.states > h2{font-size:20px;font-weight:600;padding-top:16px;border-top:1px solid var(--border)}
+.state{display:grid;gap:10px}
+.state > figcaption{display:grid;gap:4px}
+.state > figcaption h3{font-size:16px;font-weight:600}
+.state > figcaption p{font-size:12px;line-height:1.6;color:var(--muted);max-width:120ch}
+
+/* narrow shell */
+.narrow-wrap{display:flex;gap:20px;align-items:flex-start}
+.narrow{width:390px;background:var(--page);border:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0}
+.mhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;background:#FFFFFF;border-bottom:1px solid var(--border)}
+.mhead .brand{padding:0;border:0}
+.mhead .brand strong{font-size:14px;line-height:18px}
+.mhead .brand small{font-size:11px}
+.mexit{min-height:44px;border:0;color:var(--muted);padding:6px}
+.mloc{display:flex;justify-content:space-between;gap:8px;padding:6px 16px;background:#FFFFFF;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
+.mmain{padding:12px;display:flex;flex-direction:column;gap:12px}
+.mmain h1{font-size:20px;font-weight:700}
+.mremito{background:#FFFFFF;border:1px solid var(--border);border-top:2px solid var(--wine);border-radius:8px;padding:12px;display:grid;gap:10px}
+.mremito dl{display:grid;gap:8px;margin:0}
+.mremito dl > div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dashed var(--border);padding-bottom:6px;font-size:12px}
+.mremito dt{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.mremito dd{margin:0;text-align:right}
+.mline{display:grid;gap:6px;padding:9px 0;border-bottom:1px solid var(--border)}
+.mline:last-of-type{border-bottom:0}
+.mline .top{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.mline strong{font-size:13px}
+.mline small{font-size:11px;color:var(--muted)}
+.mline .bottom{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.mbar{padding:10px 12px 12px;background:#FFFFFF;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.mbar span{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.mbar b{display:block;font-size:20px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.bnav{height:64px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));background:#FFFFFF;border-top:1px solid var(--border)}
+.bnav a,.bnav button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:11px;text-decoration:none;color:var(--muted);border:0;border-bottom:2px solid transparent;border-radius:0;background:none;min-height:44px;padding:4px}
+.bnav a[aria-current="page"],.bnav button[aria-current="page"]{color:var(--wine);font-weight:700;border-bottom-color:var(--wine)}
+.bnav .wrap{display:flex;align-items:center;gap:4px}
+
+/* bounded, grouped catalogue — F as the container, H as the default order */
+.main.live{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;gap:16px}
+.main.live .workspace{min-height:0;align-items:stretch;grid-template-rows:minmax(0,1fr)}
+.main.live .panel.doc{align-self:stretch}
+.main.live .doc-foot{margin-top:auto}
+.cat-b{height:100%;min-height:0;padding:18px 0 0;gap:0;overflow:hidden}
+.cat-b .panel-head{padding:0 18px 12px}
+.cat-b .search{padding:0 18px 12px}
+.cat-scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;border-top:1px solid var(--border);scrollbar-width:thin;scrollbar-color:var(--muted) var(--page)}
+.group{border-bottom:1px solid var(--border)}
+.group summary{display:flex;align-items:center;gap:8px;min-height:48px;padding:8px 18px;cursor:pointer;font-size:13.5px;font-weight:600;list-style:none}
+.group summary::-webkit-details-marker{display:none}
+.group summary:hover{background:var(--tint)}
+.group summary .ic{margin-left:auto;color:var(--muted)}
+.group[open] summary{border-bottom:1px solid var(--border);background:var(--page)}
+.group[open] summary .ic{transform:rotate(180deg)}
+.group .catrow{padding:9px 18px}
+.group .catrow:last-of-type{border-bottom:0}
+.group-all{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;min-height:48px;padding:8px 18px;border:0;border-bottom:1px solid var(--border);border-radius:0;background:#FFFFFF;color:var(--wine);font-size:12px;font-weight:600}
+.group-all:hover{background:var(--tint)}
+.cat-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 18px;border-top:1px solid var(--border);background:var(--page)}
+.cat-foot p{font-size:11px;line-height:16px;color:var(--muted)}
+.cat-foot b{color:#242124;font-variant-numeric:tabular-nums}
+.doc-tight{padding:16px;gap:8px}
+.doc-tight .tbl td{padding:6px 12px}
+
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<a class="skip" href="#pantalla">Saltar a la pantalla modelada</a>
+
+<svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+  <defs>
+    <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h18v5H3z M5 8v13h14V8 M9 12h6"/></symbol>
+    <symbol id="i-transfer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h17m-4-4 4 4-4 4 M21 17H4m4-4-4 4 4 4"/></symbol>
+    <symbol id="i-warehouse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V7l9-4 9 4v14 M7 21V11h10v10 M10 15h4v6"/></symbol>
+    <symbol id="i-adjustment" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v8 M3 8h8 M15 17h6"/></symbol>
+    <symbol id="i-catalog" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h10l8 8-10 10-8-8V3z M7.5 7.5h.01"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h9l5 5v13H5z M14 3v5h5 M9 13h6 M9 17h6"/></symbol>
+    <symbol id="i-administration" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+    <symbol id="i-password" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11V7a5 5 0 0 1 10 0v4 M5 11h14v10H5z M12 15v2"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3H4v18h6 M9 12h12m-5-5 5 5-5 5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 21l-6-6 M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10l5 5 5-5"/></symbol>
+  </defs>
+</svg>
+
+<!-- ============ BOARD 1 · live screen, 1440 x 1000 ============ -->
+<figure id="pantalla" tabindex="-1" style="margin:0">
+<div class="screen">
+  <aside class="sidebar">
+    <div>
+      <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+      <nav class="nav" aria-label="Navegación principal">
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+        <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+      <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+    </div>
+  </aside>
+  <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+
+  <main class="main live" aria-labelledby="page-title">
+    <div class="head"><small>ALMACÉN / INGRESOS</small><h1 id="page-title">Nuevo ingreso de stock</h1></div>
+
+    <section class="remito" aria-labelledby="remito-title">
+      <div class="remito-top">
+        <div><p class="lbl">Ingreso de stock</p><h2 id="remito-title">Remito del proveedor</h2></div>
+        <dl class="docnum">
+          <div><dt>Número</dt><dd>se asigna al confirmar</dd></div>
+          <div><dt>Fecha</dt><dd>al confirmar</dd></div>
+        </dl>
+      </div>
+      <div class="remito-fields">
+        <div class="field"><span id="sup-label">Proveedor</span>
+          <button type="button" class="select" aria-haspopup="listbox" aria-expanded="false"><span><b>BATEVOL</b><i>22 productos</i></span><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button>
+        </div>
+        <div class="field"><span id="tipo-label">Tipo</span><p class="static"><span class="chip">Baterías</span></p></div>
+        <div class="field"><label class="lbl" for="nota-live">Nota / remito</label><input id="nota-live" placeholder="Remito 0002-00045871"></div>
+      </div>
+    </section>
+
+    <div class="workspace">
+      <!-- F container adapted to this board: compact search, bounded results with its own scroll
+           and a sticky counter. H order: brand groups with counts, one open, one "ver todos" row. -->
+      <section class="panel cat-b" aria-labelledby="cat-title">
+        <div class="panel-head"><div><h2 id="cat-title">Agregar producto</h2><p>BATEVOL ofrece 22 productos · orden: marca y modelo</p></div><span class="tag">22 productos</span></div>
+        <label class="search">Buscar marca, modelo o capacidad<input type="search" placeholder="NS40ZL, TOYO, 45 Ah"></label>
+        <div class="cat-scroll" id="cat-live-scroll">
+          <details class="group" open>
+            <summary><span>TOYO</span><span class="tag">8 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>NS40ZL</strong><small>35 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button></div></div>
+            <div class="catrow"><div><strong>NS60L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>BT45L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button><button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>NS40L</strong><small>35 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>NS60R</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55B24L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55B24R</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>95D31L</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>WILLARD</span><span class="tag">6 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>55D23L</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 55D23L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>75D26L</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 75D26L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55D23R</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>75D26R</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>95D31R</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>105D31L</strong><small>95 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>MOURA</span><span class="tag">3 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>95D31L</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar MOURA 95D31L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar MOURA 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>75D26L</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55D23L</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>BOSCH</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>S4</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>S5</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>VARTA</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>D24</strong><small>60 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>D31</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>HELIAR</span><span class="tag">1 producto</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>HD45</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <button type="button" class="group-all">Ver todos los productos (22)</button>
+        </div>
+        <div class="cat-foot">
+          <p><b>22 productos</b> · <b>3</b> líneas · <b>7 u.</b></p>
+          <p>6 marcas · un grupo abierto</p>
+        </div>
+      </section>
+
+      <!-- the document is the centre -->
+      <section class="panel doc" aria-labelledby="doc-title">
+        <div class="panel-head">
+          <div><h2 id="doc-title">Documento de ingreso</h2><p>BATEVOL · Baterías · 3 líneas</p></div>
+          <span class="chip">Sin aplicar</span>
+        </div>
+        <table class="tbl">
+          <caption class="sr-only">Líneas del remito</caption>
+          <thead><tr><th scope="col">Producto</th><th scope="col">Polaridad</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
+          <tbody>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="2" aria-label="Cantidad de TOYO NS40ZL polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar TOYO NS40ZL polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah</small></td><td><span class="polarity">R</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="Cantidad de TOYO NS40ZL polaridad R"></td>
+              <td><button type="button" class="icon" aria-label="Quitar TOYO NS40ZL polaridad R">×</button></td></tr>
+            <tr><td><strong>TOYO · BT45L</strong><small>45 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO BT45L polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar TOYO BT45L polaridad L">×</button></td></tr>
+          </tbody>
+        </table>
+        <div class="doc-foot">
+          <dl class="totals"><div><dt>Líneas</dt><dd>3</dd></div><div class="units"><dt>Unidades</dt><dd>7</dd></div></dl>
+          <div class="confirm">
+            <button type="button" class="primary big">Confirmar ingreso</button>
+            <p class="note" id="confirm-note-live">Se aplica todo junto; al confirmar queda fijo y se corrige con un contra-asiento.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel hist" aria-labelledby="hist-title">
+      <div class="panel-head"><div><h2 id="hist-title">Historial de ingresos</h2><p>Los documentos confirmados no se editan ni se borran.</p></div><span class="tag">1 ingreso</span></div>
+      <table class="tbl">
+        <caption class="sr-only">Historial de ingresos del Almacén</caption>
+        <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th><th scope="col">Proveedor</th><th scope="col">Acción</th></tr></thead>
+        <tbody><tr>
+          <td><strong>#1</strong></td><td class="num">19/11/2026 12:57</td><td>TESTING LIMITS</td><td class="num">1 línea</td><td class="num">50 unidades</td>
+          <td><span class="tag ok">Aplicado</span></td><td><span class="proveedor-none">sin proveedor</span></td>
+          <td><div class="actions"><button type="button" class="sm wine">Ver detalle</button><button type="button" class="sm">Anular</button></div></td>
+        </tr></tbody>
+      </table>
+    </section>
+  </main>
+</div>
+</figure>
+
+<section class="notes" aria-labelledby="notas-02">
+  <h2 id="notas-02">Dirección 02 · El documento como remito</h2>
+  <p class="lead">El encabezado imita el papel que llega con la mercadería: proveedor, tipo, nota y la verdad sobre número y fecha, que recién existen al confirmar. El documento ocupa el centro; el catálogo queda como un buscador compacto que agrega hacia él, y los totales y la confirmación viven en el pie del documento. El catálogo toma la corrección F+H adaptada a este tablero: la búsqueda sigue arriba y compacta, pero sus resultados son una región acotada con scroll propio, contador al pie, y el orden por defecto son los grupos de marca con su cantidad —uno abierto, el resto cerrado, con la fila «Ver todos los productos (22)»—.</p>
+  <p><strong>Tradeoff:</strong> se lee como el remito que el operador tiene en la mano y el documento no se mueve cuando el catálogo crece, pero explorar 22 productos pasa a segundo plano: la columna angosta obliga a buscar o abrir un grupo, y ya no caben todos en una sola tabla sin scroll.</p>
+  <h3>Los seis defectos, uno por uno</h3>
+  <ul>
+    <li><strong>Tres franjas apiladas:</strong> una sola pieza de encabezado con separadores, sin bloque a ancho completo ni frases automáticas ni aviso rosa.</li>
+    <li><strong>El paso de tipo eliminado:</strong> el tipo es un campo del remito. Con un proveedor de un solo tipo es un dato; con dos tipos es un control en el mismo lugar.</li>
+    <li><strong>Catálogo duplicado:</strong> los resultados muestran un producto por fila y la polaridad como botón; un único conteo, «22 productos».</li>
+    <li><strong>Resultados que crecían sin límite:</strong> la lista de resultados es una región acotada con scroll propio y contador al pie, así que el remito y el documento conservan su alto con 22 o con 40 productos.</li>
+    <li><strong>Tabla que no decidía:</strong> el catálogo deja de ser una tabla de cuatro columnas; la decisión (polaridad) está en la fila del resultado y el documento es una tabla de líneas reales.</li>
+    <li><strong>Documento vacío y botón engañoso:</strong> el documento es el objeto central, con pie fijo de totales y confirmación; sin líneas, el botón se deshabilita y explica el motivo.</li>
+    <li><strong>Jerga interna:</strong> «Sin aplicar», «3 líneas», «22 productos» y una frase corriente sobre el documento fijo; ninguna etiqueta de estado inventada.</li>
+  </ul>
+  <h3>Accesibilidad</h3>
+  <ul>
+    <li>La tabla de líneas conserva sus encabezados y el nombre accesible de cada cantidad incluye producto y polaridad.</li>
+    <li>Los campos del remito son etiquetas reales, no texto suelto; el número y la fecha dicen que se asignan al confirmar en lugar de inventar valores.</li>
+    <li>Controles de 44 px, foco visible y contraste AA; sin movimiento.</li>
+    <li>Los grupos de marca se abren con <code>summary</code>: foco visible, estado expandido anunciado y ninguna acción detrás de hover.</li>
+  </ul>
+</section>
+
+<section class="states" aria-labelledby="estados-02">
+  <h2 id="estados-02">Estados modelados</h2>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado A · Documento sin líneas</h3>
+      <p>El remito existe y está vacío: el cuerpo del documento dice qué hacer, los totales en 0 y el botón está deshabilitado con el motivo al lado. El buscador sigue operativo para cargar la primera línea.</p>
+    </figcaption>
+    <div class="screen auto">
+      <aside class="sidebar">
+        <div>
+          <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+          <nav class="nav" aria-label="Navegación principal">
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+            <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+          </nav>
+        </div>
+        <div class="side-foot">
+          <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+          <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </aside>
+      <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main">
+        <div class="head"><small>ALMACÉN / INGRESOS</small><h1>Nuevo ingreso de stock</h1></div>
+        <section class="remito" aria-label="Encabezado del remito">
+          <div class="remito-top">
+            <div><p class="lbl">Ingreso de stock</p><h2>Remito del proveedor</h2></div>
+            <dl class="docnum"><div><dt>Número</dt><dd>se asigna al confirmar</dd></div><div><dt>Fecha</dt><dd>al confirmar</dd></div></dl>
+          </div>
+          <div class="remito-fields">
+            <div class="field"><span>Proveedor</span><button type="button" class="select" aria-haspopup="listbox" aria-expanded="false"><span><b>BATEVOL</b><i>22 productos</i></span><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button></div>
+            <div class="field"><span>Tipo</span><p class="static"><span class="chip">Baterías</span></p></div>
+            <div class="field"><label class="lbl" for="nota-a">Nota / remito</label><input id="nota-a" placeholder="Remito 0002-00045871"></div>
+              </div>
+        </section>
+        <div class="workspace">
+          <section class="panel" aria-labelledby="cat-a">
+            <div class="panel-head"><div><h2 id="cat-a">Agregar producto</h2><p>BATEVOL ofrece 22 productos</p></div></div>
+            <label class="search">Buscar marca, modelo o capacidad<input type="search" placeholder="NS40ZL, TOYO, 45 Ah"></label>
+            <div class="catrow"><div><strong>TOYO · NS40ZL</strong><small>35 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>TOYO · NS60L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>TOYO · BT45L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <p class="hint">Mostrando 3 de 22 productos.</p>
+          </section>
+          <section class="panel doc" aria-labelledby="doc-a">
+            <div class="panel-head"><div><h2 id="doc-a">Documento de ingreso</h2><p>BATEVOL · Baterías · sin líneas</p></div><span class="chip">Sin aplicar</span></div>
+            <div class="empty"><strong>El documento está vacío</strong><span>Buscá un producto a la izquierda y elegí la polaridad: cada elección agrega una línea acá.</span></div>
+            <div class="doc-foot">
+              <dl class="totals"><div><dt>Líneas</dt><dd>0</dd></div><div class="units"><dt>Unidades</dt><dd>0</dd></div></dl>
+              <div class="confirm">
+                <button type="button" class="primary big" disabled aria-describedby="why-a">Confirmar ingreso</button>
+                <p class="note" id="why-a">Agregá al menos una línea para confirmar. El stock no se toca hasta que confirmes.</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </figure>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado B · Proveedor con dos tipos</h3>
+      <p>DISTRIBUIDORA NORTE ofrece los dos tipos: el campo «Tipo» del remito se convierte en dos opciones y el buscador cambia su alcance. Elegido «Otros productos», el resultado es un nombre con su detalle y una sola acción, sin polaridad, y el documento espera su primera línea.</p>
+    </figcaption>
+    <div class="screen auto">
+      <aside class="sidebar">
+        <div>
+          <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+          <nav class="nav" aria-label="Navegación principal">
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+            <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+          </nav>
+        </div>
+        <div class="side-foot">
+          <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+          <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </aside>
+      <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main">
+        <div class="head"><small>ALMACÉN / INGRESOS</small><h1>Nuevo ingreso de stock</h1></div>
+        <section class="remito" aria-label="Encabezado del remito">
+          <div class="remito-top">
+            <div><p class="lbl">Ingreso de stock</p><h2>Remito del proveedor</h2></div>
+            <dl class="docnum"><div><dt>Número</dt><dd>se asigna al confirmar</dd></div><div><dt>Fecha</dt><dd>al confirmar</dd></div></dl>
+          </div>
+          <div class="remito-fields" style="grid-template-columns:230px 264px minmax(0,1fr)">
+            <div class="field"><span>Proveedor</span><button type="button" class="select" aria-haspopup="listbox" aria-expanded="false"><span><b>DISTRIBUIDORA NORTE</b><i>18 productos</i></span><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button></div>
+            <div class="field"><span id="tipo-b">Tipo</span>
+              <div class="static" role="group" aria-labelledby="tipo-b" style="gap:8px">
+                <button type="button" class="pol" style="min-width:100px" aria-pressed="false">Baterías</button>
+                <button type="button" class="pol" style="min-width:140px" aria-pressed="true">Otros productos</button>
+              </div>
+            </div>
+            <div class="field"><label class="lbl" for="nota-b">Nota / remito</label><input id="nota-b" placeholder="Remito 0002-00045871"></div>
+              </div>
+        </section>
+        <div class="workspace">
+          <section class="panel" aria-labelledby="cat-b">
+            <div class="panel-head"><div><h2 id="cat-b">Agregar producto</h2><p>DISTRIBUIDORA NORTE ofrece 18 productos</p></div></div>
+            <label class="search">Buscar nombre o dato del producto<input type="search" placeholder="Agua acidulada, 5 L"></label>
+            <div class="catrow"><div><strong>Agua acidulada</strong><small>5 L</small></div>
+              <button type="button" aria-label="Agregar Agua acidulada 5 L">Agregar</button></div>
+            <p class="hint">Un producto de otro tipo se agrega con una sola acción: su identidad es el nombre y sus campos propios, sin polaridad.</p>
+          </section>
+          <section class="panel doc" aria-labelledby="doc-b">
+            <div class="panel-head"><div><h2 id="doc-b">Documento de ingreso</h2><p>DISTRIBUIDORA NORTE · Otros productos · sin líneas</p></div><span class="chip">Sin aplicar</span></div>
+            <div class="empty"><strong>El documento está vacío</strong><span>Agregá un producto de otro tipo para abrir el remito.</span></div>
+            <div class="doc-foot">
+              <dl class="totals"><div><dt>Líneas</dt><dd>0</dd></div><div class="units"><dt>Unidades</dt><dd>0</dd></div></dl>
+              <div class="confirm"><button type="button" class="primary big" disabled aria-describedby="why-b">Confirmar ingreso</button><p class="note" id="why-b">Agregá al menos una línea para confirmar.</p></div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </figure>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado C · Proveedor sin productos</h3>
+      <p>DISTRIBUIDORA SUR no puede llenar un remito. El encabezado conserva el proveedor elegido, el buscador queda deshabilitado con su motivo en texto visible y no se dibuja un documento vacío que nunca podría confirmarse.</p>
+    </figcaption>
+    <div class="screen auto">
+      <aside class="sidebar">
+        <div>
+          <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+          <nav class="nav" aria-label="Navegación principal">
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+            <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+            <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+          </nav>
+        </div>
+        <div class="side-foot">
+          <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+          <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </aside>
+      <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main">
+        <div class="head"><small>ALMACÉN / INGRESOS</small><h1>Nuevo ingreso de stock</h1></div>
+        <section class="remito" aria-label="Encabezado del remito">
+          <div class="remito-top">
+            <div><p class="lbl">Ingreso de stock</p><h2>Remito del proveedor</h2></div>
+            <dl class="docnum"><div><dt>Número</dt><dd>se asigna al confirmar</dd></div><div><dt>Fecha</dt><dd>al confirmar</dd></div></dl>
+          </div>
+          <div class="remito-fields">
+            <div class="field"><span>Proveedor</span><button type="button" class="select" aria-haspopup="listbox" aria-expanded="false"><span><b>DISTRIBUIDORA SUR</b><i>0 productos</i></span><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button></div>
+            <div class="field"><span>Tipo</span><p class="static"><span class="tag">Sin productos</span></p></div>
+            <div class="field"><span id="nota-c-l">Nota / remito</span><input aria-labelledby="nota-c-l" placeholder="Remito 0002-00045871" disabled></div>
+              </div>
+        </section>
+        <div class="workspace">
+          <section class="panel" aria-labelledby="cat-c">
+            <div class="panel-head"><div><h2 id="cat-c">Agregar producto</h2><p>DISTRIBUIDORA SUR</p></div><span class="tag">Sin productos</span></div>
+            <p class="hint" style="font-size:13px">Este proveedor no tiene productos asignados. Asigná sus productos en Catálogo → Proveedores y volvé a intentar.</p>
+          </section>
+          <section class="panel" aria-labelledby="doc-c">
+            <div class="panel-head"><div><h2 id="doc-c">Documento de ingreso</h2><p>No se puede abrir sin productos ofrecidos</p></div></div>
+            <p class="hint">El documento de este ingreso no se crea: un remito sin productos posibles nunca llegaría a confirmarse.</p>
+          </section>
+        </div>
+        <section class="panel hist" aria-labelledby="hist-c">
+          <div class="panel-head"><div><h2 id="hist-c">Historial de ingresos</h2><p>Los documentos confirmados no se editan ni se borran.</p></div><span class="tag">1 ingreso</span></div>
+          <table class="tbl">
+            <caption class="sr-only">Historial de ingresos del Almacén</caption>
+            <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th><th scope="col">Proveedor</th><th scope="col">Acción</th></tr></thead>
+            <tbody><tr><td><strong>#1</strong></td><td class="num">19/11/2026 12:57</td><td>TESTING LIMITS</td><td class="num">1 línea</td><td class="num">50 unidades</td><td><span class="tag ok">Aplicado</span></td><td><span class="proveedor-none">sin proveedor</span></td><td><div class="actions"><button type="button" class="sm wine">Ver detalle</button><button type="button" class="sm">Anular</button></div></td></tr></tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+  </figure>
+
+  <figure class="state">
+    <figcaption>
+      <h3>Estado D · Pantalla angosta, 390 px</h3>
+      <p>El remito se convierte en una ficha de pares etiqueta/valor arriba y el buscador queda debajo, a ancho completo: primero se sabe de qué documento se trata y después se agrega. Cada resultado apila su polaridad y su cantidad, y el total con la confirmación queda sobre la barra inferior.</p>
+    </figcaption>
+    <div class="narrow-wrap">
+      <div class="narrow">
+        <header class="mhead"><div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div><button type="button" class="mexit" aria-label="Cerrar sesión"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg></button></header>
+        <div class="mloc"><span>Almacén</span><span>dev_almacen</span></div>
+        <div class="mmain">
+          <h1>Nuevo ingreso de stock</h1>
+          <div class="mremito">
+            <dl>
+              <div><dt>Proveedor</dt><dd>BATEVOL · 22 productos</dd></div>
+              <div><dt>Tipo</dt><dd>Baterías</dd></div>
+              <div><dt>Número y fecha</dt><dd>se asigna al confirmar</dd></div>
+              <div><dt>Nota / remito</dt><dd>Remito 0002-00045871</dd></div>
+            </dl>
+          </div>
+        </div>
+          <div class="mcard" style="background:#FFFFFF;border:1px solid var(--border);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:10px">
+            <label class="search">Buscar marca, modelo o capacidad<input type="search" placeholder="NS40ZL, TOYO, 45 Ah"></label>
+            <div class="mline"><div class="top"><strong>TOYO · NS40ZL</strong><small>35 Ah</small></div><div class="bottom"><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 2"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">2</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 1"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">1</span></button></div><small>3 u. en el documento</small></div></div>
+            <div class="mline"><div class="top"><strong>TOYO · BT45L</strong><small>45 Ah</small></div><div class="bottom"><div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 4"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">4</span></button><button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div><small>4 u. en el documento</small></div></div>
+          </div>
+        <div class="mbar"><div><span>Unidades</span><b>7</b></div><button type="button" class="primary" style="min-width:180px">Confirmar ingreso</button></div>
+        <nav class="bnav" aria-label="Navegación móvil">
+          <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+          <button type="button"><span class="wrap"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg><span class="badge" aria-hidden="true">0</span></span>Transferencias</button>
+          <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+        </nav>
+      </div>
+      <div style="max-width:520px;display:grid;gap:8px;padding-top:8px">
+        <h4 style="font-size:13px">Qué cambia en el teléfono</h4>
+        <ul style="list-style:disc;padding-left:18px;font-size:13px;line-height:1.6">
+          <li>El remito deja de ser una grilla y pasa a pares etiqueta/valor legibles, sin scroll horizontal.</li>
+          <li>El remito va primero y el buscador después, a ancho completo.</li>
+          <li>La polaridad conserva sus dos botones de 44 px y el total por producto queda a la vista.</li>
+          <li>El pie con total y confirmación no se separa del documento.</li>
+        </ul>
+      </div>
+    </div>
+  </figure>
+  <figure class="state">
+    <figcaption>
+      <h3>Estado E · 22 productos en el catálogo acotado y agrupado</h3>
+      <p>El mismo remito y el mismo documento, con el catálogo en su caso real: 22 productos en seis marcas. El grupo abierto (TOYO, 8 productos) suma sus filas dentro de la región acotada, que scrollea con la búsqueda arriba y el contador fijo al pie; abajo se alcanzan los otros cinco grupos y la fila «Ver todos los productos (22)». El documento conserva sus 7 líneas y 41 unidades, y la confirmación sigue en su pie.</p>
+    </figcaption>
+    <div class="screen">
+  <aside class="sidebar">
+    <div>
+      <div class="brand"><span class="logo" aria-hidden="true">L</span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+      <nav class="nav" aria-label="Navegación principal">
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-box"/></svg>Inventario</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-transfer"/></svg>Transferencias<span class="badge">0</span></button>
+        <button type="button" aria-current="page"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ingresos</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-adjustment"/></svg>Ajustes</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-catalog"/></svg>Catálogo</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg>Rendiciones</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-administration"/></svg>Administración</button>
+        <button type="button"><svg class="ic" aria-hidden="true"><use href="#i-password"/></svg>Mi contraseña</button>
+      </nav>
+    </div>
+    <div class="side-foot">
+      <div class="identity"><strong>dev_almacen</strong><small>Almacén</small></div>
+      <button type="button" class="logout"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg>Cerrar sesión</button>
+    </div>
+  </aside>
+  <header class="topbar"><strong>Luson Ingresos</strong><span class="loc"><svg class="ic" aria-hidden="true"><use href="#i-warehouse"/></svg>Ubicación asignada: <b>Almacén</b></span></header>
+      <main class="main live" aria-labelledby="e-title">
+    <div class="head"><small>ALMACÉN / INGRESOS</small><h1 id="e-title">Nuevo ingreso de stock</h1></div>
+    <section class="remito" aria-label="Encabezado del remito">
+      <div class="remito-top">
+        <div><p class="lbl">Ingreso de stock</p><h2>Remito del proveedor</h2></div>
+        <dl class="docnum"><div><dt>Número</dt><dd>se asigna al confirmar</dd></div><div><dt>Fecha</dt><dd>al confirmar</dd></div></dl>
+      </div>
+      <div class="remito-fields">
+        <div class="field"><span>Proveedor</span><button type="button" class="select" aria-haspopup="listbox" aria-expanded="false"><span><b>BATEVOL</b><i>22 productos</i></span><svg class="ico" aria-hidden="true"><use href="#i-chevron"/></svg></button></div>
+        <div class="field"><span>Tipo</span><p class="static"><span class="chip">Baterías</span></p></div>
+        <div class="field"><label class="lbl" for="e-nota">Nota / remito</label><input id="e-nota" placeholder="Remito 0002-00045871"></div>
+      </div>
+    </section>
+    <div class="workspace">
+      <section class="panel cat-b" aria-labelledby="e-cat">
+        <div class="panel-head"><div><h2 id="e-cat">Agregar producto</h2><p>BATEVOL ofrece 22 productos · orden: marca y modelo</p></div><span class="tag">22 productos</span></div>
+        <label class="search">Buscar marca, modelo o capacidad<input type="search" placeholder="NS40ZL, TOYO, 45 Ah"></label>
+        <div class="cat-scroll" id="e-cat-scroll">
+          <details class="group" open>
+            <summary><span>TOYO</span><span class="tag">8 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>NS40ZL</strong><small>35 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS40ZL polaridad R. En el documento: 4"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">4</span></button></div></div>
+            <div class="catrow"><div><strong>NS60L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO NS60L polaridad L. En el documento: 8"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">8</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS60L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>BT45L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar TOYO BT45L polaridad L. En el documento: 5"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">5</span></button><button type="button" class="pol" aria-label="Agregar TOYO BT45L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>NS40L</strong><small>35 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS40L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>NS60R</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO NS60R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55B24L</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO 55B24L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55B24R</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO 55B24R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>95D31L</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar TOYO 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>WILLARD</span><span class="tag">6 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>55D23L</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 55D23L polaridad L. En el documento: 7"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">7</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>75D26L</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar WILLARD 75D26L polaridad L. En el documento: 6"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">6</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55D23R</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 55D23R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>75D26R</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 75D26R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>95D31R</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 95D31R polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>105D31L</strong><small>95 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar WILLARD 105D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>MOURA</span><span class="tag">3 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>95D31L</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" data-in="true" aria-label="Agregar MOURA 95D31L polaridad L. En el documento: 5"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">5</span></button><button type="button" class="pol" aria-label="Agregar MOURA 95D31L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>75D26L</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar MOURA 75D26L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>55D23L</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar MOURA 55D23L polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>BOSCH</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>S4</strong><small>50 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar BOSCH S4 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>S5</strong><small>70 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar BOSCH S5 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>VARTA</span><span class="tag">2 productos</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>D24</strong><small>60 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar VARTA D24 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+            <div class="catrow"><div><strong>D31</strong><small>90 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar VARTA D31 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <details class="group">
+            <summary><span>HELIAR</span><span class="tag">1 producto</span><svg class="ic" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
+            <div class="catrow"><div><strong>HD45</strong><small>45 Ah</small></div>
+              <div class="pols"><button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad L. En el documento: 0"><span aria-hidden="true">L</span><span class="cnt" aria-hidden="true">0</span></button><button type="button" class="pol" aria-label="Agregar HELIAR HD45 polaridad R. En el documento: 0"><span aria-hidden="true">R</span><span class="cnt" aria-hidden="true">0</span></button></div></div>
+          </details>
+          <button type="button" class="group-all">Ver todos los productos (22)</button>
+        </div>
+        <div class="cat-foot">
+          <p><b>22 productos</b> · <b>7</b> líneas · <b>41 u.</b></p>
+          <p>6 marcas · un grupo abierto</p>
+        </div>
+      </section>
+      <section class="panel doc doc-tight" aria-labelledby="e-doc">
+        <div class="panel-head"><div><h2 id="e-doc">Documento de ingreso</h2><p>BATEVOL · Baterías · 7 líneas</p></div><span class="chip">Sin aplicar</span></div>
+        <table class="tbl">
+          <caption class="sr-only">Líneas del remito</caption>
+          <thead><tr><th scope="col">Producto</th><th scope="col">Polaridad</th><th scope="col" class="num">Cantidad</th><th scope="col"><span class="sr-only">Quitar</span></th></tr></thead>
+          <tbody>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de TOYO NS40ZL polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar TOYO NS40ZL polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · NS40ZL</strong><small>35 Ah</small></td><td><span class="polarity">R</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="4" aria-label="Cantidad de TOYO NS40ZL polaridad R"></td>
+              <td><button type="button" class="icon" aria-label="Quitar TOYO NS40ZL polaridad R">×</button></td></tr>
+            <tr><td><strong>TOYO · NS60L</strong><small>45 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="8" aria-label="Cantidad de TOYO NS60L polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar TOYO NS60L polaridad L">×</button></td></tr>
+            <tr><td><strong>TOYO · BT45L</strong><small>45 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="5" aria-label="Cantidad de TOYO BT45L polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar TOYO BT45L polaridad L">×</button></td></tr>
+            <tr><td><strong>WILLARD · 55D23L</strong><small>50 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="7" aria-label="Cantidad de WILLARD 55D23L polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar WILLARD 55D23L polaridad L">×</button></td></tr>
+            <tr><td><strong>WILLARD · 75D26L</strong><small>70 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="6" aria-label="Cantidad de WILLARD 75D26L polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar WILLARD 75D26L polaridad L">×</button></td></tr>
+            <tr><td><strong>MOURA · 95D31L</strong><small>90 Ah</small></td><td><span class="polarity">L</span></td>
+              <td><input class="qty" type="number" inputmode="numeric" min="1" value="5" aria-label="Cantidad de MOURA 95D31L polaridad L"></td>
+              <td><button type="button" class="icon" aria-label="Quitar MOURA 95D31L polaridad L">×</button></td></tr>
+          </tbody>
+        </table>
+        <div class="doc-foot">
+          <dl class="totals"><div><dt>Líneas</dt><dd>7</dd></div><div class="units"><dt>Unidades</dt><dd>41</dd></div></dl>
+          <div class="confirm">
+            <button type="button" class="primary big">Confirmar ingreso</button>
+            <p class="note">Se aplica todo junto; al confirmar queda fijo y se corrige con un contra-asiento.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+      </main>
+    </div>
+  </figure>
+</section>
+
+<footer class="notes" style="padding-bottom:40px">
+  <p class="lead">Lámina estática, sin URLs externas, sin fuentes descargadas y sin imágenes. Tokens: <code>--wine</code>, <code>--hover</code>, <code>--tint</code>, <code>--page</code>, <code>--border</code>, <code>--muted</code>, <code>ink</code>, <code>surface</code>, <code>soft-shadow</code>, el juego deshabilitado y el verde de «Aplicado»; familia única <code>Inter, sans-serif</code>.</p>
+</footer>
+
+<script>
+(function () {
+  var box = document.getElementById('e-cat-scroll');
+  if (box) box.scrollTop = box.scrollHeight;
+})();
+</script>
+</body>
+</html>
