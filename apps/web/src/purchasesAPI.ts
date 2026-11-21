@@ -16,15 +16,15 @@ import {
 export type { PurchaseHistoryRow } from './purchaseModel';
 
 export type PurchaseErrorCode = 'invalid_request' | 'forbidden' | 'not_found'
-  | 'retry_conflict' | 'already_reversed' | 'service_unavailable'
-  | 'invalid_response' | 'network' | 'aborted';
+  | 'retry_conflict' | 'already_reversed' | 'fund_insufficient' | 'branch_frozen'
+  | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
 /** One admitted refusal per HTTP status; nothing else may reach the UI. */
 export const purchaseAdmittedErrors: ReadonlyMap<number, readonly PurchaseErrorCode[]> = new Map([
   [400, ['invalid_request']],
   [403, ['forbidden']],
   [404, ['not_found']],
-  [409, ['retry_conflict', 'already_reversed']],
+  [409, ['retry_conflict', 'already_reversed', 'fund_insufficient', 'branch_frozen']],
   [503, ['service_unavailable']],
 ]);
 
@@ -35,6 +35,8 @@ export const purchaseErrorMessages: Record<PurchaseErrorCode, string> = {
   not_found: 'La compra ya no existe en esta sucursal. Actualizá el historial.',
   retry_conflict: 'La clave de esta compra ya se usó con otro contenido. No se aplicó ningún cambio: revisá el documento.',
   already_reversed: 'Esta compra ya tiene su contra-documento o es un contra-documento: no se registró otra anulación.',
+  fund_insufficient: 'El fondo de compras no alcanza para pagar esta compra: el fondo no puede gastar más de lo que tiene. No se registró nada. El depósito repone el fondo y la rendición lo declara.',
+  branch_frozen: 'La sucursal está congelada por una rendición en curso: no se registra nada hasta que la rendición se cierre.',
   service_unavailable: 'El servicio no está disponible. No pudimos confirmar la compra: conservamos el documento para reintentar.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar la compra: conservamos el documento.',
   network: 'No se pudo conectar con el servidor. Conservamos el documento para reintentar el mismo registro.',
@@ -635,16 +637,42 @@ export function parsePurchaseReceived(raw: string): PurchaseReceived {
 export function parsePurchaseError(raw: string, status: number): PurchaseErrorCode {
   const admitted = purchaseAdmittedErrors.get(status);
   if (!admitted) return invalidResponse();
-  const envelope = fields(decode(raw), ['error']);
+  const parsed = decode(raw);
+  // The envelope of the purchase fund states two quantities beside its code: what the fund holds and
+  // what the document asks. It is admitted with them and only with them, so the refusal reaches the
+  // screen as the fact it is instead of as an unreadable response.
+  if (statedCode(parsed) === 'fund_insufficient' && admitted.includes('fund_insufficient')) {
+    const envelope = fields(parsed, ['error', 'balance', 'requested']);
+    if (typeof envelope.balance !== 'string' || !canonicalStatedMoney.test(envelope.balance)
+      || typeof envelope.requested !== 'string' || !canonicalStatedMoney.test(envelope.requested)) {
+      return invalidResponse();
+    }
+    return 'fund_insufficient';
+  }
+  const envelope = fields(parsed, ['error']);
   const code = envelope.error;
   if (typeof code !== 'string' || !admitted.includes(code as PurchaseErrorCode)) return invalidResponse();
   return code as PurchaseErrorCode;
 }
 
+/** The code a refusal states, read before its envelope is judged whole: the fund's refusal carries two
+ * quantities beside it, and the other refusals carry the code alone. */
+function statedCode(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof LosslessNumber) {
+    return null;
+  }
+  const code = (value as Record<string, unknown>).error;
+  return typeof code === 'string' ? code : null;
+}
+
+/** The canonical two-decimal text an amount of money is stated with, both ways. */
+const canonicalStatedMoney = /^-?\d{1,10}\.\d{2}$/;
+
 /** A definite rejection proves nothing was written; every other failure stays uncertain. */
 export function purchaseFailureIsDefinite(code: PurchaseErrorCode): boolean {
   return code === 'invalid_request' || code === 'forbidden' || code === 'not_found'
-    || code === 'retry_conflict' || code === 'already_reversed';
+    || code === 'retry_conflict' || code === 'already_reversed'
+    || code === 'fund_insufficient' || code === 'branch_frozen';
 }
 
 // ---------------------------------------------------------------------------------
