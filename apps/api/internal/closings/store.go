@@ -642,80 +642,24 @@ func (s *Store) SaveCash(ctx context.Context, actor auth.Identity, id int64, dra
 	return closing, nil
 }
 
-// RecordExpense records one small expense the branch paid out of its own till (S12): the
-// amount and the description, recorded by the branch account that owns the till, as it happens
-// and with no previous approval. The row is appended to the branch's ledger and never attached
-// to a settlement, because the settlement that covers it is the one whose window contains its
+// RecordExpense records one small expense the branch paid out of its own till (S12): the amount, the
+// motive it is recorded with and the optional note, recorded by the branch account that owns the till,
+// as it happens and with no previous approval. The row is appended to the branch's ledger and never
+// attached to a settlement, because the settlement that covers it is the one whose window contains its
 // instant; a recorded expense is immutable and is corrected by its opposite movement.
+//
+// The motive is chosen from the closed list of the database (S2, S3): it is mandatory for an expense and
+// it is the one fact of the row the branch cannot write freely, so the guard of 061 answers last, after
+// the freeze and the bound of the drawer. What the note says beside it is optional.
 //
 // The refusals around it are the domain's own: a frozen branch cannot spend out of the till being
 // counted (the database's LC001, published as ErrBranchFrozen), the ledger refuses a movement that
 // is not the recording branch's own (LC011, published as ErrNotBranchExpense), and the warehouse is
 // refused here, because a 'gasto' row states the branch and the actor of the movement together and
 // deriving that branch from the session would make the ledger's own comparison always agree.
-func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount Money, description string) (Expense, error) {
-	if ctx == nil || s == nil || s.pool == nil {
-		return Expense{}, ErrUnavailable
-	}
-	canonicalAmount, err := ParseAmount(string(amount))
-	if err != nil {
-		return Expense{}, err
-	}
-	// An expense of zero is not an expense: the ledger admits a positive amount only, and the
-	// same rule is judged here instead of letting the row CHECK answer it.
-	if cents, ok := amountCents(canonicalAmount); !ok || cents < 1 {
-		return Expense{}, ErrInvalid
-	}
-	canonicalDescription, ok := CanonicalDescription(description)
-	if !ok {
-		return Expense{}, ErrInvalid
-	}
-	// The warehouse has no till of its own: it never records an expense, and the refusal is the same
-	// class the ledger raises for a movement that is not the recording branch's own (LC011).
-	if actor.Location.ID < firstBranchID {
-		return Expense{}, ErrNotBranchExpense
-	}
-	// A session still forced to change its password does not move the branch's money, exactly like
-	// the account that decides the settlement.
-	if actor.MustChangePassword {
-		return Expense{}, ErrForbidden
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := checkAccount(ctx, s.pool, actor); err != nil {
-		return Expense{}, err
-	}
-	var expense Expense
-	var stored string
-	// The branch is the account's own location and never a caller value: a branch records in
-	// its own till, and 'gasto' rows are never attached to a settlement.
-	err = s.pool.QueryRow(ctx, `INSERT INTO branch_cash_movements(
-  branch_location_id,kind,amount,description,created_by_account_id)
- VALUES($1,'gasto',$2,$3,$4)
- RETURNING id,branch_location_id,kind,amount::text,description,occurred_at,created_by_account_id`,
-		int16(actor.Location.ID), string(canonicalAmount), canonicalDescription,
-		int64(actor.AccountID)).
-		Scan(&expense.ID, &expense.BranchID, &expense.Kind, &stored, &expense.Description,
-			&expense.OccurredAt, &expense.CreatedByAccountID)
-	if err != nil {
-		return Expense{}, s.cashWriteRefusal(ctx, actor.Location.ID, canonicalAmount, err)
-	}
-	if expense.Amount, err = ParseAmount(stored); err != nil {
-		return Expense{}, ErrUnavailable
-	}
-	// The row is revalidated against the expense this call wrote: the kind of a pay-out and no
-	// movement it answers, because a correction has its own path.
-	if expense.Kind != metricsMovementExpense || expense.CorrectsID != nil {
-		return Expense{}, ErrUnavailable
-	}
-	if expense.ID < 1 || expense.BranchID < firstBranchID || expense.BranchID > MaxBranchID ||
-		expense.CreatedByAccountID < 1 || expense.OccurredAt.IsZero() {
-		return Expense{}, ErrUnavailable
-	}
-	if canonical, ok := CanonicalDescription(expense.Description); !ok || canonical != expense.Description {
-		return Expense{}, ErrUnavailable
-	}
-	return expense, nil
+func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount Money, description string,
+	categoryID *int64) (Expense, error) {
+	return s.recordMovement(ctx, actor, metricsMovementExpense, amount, description, categoryID, nil)
 }
 
 // RecordCashMovement records one movement the branch writes in its own operational drawer (S1, S2): the
@@ -723,13 +667,17 @@ func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount M
 // and what it was for. It is the same admission as an expense -- the branch of the session, the
 // database's instant, no approval and no settlement named -- stated for the three kinds the branch
 // writes of its own period (S12).
-func (s *Store) RecordCashMovement(ctx context.Context, actor auth.Identity, kind string, amount Money, description string) (Expense, error) {
+//
+// An expense also states the motive of the closed list, and it is the only kind that does (S3): the
+// contribution and the collection say what they are for in their own text and name no motive at all.
+func (s *Store) RecordCashMovement(ctx context.Context, actor auth.Identity, kind string, amount Money,
+	description string, categoryID *int64) (Expense, error) {
 	// A correction is not a direction of the drawer: it answers another movement and states which one, so
 	// it is never recorded here and has its own path below (S6).
 	if !cashMovementPeriodKind(kind) {
 		return Expense{}, ErrInvalid
 	}
-	return s.recordMovement(ctx, actor, kind, amount, description, nil)
+	return s.recordMovement(ctx, actor, kind, amount, description, categoryID, nil)
 }
 
 // CorrectCashMovement records the compensating movement of one row of the branch's book (S6): the
@@ -743,16 +691,17 @@ func (s *Store) CorrectCashMovement(ctx context.Context, actor auth.Identity, co
 	if correctsID < 1 {
 		return Expense{}, ErrInvalid
 	}
-	return s.recordMovement(ctx, actor, cashMovementCorrection, amount, description, &correctsID)
+	return s.recordMovement(ctx, actor, cashMovementCorrection, amount, description, nil, &correctsID)
 }
 
-// recordMovement appends one row to the branch's own book, which is the one write both paths above state:
-// the amount, the description, the kind the branch recorded and -- for a correction -- the movement it
-// answers. The rules of the admission are exactly those of a recorded expense: a positive canonical
-// amount, a canonical description, the branch of the session (never a caller value, S12), the database's
-// instant and no settlement named, because the closure that covers the row is the one whose window
-// contains that instant.
-func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind string, amount Money, description string, corrects *int64) (Expense, error) {
+// recordMovement appends one row to the branch's own book, which is the one write every path above
+// states: the amount, the text the row says, the kind the branch recorded, the motive it names and --
+// for a correction -- the movement it answers. The rules of the admission are one shape for every path:
+// a positive canonical amount, the text its kind admits, the branch of the session (never a caller value,
+// S12), the motive only where the kind states one (S3), the database's instant and no settlement named,
+// because the closure that covers the row is the one whose window contains that instant.
+func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind string, amount Money,
+	description string, categoryID *int64, corrects *int64) (Expense, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Expense{}, ErrUnavailable
 	}
@@ -765,7 +714,25 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 	if cents, ok := amountCents(canonicalAmount); !ok || cents < 1 {
 		return Expense{}, ErrInvalid
 	}
-	canonicalDescription, ok := CanonicalDescription(description)
+	// The motive of the row (S3): an expense states one of the closed list and no other kind states one.
+	// What the list offers, and the label the row keeps, is the database's answer and never this one: an
+	// id the list does not offer is refused by the guard of 061 as ErrCategoryUnknown.
+	if kind == metricsMovementExpense {
+		if categoryID == nil || *categoryID < 1 {
+			return Expense{}, ErrCategoryRequired
+		}
+	} else if categoryID != nil {
+		return Expense{}, ErrCategoryNotApplicable
+	}
+	// The text of the row: the note of an expense is optional because its motive states what the money
+	// paid for (S3), and every other kind still says what it is for.
+	var canonicalText string
+	var ok bool
+	if kind == metricsMovementExpense {
+		canonicalText, ok = CanonicalNote(description)
+	} else {
+		canonicalText, ok = CanonicalDescription(description)
+	}
 	if !ok {
 		return Expense{}, ErrInvalid
 	}
@@ -787,18 +754,20 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 	}
 	var movement Expense
 	var stored string
-	// The branch is the account's own location and never a caller value, and the row belongs to no
-	// settlement: `closing_id` stays null, which is what separates a movement of the period from the
-	// transfer of an acta (S5).
+	// The branch is the account's own location and never a caller value, the row belongs to no
+	// settlement -- `closing_id` stays null, which is what separates a movement of the period from the
+	// transfer of an acta (S5) -- and the copy of the label is written by the guard of 061 and never by
+	// this statement (S8).
 	err = s.pool.QueryRow(ctx, `INSERT INTO branch_cash_movements(
-  branch_location_id,kind,amount,description,corrects_id,created_by_account_id)
- VALUES($1,$2,$3,$4,$5,$6)
+  branch_location_id,kind,amount,description,category_id,corrects_id,created_by_account_id)
+ VALUES($1,$2,$3,$4,$5,$6,$7)
  RETURNING id,branch_location_id,kind,amount::text,description,occurred_at,created_by_account_id,
-  corrects_id`,
-		int16(actor.Location.ID), kind, string(canonicalAmount), canonicalDescription, corrects,
+  corrects_id,category_id,category_label`,
+		int16(actor.Location.ID), kind, string(canonicalAmount), canonicalText, categoryID, corrects,
 		int64(actor.AccountID)).
 		Scan(&movement.ID, &movement.BranchID, &movement.Kind, &stored, &movement.Description,
-			&movement.OccurredAt, &movement.CreatedByAccountID, &movement.CorrectsID)
+			&movement.OccurredAt, &movement.CreatedByAccountID, &movement.CorrectsID,
+			&movement.CategoryID, &movement.CategoryLabel)
 	if err != nil {
 		return Expense{}, s.cashWriteRefusal(ctx, actor.Location.ID, canonicalAmount, err)
 	}
@@ -810,8 +779,8 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 		return Expense{}, ErrUnavailable
 	}
 	// The row is revalidated against the very movement this call wrote: the kind it asked for, the amount
-	// it stated, the target a correction names and only a correction, and the canonical text the ledger
-	// admits.
+	// it stated, the target a correction names and only a correction, the motive it named and the label
+	// the database copied from it, and the text the ledger admits.
 	if movement.Kind != kind || (movement.CorrectsID != nil) != (corrects != nil) ||
 		(corrects != nil && *movement.CorrectsID != *corrects) {
 		return Expense{}, ErrUnavailable
@@ -819,10 +788,80 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 	if movement.Amount != canonicalAmount {
 		return Expense{}, ErrUnavailable
 	}
-	if canonical, ok := CanonicalDescription(movement.Description); !ok || canonical != movement.Description {
+	if !sameMotive(movement.CategoryID, categoryID) {
+		return Expense{}, ErrUnavailable
+	}
+	if (movement.CategoryID == nil) != (movement.CategoryLabel == nil) {
+		return Expense{}, ErrUnavailable
+	}
+	if movement.CategoryLabel != nil {
+		if canonical, ok := CanonicalLabel(*movement.CategoryLabel); !ok ||
+			canonical != *movement.CategoryLabel {
+			return Expense{}, ErrUnavailable
+		}
+	}
+	if kind == metricsMovementExpense {
+		if canonical, ok := CanonicalNote(movement.Description); !ok ||
+			canonical != movement.Description {
+			return Expense{}, ErrUnavailable
+		}
+	} else if canonical, ok := CanonicalDescription(movement.Description); !ok ||
+		canonical != movement.Description {
 		return Expense{}, ErrUnavailable
 	}
 	return movement, nil
+}
+
+// sameMotive reports whether the row the database wrote names the motive the caller stated: a caller that
+// asked for a motive reads it back, and every other row has none (S3).
+func sameMotive(stored, requested *int64) bool {
+	if stored == nil || requested == nil {
+		return stored == nil && requested == nil
+	}
+	return *stored == *requested
+}
+
+// CashCategories reads the closed list an expense is recorded with (S2, S5): the motives that are still
+// offered, in the order the list states and then by their label, which is the order the screen shows. The
+// catalogue is global to every branch and states no branch at all, so an account of the warehouse and an
+// account of a branch read the same options, and an archived motive is not one of them (S8).
+func (s *Store) CashCategories(ctx context.Context, actor auth.Identity) ([]CashCategory, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return nil, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// The list is not money and belongs to no branch, but it is read by a session and never by an
+	// anonymous caller: an account the installation does not hold reads nothing.
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,label FROM branch_cash_categories
+ WHERE retired_at IS NULL ORDER BY sort_order,label`)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	categories := make([]CashCategory, 0, 16)
+	for rows.Next() {
+		var category CashCategory
+		if rows.Scan(&category.ID, &category.Label) != nil {
+			return nil, fail(ctx)
+		}
+		// Every row is revalidated instead of trusted: a motive states its identity and a label this
+		// domain could have written, so a row the catalogue of this vertical did not write fails closed.
+		if category.ID < 1 {
+			return nil, ErrUnavailable
+		}
+		if canonical, ok := CanonicalLabel(category.Label); !ok || canonical != category.Label {
+			return nil, ErrUnavailable
+		}
+		categories = append(categories, category)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return categories, nil
 }
 
 const (
@@ -853,6 +892,12 @@ type CashMovement struct {
 	OccurredAt         time.Time
 	CreatedByAccountID int64
 	CorrectsID         *int64
+	// CategoryID is the motive an expense was recorded with and CategoryLabel the copy of the label it had
+	// at that instant (S3, S8). Both are nil on every row that names no motive -- a contribution, a
+	// collection, a correction and every row recorded before 061 -- and the copy is what the book keeps
+	// reading when the motive is renamed or archived.
+	CategoryID    *int64
+	CategoryLabel *string
 }
 
 // CashLedger is the branch's drawer over one window, which is what the screen of the operational till
@@ -989,8 +1034,8 @@ func (s *Store) CashLedger(ctx context.Context, actor auth.Identity, from, to *t
 		return CashLedger{}, ErrUnavailable
 	}
 	rows, err := s.pool.Query(ctx, `SELECT id,branch_location_id,kind,effect_kind,amount::text,
-  effective::text,description,occurred_at,created_by_account_id,corrects_id,
-  sum(effective) OVER ()::text,count(*) OVER ()
+  effective::text,description,occurred_at,created_by_account_id,corrects_id,category_id,
+  category_label,sum(effective) OVER ()::text,count(*) OVER ()
  FROM branch_cash_ledger
  WHERE branch_location_id=$1 AND closing_id IS NULL
    AND ($2::timestamptz IS NULL OR occurred_at >= $2)
@@ -1011,7 +1056,8 @@ func (s *Store) CashLedger(ctx context.Context, actor auth.Identity, from, to *t
 		var amount, stored string
 		if rows.Scan(&movement.ID, &movement.BranchID, &movement.Kind, &movement.EffectKind,
 			&amount, &stored, &movement.Description, &movement.OccurredAt,
-			&movement.CreatedByAccountID, &movement.CorrectsID, &total, &window) != nil {
+			&movement.CreatedByAccountID, &movement.CorrectsID, &movement.CategoryID,
+			&movement.CategoryLabel, &total, &window) != nil {
 			return CashLedger{}, fail(ctx)
 		}
 		if _, ok := movement.stored(branch, amount, stored); !ok {
@@ -1116,7 +1162,25 @@ func (m *CashMovement) stored(branch int16, amount, effect string) (int64, bool)
 		(m.CorrectsID != nil && *m.CorrectsID < 1) {
 		return 0, false
 	}
-	if canonical, ok := CanonicalDescription(m.Description); !ok || canonical != m.Description {
+	// The motive of a row is one pair that always travels together, names an identity, is offered by the
+	// closed list and is stated by an expense only (S3, S8): a row of any other shape is one this domain
+	// did not write and is never published.
+	if (m.CategoryID == nil) != (m.CategoryLabel == nil) ||
+		(m.CategoryID != nil && (*m.CategoryID < 1 || m.Kind != metricsMovementExpense)) {
+		return 0, false
+	}
+	if m.CategoryLabel != nil {
+		if canonical, ok := CanonicalLabel(*m.CategoryLabel); !ok || canonical != *m.CategoryLabel {
+			return 0, false
+		}
+	}
+	// The text of the row is the note of an expense -- optional, because its motive states the fact -- and
+	// the mandatory description of every other kind (S3).
+	if m.Kind == metricsMovementExpense {
+		if canonical, ok := CanonicalNote(m.Description); !ok || canonical != m.Description {
+			return 0, false
+		}
+	} else if canonical, ok := CanonicalDescription(m.Description); !ok || canonical != m.Description {
 		return 0, false
 	}
 	stored := Money(amount)
@@ -2437,7 +2501,14 @@ func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 			(expense.CorrectsID != nil && *expense.CorrectsID < 1) {
 			return nil, ErrUnavailable
 		}
-		if canonical, ok := CanonicalDescription(expense.Description); !ok || canonical != expense.Description {
+		// The text of the row is the note of the expense, which is optional because the motive it names
+		// states what the money paid for (061, S3), and the mandatory description of the correction that
+		// answers it.
+		canonical, ok := CanonicalNote(expense.Description)
+		if expense.Kind == cashMovementCorrection {
+			canonical, ok = CanonicalDescription(expense.Description)
+		}
+		if !ok || canonical != expense.Description {
 			return nil, ErrUnavailable
 		}
 		if cents, ok := amountCents(expense.Amount); !ok || cents < 1 {
@@ -3000,6 +3071,12 @@ func mapFailure(ctx context.Context, err error) error {
 		case "LC023":
 			// An effect is written by the acceptance of its own correction.
 			return ErrCorrectionJournal
+		case "LC033":
+			// The motive of an expense is not one the closed list offers, or it is archived (061, S3, S8).
+			// The write paths judge the shape of the request themselves -- a missing motive and a motive on
+			// a kind that states none never reach the database -- so this code is the catalogue's own
+			// answer about the motive it was handed.
+			return ErrCategoryUnknown
 		case "23505":
 			if strings.Contains(pg.ConstraintName, "branch_closings_one_live") {
 				return ErrLiveConflict

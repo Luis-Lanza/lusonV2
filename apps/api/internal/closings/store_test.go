@@ -185,12 +185,51 @@ func (e *env) sellPayments(t *testing.T, variant, quantity int64, unitPrice stri
 	}
 }
 
+// motive reads the id of one seeded motive by its label, so a test names the closed list the way the
+// screen does and never guesses an identity value (061, S2).
+func (e *env) motive(t *testing.T, label string) int64 {
+	t.Helper()
+	var id int64
+	if err := e.pool.QueryRow(e.ctx, `SELECT id FROM branch_cash_categories WHERE label=$1`,
+		label).Scan(&id); err != nil {
+		t.Fatalf("the motive %q must be seeded: %v", label, err)
+	}
+	return id
+}
+
+// defaultMotive is the motive the helpers below state when the test is not about the motive itself:
+// the first one of the seeded list, so every fixture of this file writes the shape the branch writes.
+func (e *env) defaultMotive(t *testing.T) *int64 {
+	t.Helper()
+	id := e.motive(t, "Alquiler")
+	return &id
+}
+
+// periodMotive is the motive a movement of one kind states: an expense names one and the other kinds
+// of the book name none (061, S3), so a loop over the three kinds states the shape of each.
+func (e *env) periodMotive(t *testing.T, kind string) *int64 {
+	t.Helper()
+	if kind == "gasto" {
+		return e.defaultMotive(t)
+	}
+	return nil
+}
+
 // expense records one small expense of the branch through the branch's own path, the way it
 // records it while it operates: the ledger row is the branch's own fact and no settlement
-// states it (S12).
+// states it (S12). The motive is the first of the list, because the tests below record the money and
+// not the list; expenseWith states another one.
 func (e *env) expense(t *testing.T, branch int, amount, description string) closings.Expense {
 	t.Helper()
-	expense, err := e.store.RecordExpense(e.ctx, identity(branch), closings.Money(amount), description)
+	return e.expenseWith(t, branch, "Alquiler", amount, description)
+}
+
+// expenseWith records one small expense with the motive the test names, which is what proves that the
+// motive is chosen from the closed list (S3) and that the row keeps the label it was recorded with (S8).
+func (e *env) expenseWith(t *testing.T, branch int, motive, amount, description string) closings.Expense {
+	t.Helper()
+	id := e.motive(t, motive)
+	expense, err := e.store.RecordExpense(e.ctx, identity(branch), closings.Money(amount), description, &id)
 	if err != nil {
 		t.Fatalf("the branch expense %q could not be recorded: %v", description, err)
 	}
@@ -199,11 +238,11 @@ func (e *env) expense(t *testing.T, branch int, amount, description string) clos
 
 // contribute funds the till of one branch through the branch's own path: an aporte is a movement of
 // its book like any other, and it is the one direction the drawer never refuses, so it is what makes a
-// pay-out reachable on a till that inherited nothing (S1, S3).
+// pay-out reachable on a till that inherited nothing (S1, S3). A contribution names no motive (S3).
 func (e *env) contribute(t *testing.T, branch int, amount, description string) closings.Expense {
 	t.Helper()
 	contribution, err := e.store.RecordCashMovement(e.ctx, identity(branch), "aporte",
-		closings.Money(amount), description)
+		closings.Money(amount), description, nil)
 	if err != nil {
 		t.Fatalf("the branch contribution %q could not be recorded: %v", description, err)
 	}
@@ -1831,19 +1870,21 @@ func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
 
 	// The warehouse never records an expense: it is not the branch that owns the till, and the
 	// database's own refusal is the named domain error, not a generic failure.
-	_, err := e.store.RecordExpense(e.ctx, warehouse(), money("10.00"), "Flete del almacén")
+	_, err := e.store.RecordExpense(e.ctx, warehouse(), money("10.00"), "Flete del almacén",
+		e.defaultMotive(t))
 	refused(t, err, closings.ErrNotBranchExpense)
 	// An identity the provisioned accounts do not hold is refused before the database, and so is a
 	// session still forced to change its password: neither moves the branch's money.
 	_, err = e.store.RecordExpense(e.ctx, auth.Identity{AccountID: 2, Location: auth.Location{ID: 3}},
-		money("10.00"), "Flete ajeno")
+		money("10.00"), "Flete ajeno", e.defaultMotive(t))
 	refused(t, err, closings.ErrForbidden)
 	_, err = e.store.RecordExpense(e.ctx, auth.Identity{AccountID: 2, Location: auth.Location{ID: 2},
-		MustChangePassword: true}, money("10.00"), "Flete sin cambiar la clave")
+		MustChangePassword: true}, money("10.00"), "Flete sin cambiar la clave", e.defaultMotive(t))
 	refused(t, err, closings.ErrForbidden)
 
 	// Every malformed expense is refused before the database and writes nothing: the amount has
-	// to be money the drawer can hold and the description a real one.
+	// to be money the drawer can hold and the note a real one. An empty note is not among them: it
+	// is the optional note of an expense that names a motive (061, S3).
 	for name, value := range map[string]struct{ amount, description string }{
 		"zero":      {"0.00", "Flete"},
 		"three_dec": {"1.005", "Flete"},
@@ -1852,13 +1893,11 @@ func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
 		"padded":    {"010.00", "Flete"},
 		"text":      {"diez", "Flete"},
 		"above":     {"10000000000.00", "Flete"},
-		"empty":     {"10.00", ""},
-		"blank":     {"10.00", "   "},
 		"nul":       {"10.00", "a\x00b"},
 		"too_long":  {"10.00", strings.Repeat("ñ", closings.MaxDescription+1)},
 	} {
 		if _, err := e.store.RecordExpense(e.ctx, identity(2), closings.Money(value.amount),
-			value.description); !errors.Is(err, closings.ErrInvalid) {
+			value.description, e.defaultMotive(t)); !errors.Is(err, closings.ErrInvalid) {
 			t.Fatalf("%s must be refused with ErrInvalid, got %v", name, err)
 		}
 	}
@@ -1961,7 +2000,7 @@ func TestExpenseIsRefusedWhileTheSettlementIsLive(t *testing.T) {
 
 	// The frozen branch cannot load an expense: the refusal names the freeze and never the
 	// settlement it is reading.
-	_, err = e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Agua")
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Agua", e.defaultMotive(t))
 	refused(t, err, closings.ErrBranchFrozen)
 
 	// Nothing was written and no counter moved: the ledger holds the expenses of the open
@@ -1992,7 +2031,8 @@ func TestExpenseIsRefusedWhileTheSettlementIsLive(t *testing.T) {
 	if _, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, ""); err != nil {
 		t.Fatalf("the branch must accept the settlement: %v", err)
 	}
-	if _, err := e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Agua"); err != nil {
+	if _, err := e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Agua",
+		e.defaultMotive(t)); err != nil {
 		t.Fatalf("a closed settlement must free its branch: %v", err)
 	}
 	closed, err := e.store.Read(e.ctx, warehouse(), opened.ID)
@@ -3907,10 +3947,16 @@ func (e *env) readMaterialSheet(t *testing.T, id int64) string {
 func (e *env) book(t *testing.T, branch int, kind, amount, description string, corrects *int64) int64 {
 	t.Helper()
 	var id int64
+	// An expense states a motive and no other kind of the book does (061, S3), so the raw row of these
+	// reads is written with the same shape the store writes.
+	var motive *int64
+	if kind == "gasto" {
+		motive = e.defaultMotive(t)
+	}
 	if err := e.pool.QueryRow(e.ctx, `INSERT INTO branch_cash_movements(
-  branch_location_id,kind,amount,description,created_by_account_id,corrects_id)
- VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
-		branch, kind, amount, description, branch, corrects).Scan(&id); err != nil {
+  branch_location_id,kind,amount,description,category_id,created_by_account_id,corrects_id)
+ VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		branch, kind, amount, description, motive, branch, corrects).Scan(&id); err != nil {
 		t.Fatalf("the ledger movement %q could not be recorded: %v", description, err)
 	}
 	return id
@@ -4210,8 +4256,9 @@ func TestCashLedgerTotalCoversTheWholeWindow(t *testing.T) {
 	// total summed over the published rows is off by exactly this amount.
 	oldest := e.book(t, 2, "gasto", "100.00", "Compra de la tienda", nil)
 	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_cash_movements(
-  branch_location_id,kind,amount,description,created_by_account_id)
- SELECT 2,'gasto',1.00,'Gasto '||row,2 FROM generate_series(1,500) row`); err != nil {
+  branch_location_id,kind,amount,description,category_id,created_by_account_id)
+ SELECT 2,'gasto',1.00,'Gasto '||row,$1,2 FROM generate_series(1,500) row`,
+		e.defaultMotive(t)); err != nil {
 		t.Fatalf("the window could not be filled: %v", err)
 	}
 	if rows := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
@@ -4261,7 +4308,7 @@ func TestRecordCashMovementIsTheBranchOwn(t *testing.T) {
 	e.contribute(t, 2, "12.50", "Fondo de la caja operativa")
 	for _, kind := range []string{"gasto", "aporte", "recaudacion"} {
 		movement, err := e.store.RecordCashMovement(e.ctx, identity(2), kind,
-			closings.Money("12.50"), "Movimiento de la caja operativa")
+			closings.Money("12.50"), "Movimiento de la caja operativa", e.periodMotive(t, kind))
 		if err != nil {
 			t.Fatalf("the branch must record its own %q: %v", kind, err)
 		}
@@ -4274,33 +4321,41 @@ func TestRecordCashMovementIsTheBranchOwn(t *testing.T) {
 	}
 	// The warehouse has no drawer of its own.
 	_, err := e.store.RecordCashMovement(e.ctx, warehouse(), "gasto",
-		closings.Money("1.00"), "Flete del almacén")
+		closings.Money("1.00"), "Flete del almacén", e.defaultMotive(t))
 	refused(t, err, closings.ErrNotBranchExpense)
 	// Every branch writes its own rows and reads them as its own.
 	other, err := e.store.RecordCashMovement(e.ctx, identity(3), "aporte",
-		closings.Money("5.00"), "Cambio de la otra sucursal")
+		closings.Money("5.00"), "Cambio de la otra sucursal", nil)
 	if err != nil || other.BranchID != 3 || other.CreatedByAccountID != 3 {
 		t.Fatalf("a branch records only its own movements: %+v %v", other, err)
 	}
 	// A correction is not a direction the branch states here, and a shape the ledger never admits is
-	// refused before the database is touched.
+	// refused before the database is touched. An expense of this loop states its motive, because a note
+	// that says nothing is the optional note of an expense (061, S3) and not a malformed one.
 	for _, tc := range []struct{ kind, amount, description string }{
 		{"correccion", "1.00", "Corrijo el flete"},
 		{"devolucion", "1.00", "Flete"},
 		{"gasto", "0.00", "Flete"},
 		{"gasto", "-1.00", "Flete"},
 		{"gasto", "1.234", "Flete"},
-		{"gasto", "1.00", "   "},
 		{"gasto", "1.00", strings.Repeat("ñ", closings.MaxDescription+1)},
 	} {
 		_, err := e.store.RecordCashMovement(e.ctx, identity(2), tc.kind,
-			closings.Money(tc.amount), tc.description)
+			closings.Money(tc.amount), tc.description, e.periodMotive(t, tc.kind))
 		refused(t, err, closings.ErrInvalid)
 	}
+	// An expense without a motive is a request this vertical refuses, and so is a motive on a kind that
+	// states none (061, S3).
+	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "gasto", closings.Money("1.00"),
+		"Flete", nil)
+	refused(t, err, closings.ErrCategoryRequired)
+	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "recaudacion", closings.Money("1.00"),
+		"Retiro", e.defaultMotive(t))
+	refused(t, err, closings.ErrCategoryNotApplicable)
 	// A session still forced to change its password does not move the branch's money.
 	_, err = e.store.RecordCashMovement(e.ctx, auth.Identity{AccountID: 2,
 		Location: auth.Location{ID: 2}, MustChangePassword: true}, "gasto",
-		closings.Money("1.00"), "Flete")
+		closings.Money("1.00"), "Flete", e.defaultMotive(t))
 	refused(t, err, closings.ErrForbidden)
 	// A frozen branch writes no movement of the period, exactly like it records no expense (S9).
 	if _, err := e.store.Open(e.ctx, warehouse(), 2); err != nil {
@@ -4308,7 +4363,7 @@ func TestRecordCashMovementIsTheBranchOwn(t *testing.T) {
 	}
 	written := e.scalar(t, `SELECT count(*) FROM branch_cash_movements WHERE branch_location_id=2`)
 	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "aporte",
-		closings.Money("1.00"), "Cambio del cajón")
+		closings.Money("1.00"), "Cambio del cajón", nil)
 	refused(t, err, closings.ErrBranchFrozen)
 	if after := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
  WHERE branch_location_id=2`); after != written {
@@ -4451,12 +4506,13 @@ func TestDrawerRefusalIsNamedOnEveryRoute(t *testing.T) {
 
 	for name, record := range map[string]func() error{
 		"expense": func() error {
-			_, err := e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Flete de la semana")
+			_, err := e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Flete de la semana",
+				e.defaultMotive(t))
 			return err
 		},
 		"movement": func() error {
 			_, err := e.store.RecordCashMovement(e.ctx, identity(2), "gasto", money("10.00"),
-				"Flete de la semana")
+				"Flete de la semana", e.defaultMotive(t))
 			return err
 		},
 	} {
@@ -4492,7 +4548,8 @@ func TestDrawerRefusalOnAPreRuleNegativeDrawer(t *testing.T) {
 		t.Fatalf("the guard could not be disabled for the pre-rule row: %v", err)
 	}
 	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,amount,
- description,created_by_account_id) VALUES(2,'gasto',50.00,'Gasto anterior a la regla',2)`); err != nil {
+ description,category_id,created_by_account_id) VALUES(2,'gasto',50.00,'Gasto anterior a la regla',$1,2)`,
+		e.defaultMotive(t)); err != nil {
 		t.Fatalf("the pre-rule expense could not be recorded: %v", err)
 	}
 	if _, err := e.pool.Exec(e.ctx,
@@ -4506,7 +4563,7 @@ func TestDrawerRefusalOnAPreRuleNegativeDrawer(t *testing.T) {
 	// The next pay-out is the bound's own refusal, named with the negative it found: an unreadable balance
 	// would publish it as an invalid request instead (S4).
 	_, err := e.store.RecordCashMovement(e.ctx, identity(2), "gasto", money("10.00"),
-		"Detergente y escobas")
+		"Detergente y escobas", e.defaultMotive(t))
 	if errors.Is(err, closings.ErrInvalid) || errors.Is(err, closings.ErrUnavailable) {
 		t.Fatalf("a negative drawer is the bound's own refusal, never an invalid request: %v", err)
 	}
@@ -4519,17 +4576,213 @@ func TestDrawerRefusalOnAPreRuleNegativeDrawer(t *testing.T) {
 		t.Fatalf("the refusal must state the signed balance and the request: %+v", insufficient)
 	}
 	// And the expense route states the same drawer the same way.
-	_, err = e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Detergente y escobas")
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Detergente y escobas",
+		e.defaultMotive(t))
 	if !errors.As(err, &insufficient) || insufficient.Balance != "-50.00" {
 		t.Fatalf("the expense route must name the same signed drawer: %v", err)
 	}
 
 	// Money in is never refused by this rule (S3): an aporte reconciles the drawer it inherited.
 	if _, err := e.store.RecordCashMovement(e.ctx, identity(2), "aporte", money("30.00"),
-		"Aporte para cubrir el faltante"); err != nil {
+		"Aporte para cubrir el faltante", nil); err != nil {
 		t.Fatalf("an aporte on a negative drawer must be admitted (S3): %v", err)
 	}
 	if expected := e.text(t, "SELECT branch_drawer_expected(2::smallint)::text"); expected != "-20.00" {
 		t.Fatalf("the aporte must reconcile the drawer to -20.00, got %q", expected)
+	}
+}
+
+// TestCashCategoriesAreTheSeededList pins S2 and S5 on the read of the closed list: the branch reads
+// the eleven seeded motives in the order of the seed, the warehouse reads the same list because the
+// catalogue is global to every branch, and an archived motive is no longer offered nor admissible.
+func TestCashCategoriesAreTheSeededList(t *testing.T) {
+	e := fixture(t)
+
+	want := []string{"Alquiler", "Internet", "Energía eléctrica", "Agua", "Limpieza", "Sueldos",
+		"Transporte", "Insumos de tienda", "Mantenimiento", "Impuestos", "Otros gastos"}
+	// The list is global (S5): the branch that spends and the warehouse that administers read the same
+	// options, in the same order, and none of them is retired.
+	for _, actor := range []auth.Identity{identity(2), identity(3), warehouse()} {
+		categories, err := e.store.CashCategories(e.ctx, actor)
+		if err != nil {
+			t.Fatalf("the closed list must be readable: %v", err)
+		}
+		if len(categories) != len(want) {
+			t.Fatalf("the list states %d motives, want %d: %+v", len(categories), len(want), categories)
+		}
+		for index, label := range want {
+			if categories[index].Label != label {
+				t.Fatalf("the list must be the seed in order: got %+v want %v", categories, want)
+			}
+			if categories[index].ID < 1 {
+				t.Fatalf("a motive of the list states its identity: %+v", categories[index])
+			}
+		}
+	}
+	// A session the provisioned accounts do not hold reads nothing.
+	_, err := e.store.CashCategories(e.ctx, auth.Identity{AccountID: 99, Location: auth.Location{ID: 2}})
+	refused(t, err, closings.ErrForbidden)
+
+	// An archived motive stops being offered and stops being admissible, and the expenses that
+	// already name it keep the label they were recorded with (S8).
+	e.contribute(t, 2, "100.00", "Fondo de la caja")
+	agua := e.motive(t, "Agua")
+	flete := e.expenseWith(t, 2, "Agua", "10.00", "Flete del mediodía")
+	if _, err := e.pool.Exec(e.ctx, `UPDATE branch_cash_categories SET retired_at=now() WHERE id=$1`,
+		agua); err != nil {
+		t.Fatalf("a motive must be archivable: %v", err)
+	}
+	categories, err := e.store.CashCategories(e.ctx, identity(2))
+	if err != nil {
+		t.Fatalf("the closed list must be readable: %v", err)
+	}
+	if len(categories) != len(want)-1 {
+		t.Fatalf("an archived motive is no longer offered: %+v", categories)
+	}
+	for _, category := range categories {
+		if category.Label == "Agua" {
+			t.Fatal("an archived motive must not be offered")
+		}
+	}
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("1.00"), "Otro flete", &agua)
+	refused(t, err, closings.ErrCategoryUnknown)
+	book, err := e.store.CashLedger(e.ctx, identity(2), nil, nil)
+	if err != nil {
+		t.Fatalf("the book must be readable: %v", err)
+	}
+	found := false
+	for _, movement := range book.Movements {
+		if movement.ID != flete.ID {
+			continue
+		}
+		found = true
+		if movement.CategoryLabel == nil || *movement.CategoryLabel != "Agua" {
+			t.Fatalf("the expense keeps the label it was recorded with: %+v", movement)
+		}
+	}
+	if !found {
+		t.Fatalf("the expense of the window must be published: %+v", book.Movements)
+	}
+}
+
+// TestRecordExpenseRequiresAMotive pins S3 on the write of an expense: the motive of an expense is
+// mandatory and comes from the closed list, no other kind of the book states one, and every refusal
+// writes nothing at all.
+func TestRecordExpenseRequiresAMotive(t *testing.T) {
+	e := fixture(t)
+	e.contribute(t, 2, "100.00", "Fondo de la caja")
+	before := e.scalar(t, `SELECT count(*) FROM branch_cash_movements`)
+
+	// An expense without a motive is not recorded, whichever write states it.
+	_, err := e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Flete", nil)
+	refused(t, err, closings.ErrCategoryRequired)
+	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "gasto", money("10.00"), "Flete", nil)
+	refused(t, err, closings.ErrCategoryRequired)
+	// A motive the list does not offer is not an option of the screen.
+	unknown := int64(999999)
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Flete", &unknown)
+	refused(t, err, closings.ErrCategoryUnknown)
+	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "gasto", money("10.00"), "Flete", &unknown)
+	refused(t, err, closings.ErrCategoryUnknown)
+	// Only an expense states a motive (S3): the two other directions of the drawer name none.
+	alquiler := e.motive(t, "Alquiler")
+	for _, kind := range []string{"aporte", "recaudacion"} {
+		_, err := e.store.RecordCashMovement(e.ctx, identity(2), kind, money("1.00"),
+			"Movimiento con motivo", &alquiler)
+		refused(t, err, closings.ErrCategoryNotApplicable)
+	}
+	// A refused expense writes nothing anywhere.
+	if after := e.scalar(t, `SELECT count(*) FROM branch_cash_movements`); after != before {
+		t.Fatalf("a refused expense must write nothing: %d rows after %d", after, before)
+	}
+
+	// An expense with an offered motive is recorded and returns the motive and the copy of its label
+	// (S8), which is what the book publishes beside the row.
+	limpieza := e.motive(t, "Limpieza")
+	expense := e.expenseWith(t, 2, "Limpieza", "12.50", "Detergente y escobas")
+	if expense.CategoryID == nil || *expense.CategoryID != limpieza || expense.CategoryLabel == nil ||
+		*expense.CategoryLabel != "Limpieza" {
+		t.Fatalf("the expense must state its motive and the label it had: %+v", expense)
+	}
+	if stored := e.text(t, `SELECT category_id::text||':'||category_label FROM branch_cash_movements
+ WHERE id=$1`, expense.ID); stored != fmt.Sprintf("%d:Limpieza", limpieza) {
+		t.Fatalf("the ledger must store the motive and its label, got %q", stored)
+	}
+	// A row that states a motive of its own keeps the database's copy and never the caller one.
+	if stored := e.text(t, `SELECT category_label FROM branch_cash_movements WHERE id=$1`,
+		expense.ID); stored != "Limpieza" {
+		t.Fatalf("the copy of the label is the motive's own, got %q", stored)
+	}
+}
+
+// TestExpenseNoteIsOptional pins S3 on the note of an expense: it may be empty when the row names a
+// motive, and a kind that names no motive still says what it is for.
+func TestExpenseNoteIsOptional(t *testing.T) {
+	e := fixture(t)
+	e.contribute(t, 2, "100.00", "Fondo de la caja")
+
+	// An expense without a note is an expense: the motive already states what the money paid for.
+	expense := e.expenseWith(t, 2, "Otros gastos", "5.00", "")
+	if expense.Description != "" || expense.CategoryLabel == nil || *expense.CategoryLabel != "Otros gastos" {
+		t.Fatalf("an expense without a note must be recorded with its motive: %+v", expense)
+	}
+	// The note keeps the bound and the shape it always had.
+	_, err := e.store.RecordExpense(e.ctx, identity(2), money("1.00"),
+		strings.Repeat("ñ", closings.MaxDescription+1), e.defaultMotive(t))
+	refused(t, err, closings.ErrInvalid)
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("1.00"), "a\x00b", e.defaultMotive(t))
+	refused(t, err, closings.ErrInvalid)
+	// A movement that names no motive still says what it is for: the text is what makes it a fact.
+	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "aporte", money("1.00"), "", nil)
+	refused(t, err, closings.ErrInvalid)
+	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "recaudacion", money("1.00"), "", nil)
+	refused(t, err, closings.ErrInvalid)
+	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), expense.ID, money("1.00"), "")
+	refused(t, err, closings.ErrInvalid)
+}
+
+// TestCashLedgerPublishesTheMotiveOfAnExpense pins S8 and S9 on the read of the book: every expense
+// states the motive it was recorded with and the label that motive had, every other row states null in
+// both, and the signed effect of each row is still the direction of its kind.
+func TestCashLedgerPublishesTheMotiveOfAnExpense(t *testing.T) {
+	e := fixture(t)
+	e.contribute(t, 2, "50.00", "Fondo de la caja")
+	flete := e.expenseWith(t, 2, "Transporte", "20.00", "Flete del mandado")
+	cambio := e.contribute(t, 2, "10.00", "Cambio para el cajón")
+	correction := e.book(t, 2, "correccion", "5.00", "Flete mal cargado", &flete.ID)
+
+	book, err := e.store.CashLedger(e.ctx, identity(2), nil, nil)
+	if err != nil {
+		t.Fatalf("the branch must read its own book: %v", err)
+	}
+	// The drawer's arithmetic is the one of its kinds and never of the motive (S9).
+	if book.Effective != "45.00" || book.Expected != "45.00" {
+		t.Fatalf("the motive moves no money: got effective %q expected %q", book.Effective, book.Expected)
+	}
+	seen := 0
+	for _, movement := range book.Movements {
+		switch movement.ID {
+		case flete.ID:
+			seen++
+			if movement.CategoryID == nil || *movement.CategoryID != e.motive(t, "Transporte") ||
+				movement.CategoryLabel == nil || *movement.CategoryLabel != "Transporte" {
+				t.Fatalf("the expense must publish its motive and its label: %+v", movement)
+			}
+			if movement.Effective != "-20.00" {
+				t.Fatalf("the expense still takes 20.00 out of the drawer: %+v", movement)
+			}
+		default:
+			// The contribution and the correction name no motive, so neither publishes one.
+			if movement.ID != cambio.ID && movement.ID != correction {
+				continue
+			}
+			seen++
+			if movement.CategoryID != nil || movement.CategoryLabel != nil {
+				t.Fatalf("a movement that names no motive publishes null in both: %+v", movement)
+			}
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("the book must publish the three rows of the window: %+v", book.Movements)
 	}
 }
