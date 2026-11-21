@@ -1152,6 +1152,10 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .cash-table th.num { text-align: right; }
 .cash-when { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cash-motive { min-width: 0; overflow-wrap: anywhere; }
+/* The motive of an expense and, under it, the note that clarifies it: a row with a motive and no note
+   renders the motive alone, never an empty line (S3, S7). */
+.cash-motive-label { display: block; font-weight: 600; }
+.cash-motive-note { display: block; color: var(--muted); font-size: 12px; line-height: 18px; }
 .cash-author { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .cash-amount { font-weight: 600; }
 .cash-total-label, .cash-total { padding-top: 12px; border-top: 1px solid var(--border);
@@ -1182,8 +1186,8 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .cash-rail .cash-form { display: grid; gap: 8px; }
 .cash-form label { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em;
   text-transform: uppercase; }
-.cash-form input, .cash-form textarea { width: 100%; min-height: 44px; padding: 10px 12px;
-  font-weight: 400; letter-spacing: 0; text-transform: none; }
+.cash-form input, .cash-form select, .cash-form textarea { width: 100%; min-height: 44px;
+  padding: 10px 12px; font-weight: 400; letter-spacing: 0; text-transform: none; }
 .cash-form textarea { min-height: 64px; resize: vertical; }
 .cash-form-title { margin: 0; font-size: 13px; font-weight: 600; }
 .cash-kinds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px;

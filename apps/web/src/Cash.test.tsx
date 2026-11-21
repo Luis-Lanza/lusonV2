@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import Cash from './Cash';
+import { cashErrorMessages } from './cashAPI';
 
 const csrf = 'c'.repeat(43);
 const json = (body: unknown, status = 200) =>
@@ -25,12 +26,22 @@ const metricsAnswer = {
     used_units: 0, scrap_milli: 0 },
 };
 
-/** One row of the book: the positive amount the branch wrote and the signed effect it moved. */
-const entry = (patch: Record<string, unknown> = {}) => ({
-  id: 21, kind: 'gasto', effect_kind: 'gasto', amount: '85.00', effective: '-85.00',
-  description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
-  created_by_account_id: 2, corrects_id: null, ...patch,
-});
+/** One row of the book: the positive amount the branch wrote, the signed effect it moved, and — on an
+ * expense — the motive with the copy of the label it had when the row was written (S7, S8). */
+const entry = (patch: Record<string, unknown> = {}) => {
+  const row: Record<string, unknown> = {
+    id: 21, kind: 'gasto', effect_kind: 'gasto', amount: '85.00', effective: '-85.00',
+    description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
+    created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza',
+    ...patch,
+  };
+  // A motive belongs to an expense alone: every other kind names none and states both keys as null (S4).
+  if (row.kind !== 'gasto' && patch.category_id === undefined && patch.category_label === undefined) {
+    row.category_id = null;
+    row.category_label = null;
+  }
+  return row;
+};
 
 // The book of the screen: gasto, gasto, aporte, recaudación, un gasto corregido y su corrección.
 // −85 −120 +500 −1200 −5000 +4500 = −1405.00, y 1850 + 6420 − 1405 = 6865.00.
@@ -55,6 +66,12 @@ const book = (patch: Record<string, unknown> = {}) => ({
   ...patch,
 });
 
+// The closed list of motives the screen offers for an expense (S1, S2), in the order the API states.
+const catalogueAnswer = {
+  categories: [{ id: 1, label: 'Alquiler' }, { id: 2, label: 'Internet' },
+    { id: 5, label: 'Limpieza' }, { id: 11, label: 'Otros gastos' }],
+};
+
 const recordedBody = (patch: Record<string, unknown> = {}) => ({
   id: 27, branch_location_id: 2, kind: 'gasto', amount: '85.00', description: 'Detergente y escobas',
   occurred_at: '2026-11-16T10:00:00Z', created_by_account_id: 2, ...patch,
@@ -72,16 +89,24 @@ function echoWrite(init: RequestInit): Response {
 type Handlers = {
   metrics?: () => Response;
   ledger?: (url: string) => Response;
+  categories?: () => Response;
   write?: (url: string, init: RequestInit) => Response;
 };
 
 function setup(handlers: Handlers = {}) {
   const metrics = handlers.metrics ?? (() => json(metricsAnswer));
   const ledger = handlers.ledger ?? (() => json(book()));
+  const categories = handlers.categories ?? (() => json(catalogueAnswer));
   const write = handlers.write ?? ((_url, init) => echoWrite(init));
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init = {}) => {
     const url = String(input);
     if (url.startsWith('/api/metrics?')) return metrics();
+    if (url === '/api/closings/cash-categories') {
+      // The list of motives is a read of the catalogue and never of the branch's money.
+      expect(init.method ?? 'GET').toBe('GET');
+      expect(init.body).toBeUndefined();
+      return categories();
+    }
     if (url.startsWith('/api/closings/cash-ledger')) {
       // Reading the book is a read: it never writes, whatever period is on screen.
       expect(init.method ?? 'GET').toBe('GET');
@@ -98,7 +123,17 @@ function setup(handlers: Handlers = {}) {
   const calls = () => fetch.mock.calls.map(([url]) => String(url));
   const posts = () => fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
   const ledgerCalls = () => calls().filter(url => url.startsWith('/api/closings/cash-ledger'));
-  return { fetch, calls, posts, ledgerCalls };
+  const catalogueCalls = () => calls().filter(url => url === '/api/closings/cash-categories');
+  return { fetch, calls, posts, ledgerCalls, catalogueCalls };
+}
+
+/** Picks one motive of the closed list the screen offers for an expense (S1). */
+async function chooseMotive(label = 'Limpieza') {
+  const option = catalogueAnswer.categories.find(category => category.label === label);
+  if (option === undefined) throw new Error('The catalogue does not offer ' + label);
+  const select = await screen.findByLabelText('Motivo');
+  fireEvent.change(select, { target: { value: String(option.id) } });
+  return select;
 }
 
 /** One cell of the band, addressed by the title the screen writes over its number. */
@@ -146,9 +181,26 @@ describe('el libro de la caja operativa', () => {
     const { posts } = setup();
     await screen.findByText('Quedó al cerrar');
     fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '0,00' } });
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Detergente' } });
+    await chooseMotive('Limpieza');
     fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Escribí un monto mayor a cero');
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('refuses a gasto with no motive before any request leaves the screen (S3)', async () => {
+    const { posts } = setup();
+    await screen.findByText('Quedó al cerrar');
+    // The selector is there and nothing of it was picked: the amount is complete and the motive is not.
+    const select = await screen.findByLabelText('Motivo');
+    expect(select).toHaveValue('');
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
+    fireEvent.change(screen.getByLabelText('Nota (opcional)'), { target: { value: 'Detergente' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('Elegí un motivo de la lista: un gasto sin motivo no se registra.');
+    // The form is still the operator's: the amount and the note were not thrown away.
+    expect(screen.getByLabelText('Monto en bolivianos')).toHaveValue('85,00');
+    expect(screen.getByLabelText('Nota (opcional)')).toHaveValue('Detergente');
     expect(posts()).toHaveLength(0);
   });
 
@@ -170,13 +222,149 @@ describe('el libro de la caja operativa', () => {
     await waitFor(() => expect(ledger.mock.calls.length).toBeGreaterThan(1));
   });
 
+  it('offers the motives of the closed list as the selector of an expense, and no free text (S1)', async () => {
+    const { catalogueCalls, ledgerCalls } = setup();
+    await screen.findByText('Quedó al cerrar');
+    const select = await screen.findByLabelText('Motivo');
+    expect(select.tagName).toBe('SELECT');
+    expect(within(select).getAllByRole('option').map(option => option.textContent)).toEqual(
+      ['Elegí un motivo…', 'Alquiler', 'Internet', 'Limpieza', 'Otros gastos']);
+    // There is no path on this screen to type the motive of an expense by hand.
+    expect(screen.queryByRole('textbox', { name: 'Motivo' })).not.toBeInTheDocument();
+    // The note beside the motive is the only free text of an expense, and it says it is optional (S3).
+    expect(screen.getByLabelText('Nota (opcional)').tagName).toBe('TEXTAREA');
+    // The list is a read of its own, made once when the screen loads.
+    expect(catalogueCalls()).toHaveLength(1);
+    expect(ledgerCalls().length).toBeGreaterThan(0);
+  });
+
+  it('keeps the hand-typed motive of an aporte and of a recaudación (S4)', async () => {
+    setup();
+    await screen.findByText('Quedó al cerrar');
+    await screen.findByLabelText('Motivo');
+    for (const label of ['Aporte', 'Recaudación'] as const) {
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(screen.getByLabelText('Motivo').tagName).toBe('TEXTAREA');
+      // A kind that names no motive offers no list of motives and no note beside one.
+      expect(screen.queryByRole('combobox', { name: 'Motivo' })).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Nota (opcional)')).not.toBeInTheDocument();
+    }
+    // Going back to a gasto offers the closed list again.
+    fireEvent.click(screen.getByRole('button', { name: 'Gasto' }));
+    expect(screen.getByLabelText('Motivo').tagName).toBe('SELECT');
+  });
+
+  it('sends the chosen motive and the note of a gasto, and sends an empty note as an empty note (S3)', async () => {
+    const writes: string[] = [];
+    const { posts, ledgerCalls } = setup({
+      write: (_url, init) => { writes.push(String(init.body)); return echoWrite(init); },
+    });
+    await screen.findByText('Quedó al cerrar');
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
+    await chooseMotive('Limpieza');
+    fireEvent.change(screen.getByLabelText('Nota (opcional)'), { target: { value: '  Detergente  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    // The body of an expense states its motive and its note, in the text the contract stores.
+    expect(writes[0])
+      .toBe('{"kind":"gasto","amount":"85.00","category_id":5,"description":"Detergente"}');
+    expect(await screen.findByText('Gasto registrado en el libro de la caja.')).toBeInTheDocument();
+    await waitFor(() => expect(ledgerCalls().length).toBeGreaterThan(1));
+    // A gasto whose note says nothing is legitimate: its motive already states what the money paid for.
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '100,00' } });
+    await chooseMotive('Alquiler');
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+    expect(writes[1])
+      .toBe('{"kind":"gasto","amount":"100.00","category_id":1,"description":""}');
+    // The answer of a gasto with no note is admitted whole: the write is not refused by its own echo.
+    expect(await screen.findByText(/Gasto registrado en el libro de la caja/)).toBeInTheDocument();
+    expect(screen.queryByText(cashErrorMessages.invalid_response)).not.toBeInTheDocument();
+  });
+
+  it('shows the motive of an expense and its note, and keeps the historical free-text motive (S7)', async () => {
+    setup({ ledger: () => json(book({
+      effective: '195.00', expected: '8465.00',
+      movements: [
+        entry({ id: 31 }),
+        entry({ id: 32, amount: '100.00', effective: '-100.00', category_id: 1,
+          category_label: 'Alquiler', description: '', occurred_at: '2026-11-13T15:40:00Z' }),
+        // A row recorded before the closed list existed: it keeps its free-text motive (S7).
+        entry({ id: 33, amount: '120.00', effective: '-120.00', category_id: null,
+          category_label: null, description: 'Flete viejo de baterías',
+          occurred_at: '2026-11-14T08:05:00Z' }),
+        entry({ id: 34, kind: 'aporte', effect_kind: 'aporte', amount: '500.00', effective: '500.00',
+          description: 'Aporte del dueño', occurred_at: '2026-11-14T09:05:00Z' }),
+      ],
+    })) });
+    await screen.findByText('Quedó al cerrar');
+    // The motive of the row is the label of the closed list, and the note is still visible beside it.
+    const withNote = rowOf(31);
+    expect(within(withNote).getByText('Limpieza')).toBeInTheDocument();
+    expect(within(withNote).getByText('Detergente y escobas')).toBeInTheDocument();
+    // A motive with no note renders the motive alone: no empty artefact and no null.
+    const noNote = rowOf(32);
+    expect(within(noNote).getByText('Alquiler')).toBeInTheDocument();
+    expect(noNote.querySelector('.cash-motive-note')).toBeNull();
+    expect(noNote.textContent).not.toContain('null');
+    // A historical row still reads its own free-text motive, visibly, and names no motive in the new sense.
+    const historical = rowOf(33);
+    expect(within(historical).getByText('Flete viejo de baterías')).toBeInTheDocument();
+    expect(historical.querySelector('.cash-motive-label')).toBeNull();
+    // An aporte keeps the text it was written with and is not mistaken for a motive of the list.
+    expect(within(rowOf(34)).getByText('Aporte del dueño')).toBeInTheDocument();
+  });
+
+  it('says the list of motives could not be read and still records an aporte (S1, S4)', async () => {
+    const { posts, catalogueCalls } = setup({
+      categories: () => json({ error: 'service_unavailable' }, 503),
+    });
+    await screen.findByText('Quedó al cerrar');
+    const problem = await screen.findByRole('alert');
+    expect(problem).toHaveTextContent('No se pudo leer la lista de motivos');
+    // The screen never offers an empty selector in place of the list.
+    expect(screen.queryByLabelText('Motivo')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Nota (opcional)')).not.toBeInTheDocument();
+    // Its own failure state has its own way out: asking again reads the list once more.
+    fireEvent.click(within(problem).getByRole('button', { name: 'Reintentar motivos' }));
+    await waitFor(() => expect(catalogueCalls()).toHaveLength(2));
+    expect(await screen.findByRole('alert')).toHaveTextContent('No se pudo leer la lista de motivos');
+    // A gasto cannot be registered at all, and nothing leaves the screen when it is attempted.
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
+    const submit = screen.getByRole('button', { name: 'Registrar gasto' });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    const form = document.querySelector('form.cash-form') as HTMLFormElement;
+    const attempt = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(attempt);
+    expect(attempt.defaultPrevented).toBe(true);
+    await waitFor(() => expect(posts()).toHaveLength(0));
+    // An aporte names no motive of the list, so it keeps working exactly as before.
+    fireEvent.click(screen.getByRole('button', { name: 'Aporte' }));
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Cambio para el cajón' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar aporte' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(JSON.parse(String(posts()[0]?.[1]?.body))).toEqual({
+      kind: 'aporte', amount: '85.00', description: 'Cambio para el cajón',
+    });
+  });
+
+  it('says an empty catalogue out loud instead of offering an empty selector (S1)', async () => {
+    const { posts } = setup({ categories: () => json({ categories: [] }) });
+    await screen.findByText('Quedó al cerrar');
+    expect(await screen.findByRole('alert')).toHaveTextContent('La lista de motivos está vacía');
+    expect(screen.queryByRole('combobox', { name: 'Motivo' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Registrar gasto' })).toBeDisabled();
+    expect(posts()).toHaveLength(0);
+  });
+
   it('replaces the form with the frozen banner the server refused with', async () => {
     const { posts } = setup({
       write: () => json({ error: 'branch_frozen' }, 409),
     });
     await screen.findByText('Quedó al cerrar');
     fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Detergente' } });
+    await chooseMotive('Limpieza');
     fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
     await waitFor(() => expect(posts()).toHaveLength(1));
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -209,7 +397,7 @@ describe('el libro de la caja operativa', () => {
     });
     await screen.findByText('Quedó al cerrar');
     fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Detergente' } });
+    await chooseMotive('Limpieza');
     fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
     // The refusal is the till's own (S1, S4): the screen names the gap instead of a generic conflict,
     // and it is definite, so the form stays as the operator left it to state a smaller amount.
@@ -223,7 +411,7 @@ describe('el libro de la caja operativa', () => {
     setup({ write: () => json({ error: 'drawer_insufficient', balance: '-50.00', requested: '-85.00' }, 409) });
     await screen.findByText('Quedó al cerrar');
     fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Detergente' } });
+    await chooseMotive('Limpieza');
     fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('el movimiento pide');
