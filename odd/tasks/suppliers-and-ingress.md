@@ -86,10 +86,19 @@ La vertical es grande por naturaleza (esquema + dos fronteras + dos pantallas), 
 - corte 2 `48d9146` — este documento.
 - corte 3 `03d5670` — pantalla Proveedores (web, con sus tres suites).
 - corte 4 `17a21f9` — Ingresos proveedor-primero (web, con sus suites).
-- corte 5 — API de proveedores (Go, T2).
-- corte 6 — ingreso con proveedor (Go, T3).
+- corte 5 `7f1c11c` — API de proveedores (Go, T2).
+- corte 6 `25d7215` — ingreso con proveedor (Go, T3).
+- corte 7 `e740a4f`, `f94c524`, `77fb3c0` — pruebas vivas contra el ambiente ficticio y la corrección del tamaño de página del catálogo (el cliente pedía 200 contra los 500 publicados).
+- corte 8 `3a3ca8e`, `153cc06` — dirección de diseño de Ingresos y acotado de las dos columnas.
+- corte 9 `fdcfbac` — implementación del diseño elegido en la app real (T7).
 
 Los cortes 3 y 4 superan el ideal de ~400 líneas porque son pantallas completas con su evidencia; no se parten por archivo. La revisión de esta vertical, si se pide, se hace por corte y no como un candidato único: la memoria del repo registra que un candidato de este tamaño excede el presupuesto del revisor.
+
+## Entregado
+
+`feat/suppliers-and-ingress` (12 cortes desde `ea58654`) integrada en `master` con el merge `85d03ff` y publicada, rama incluida. **T6 y T7 cerradas.**
+
+CI del merge: run `44796279350`. El primer intento salió rojo en dos tests **ajenos a la vertical** y sensibles a latencia — `internal/realtime TestR03BrokerPostgres` y `src/TransferPending.test.tsx` C4b — y quedó **verde en los tres jobs** al re-ejecutar los fallidos. Lectura registrada sin maquillar: esta vertical duplicó el peso de la suite y esos dos tests son frágiles bajo carga; es deuda del repo, no daño de esta entrega, y el próximo que los vea rojos no debería culpar al cambio que tenga adelante.
 
 ## Log
 
@@ -128,3 +137,5 @@ Decisión estructural: **las dos colecciones de la pantalla son acotadas** — e
 **L10** (evidencia del diseño) — el pedido está en L8 y la decisión en L9; esta entrada registra la salida.
 
 Salida: `design/ingresos-proveedor/` con tres direcciones de diseño, no implementación, para el click-through en vivo del humano. `01-proveedor-contexto.html` (proveedor como contexto en el encabezado del documento; tradeoff: mínimo desperdicio vertical y ninguna fila duplicada, pero la polaridad se lee como control de la fila); `02-documento-remito.html` (encabezado tipo remito y el documento al centro; tradeoff: se lee como el papel que llega, pero explorar el catálogo pasa a segundo plano); `03-carga-por-teclado.html` (búsqueda primero y una tecla por polaridad; tradeoff: la más rápida para 20+ líneas, pero exige aprender atajos). Las tres modelan el paso de proveedor, la regla de tipo solo cuando importa, el catálogo agrupado por producto con un único conteo, el documento con totales reales (3 líneas, 7 unidades), la confirmación con su lógica de deshabilitado y el historial con el documento `#1` sin proveedor, más los estados vacío, con líneas, proveedor de dos tipos, proveedor sin productos y pantalla angosta. Antes de dibujarlas se re-sincronizó el sistema visual del proyecto a `design/system.md` y `design/system.html` desde los 16 CSS de `apps/web/src` (69 representaciones de color, sin valores inventados).
+
+**L11** (reinicio del humano) «continuamos pa, he reiniciado mi PC». Tras el reinicio se volvió a levantar el ambiente: `luson-dev-db` arriba en `127.0.0.1:55432`, API en `127.0.0.1:8080` sirviendo `index-BCbL6-Zi.js`, `GET /` 200 y `GET /api/auth/session` 200. La vertical queda entregada; lo que sigue es decisión del humano y no deuda: contador de rango visible en el catálogo, y las verticales siguientes (costo por línea, orden de compra, cuenta corriente).
