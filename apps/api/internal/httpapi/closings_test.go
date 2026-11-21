@@ -684,9 +684,11 @@ func TestClosingRecord(t *testing.T) {
 	// screen's decoder reads, the reference included, because the acta's list is the ledger its total
 	// was computed from (S6, S13).
 	withExpenses := closingValue()
+	alquiler, alquilerLabel := int64(1), "Alquiler"
 	withExpenses.Expenses = []closings.Expense{
 		{ID: 9, BranchID: 2, Kind: "gasto", Amount: "45.50", Description: "Flete",
-			OccurredAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC), CreatedByAccountID: 2},
+			OccurredAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC), CreatedByAccountID: 2,
+			CategoryID: &alquiler, CategoryLabel: &alquilerLabel},
 		{ID: 10, BranchID: 2, Kind: "gasto", Amount: "10.00", Description: "Insumos",
 			OccurredAt: time.Date(2026, 3, 2, 11, 0, 0, 0, time.UTC), CreatedByAccountID: 2},
 	}
@@ -698,6 +700,15 @@ func TestClosingRecord(t *testing.T) {
 		described.Expenses[0].OccurredAt != "2026-03-01T10:00:00Z" ||
 		described.Expenses[0].CreatedByAccountID != 2 {
 		t.Fatalf("the document must publish the expenses of its window: %+v %v", described, err)
+	}
+	// The motive travels with the row, exactly as the book publishes it, and a row recorded before the
+	// closed list existed states both keys as null instead of inventing a reason (S7, S8).
+	if described.Expenses[0].CategoryID == nil || *described.Expenses[0].CategoryID != 1 ||
+		described.Expenses[0].CategoryLabel == nil || *described.Expenses[0].CategoryLabel != "Alquiler" {
+		t.Fatalf("the acta must publish the motive of the expense: %+v", described.Expenses[0])
+	}
+	if described.Expenses[1].CategoryID != nil || described.Expenses[1].CategoryLabel != nil {
+		t.Fatalf("a row that names no motive publishes null in both: %+v", described.Expenses[1])
 	}
 	// The correction of an expense is a row of the same list and names the movement it answers, so a
 	// reader sees the direction of every row of the ledger it is reading.
@@ -739,6 +750,32 @@ func TestClosingRecord(t *testing.T) {
 			target := int64(9)
 			e.CorrectsID = &target
 		}),
+		// The motive is one pair that travels together and is stated by an expense only (S3, S8).
+		"expense_motive_without_label": expenseValue(func(e *closings.Expense) {
+			e.CategoryLabel = nil
+		}),
+		"expense_label_without_motive": expenseValue(func(e *closings.Expense) {
+			e.CategoryID = nil
+		}),
+		"expense_motive_zero": expenseValue(func(e *closings.Expense) {
+			zero := int64(0)
+			e.CategoryID = &zero
+		}),
+		"expense_padded_label": expenseValue(func(e *closings.Expense) {
+			padded := " Alquiler"
+			e.CategoryLabel = &padded
+		}),
+		"correction_with_motive": func() closings.Closing {
+			value := withExpenses
+			value.Expenses = []closings.Expense{
+				withExpenses.Expenses[0],
+				{ID: 11, BranchID: 2, Kind: "correccion", Amount: "5.50",
+					Description: "Flete mal cargado", CreatedByAccountID: 2,
+					OccurredAt: time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC),
+					CorrectsID: &alquiler, CategoryID: &alquiler, CategoryLabel: &alquilerLabel},
+			}
+			return value
+		}(),
 		"correction_without_target": expenseValue(func(e *closings.Expense) {
 			e.Kind, e.CorrectsID = "correccion", nil
 		}),
@@ -2016,22 +2053,25 @@ func TestClosingsRoundsAreNumbered(t *testing.T) {
 
 // closingExpenseWireRecord is one row of the branch's till exactly as this contract publishes it: the
 // same shape inside the settlement document and in the answer of its own route, with the kind of the
-// row and -- on a correction only -- the movement it answers (S6, S13).
+// row, the motive it was recorded with and -- on a correction only -- the movement it answers (S6, S8,
+// S13).
 type closingExpenseWireRecord struct {
-	ID                 int64  `json:"id"`
-	BranchLocationID   int64  `json:"branch_location_id"`
-	Kind               string `json:"kind"`
-	Amount             string `json:"amount"`
-	Description        string `json:"description"`
-	OccurredAt         string `json:"occurred_at"`
-	CreatedByAccountID int64  `json:"created_by_account_id"`
-	CorrectsID         *int64 `json:"corrects_id"`
+	ID                 int64   `json:"id"`
+	BranchLocationID   int64   `json:"branch_location_id"`
+	Kind               string  `json:"kind"`
+	Amount             string  `json:"amount"`
+	Description        string  `json:"description"`
+	OccurredAt         string  `json:"occurred_at"`
+	CreatedByAccountID int64   `json:"created_by_account_id"`
+	CorrectsID         *int64  `json:"corrects_id"`
+	CategoryID         *int64  `json:"category_id"`
+	CategoryLabel      *string `json:"category_label"`
 }
 
 // closingExpenseKeys is the frozen shape of one published row of the till: the keys the screen's own
 // decoder admits, so a missing, renamed or extra key of a recorded expense is caught here.
 var closingExpenseKeys = []string{"id", "branch_location_id", "kind", "amount", "description",
-	"occurred_at", "created_by_account_id", "corrects_id"}
+	"occurred_at", "created_by_account_id", "corrects_id", "category_id", "category_label"}
 
 // closingExpenseWire admits only the frozen expense shape: one object with exactly the published
 // keys, so a missing or renamed key of a recorded expense is caught.
@@ -2054,6 +2094,12 @@ func closingExpenseWire(t *testing.T, w *httptest.ResponseRecorder, status int) 
 	// correction names: the shape the screen reads is the shape the server publishes (S6, S13).
 	if string(value["corrects_id"]) != "null" {
 		t.Fatalf("a recorded expense names no movement: %s", w.Body.String())
+	}
+	// The motive of the row is the pair the book publishes (S8): the reference and the copy of the label
+	// the motive had when the branch recorded it, both stated by an expense and never one without the
+	// other.
+	if string(value["category_id"]) == "null" || string(value["category_label"]) == "null" {
+		t.Fatalf("a recorded expense states the motive it was recorded with: %s", w.Body.String())
 	}
 	var record closingExpenseWireRecord
 	if json.Unmarshal(w.Body.Bytes(), &record) != nil {
@@ -2092,17 +2138,28 @@ func TestClosingsExpenses(t *testing.T) {
 		t.Fatalf("the branch must accept its bootstrap: %d %s", w.Code, w.Body.String())
 	}
 
-	// The branch records its own expense: the amount and the description, and nothing else.
+	// The branch records its own expense: the amount, the motive of the closed list and the note, which is
+	// optional. The answer states both the motive and the copy of the label it had (S3, S8).
 	flete := closingExpenseWire(t, f.serve(t, f.request(2, "POST", "/api/closings/expenses",
 		`{"amount":"45.50","description":"Flete","category_id":1}`)), 201)
 	if flete.ID < 1 || flete.BranchLocationID != 2 || flete.Amount != "45.50" ||
 		flete.Description != "Flete" || flete.CreatedByAccountID != 2 || flete.OccurredAt == "" {
 		t.Fatalf("the recorded expense is not the published contract: %+v", flete)
 	}
+	if flete.CategoryID == nil || *flete.CategoryID != 1 || flete.CategoryLabel == nil ||
+		*flete.CategoryLabel != "Alquiler" {
+		t.Fatalf("the answer must publish the motive of the expense: %+v", flete)
+	}
+	// The second expense names another motive of the list and states no note at all: the motive is what
+	// tells the operator what the money paid for, and the note beside it may be empty (S3).
 	insumos := closingExpenseWire(t, f.serve(t, f.request(2, "POST", "/api/closings/expenses",
-		`{"amount":"10.00","description":"Insumos","category_id":1}`)), 201)
-	if insumos.ID <= flete.ID || insumos.BranchLocationID != 2 {
+		`{"amount":"10.00","description":"","category_id":5}`)), 201)
+	if insumos.ID <= flete.ID || insumos.BranchLocationID != 2 || insumos.Description != "" {
 		t.Fatalf("every expense is its own movement of the branch's ledger: %+v", insumos)
+	}
+	if insumos.CategoryID == nil || *insumos.CategoryID != 5 || insumos.CategoryLabel == nil ||
+		*insumos.CategoryLabel != "Limpieza" {
+		t.Fatalf("an expense without a note still publishes its motive: %+v", insumos)
 	}
 	// The warehouse records no expense: the till the money comes out of is the branch's own.
 	f.refused(t, f.request(1, "POST", "/api/closings/expenses",
@@ -2141,8 +2198,20 @@ func TestClosingsExpenses(t *testing.T) {
 	if len(document.Expenses) != 2 || document.Expenses[0].ID != flete.ID ||
 		document.Expenses[0].Amount != "45.50" || document.Expenses[0].Description != "Flete" ||
 		document.Expenses[1].ID != insumos.ID || document.Expenses[1].Amount != "10.00" ||
+		document.Expenses[1].Description != "" ||
 		document.Expenses[0].BranchLocationID != 2 || document.Expenses[0].OccurredAt == "" {
 		t.Fatalf("the document must list the expenses of its window: %+v", document.Expenses)
+	}
+	// The settlement tells the same story the book does about each expense: the motive it was recorded
+	// with and the copy of the label that motive had, so an expense with no note is never a row with no
+	// visible reason (S8).
+	if document.Expenses[0].CategoryID == nil || *document.Expenses[0].CategoryID != 1 ||
+		document.Expenses[0].CategoryLabel == nil || *document.Expenses[0].CategoryLabel != "Alquiler" {
+		t.Fatalf("the document must publish the motive of each expense: %+v", document.Expenses[0])
+	}
+	if document.Expenses[1].CategoryID == nil || *document.Expenses[1].CategoryID != 5 ||
+		document.Expenses[1].CategoryLabel == nil || *document.Expenses[1].CategoryLabel != "Limpieza" {
+		t.Fatalf("the motive is what the row says when it states no note: %+v", document.Expenses[1])
 	}
 	if document.CashExpenses != "55.50" || document.ExpectedCash != "44.50" {
 		t.Fatalf("a held settlement publishes the period of its window: %q %q",

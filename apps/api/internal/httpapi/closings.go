@@ -1282,20 +1282,25 @@ type closingCountLineDTO struct {
 
 // closingExpenseDTO is one row of a branch's till as the settlement publishes it: the kind the
 // branch wrote -- a pay-out, or the correction that answers one -- the amount it stated, what for,
-// when it was recorded, by which account and, on a correction only, the movement it answers. It is
-// the same shape inside the settlement document and in the answer of the route that records an
-// expense, so the operator reads one thing in both places, and it is the shape the screen's own
-// decoder reads: the kind and the reference are keys of this row and not of a second contract (S6,
-// S13).
+// when it was recorded, by which account, on a correction only the movement it answers and the motive
+// the expense was recorded with. It is the same shape inside the settlement document and in the answer
+// of the route that records an expense, so the operator reads one thing in both places, and it is the
+// shape the screen's own decoder reads: the kind and the reference are keys of this row and not of a
+// second contract (S6, S13). `category_id` and `category_label` are the motive of an expense and the
+// copy of the label that motive had when the row was written -- exactly the pair the book publishes, and
+// JSON null in both on the correction that names none and on every row recorded before the closed list
+// existed -- so the acta accounts for an expense for the same reason the book does (S3, S7, S8).
 type closingExpenseDTO struct {
-	ID                 int64  `json:"id"`
-	BranchLocationID   int64  `json:"branch_location_id"`
-	Kind               string `json:"kind"`
-	Amount             string `json:"amount"`
-	Description        string `json:"description"`
-	OccurredAt         string `json:"occurred_at"`
-	CreatedByAccountID int64  `json:"created_by_account_id"`
-	CorrectsID         *int64 `json:"corrects_id"`
+	ID                 int64   `json:"id"`
+	BranchLocationID   int64   `json:"branch_location_id"`
+	Kind               string  `json:"kind"`
+	Amount             string  `json:"amount"`
+	Description        string  `json:"description"`
+	OccurredAt         string  `json:"occurred_at"`
+	CreatedByAccountID int64   `json:"created_by_account_id"`
+	CorrectsID         *int64  `json:"corrects_id"`
+	CategoryID         *int64  `json:"category_id"`
+	CategoryLabel      *string `json:"category_label"`
 }
 
 // closingCashMovementDTO is one movement of the branch's operational drawer as the route that records it
@@ -1559,7 +1564,8 @@ type closingDTO struct {
 }
 
 // closingExpenseRecord admits only a complete recorded expense: an amount the till can hold, a
-// description the ledger admits, the branch it belongs to and the account that recorded it.
+// description the ledger admits, the branch it belongs to, the account that recorded it and the motive it
+// was recorded with.
 func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
 	unavailable := func() (closingExpenseDTO, error) { return closingExpenseDTO{}, closings.ErrUnavailable }
 	amount, ok := closingAmountText(expense.Amount)
@@ -1568,11 +1574,8 @@ func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
 	}
 	// The text of a row of this list is the note of the expense, which is optional because its motive
 	// states what the money paid for (061, S3), and the mandatory description of the correction that
-	// answers it.
-	description, ok := closings.CanonicalNote(expense.Description)
-	if expense.Kind != "gasto" {
-		description, ok = closings.CanonicalDescription(expense.Description)
-	}
+	// answers it. It is read by the one per-kind rule of the domain, exactly as it was written.
+	description, ok := closings.CanonicalMovementText(expense.Kind, expense.Description)
 	// A canonical amount of exactly "0.00" is the only non-positive amount canonical text can
 	// hold, and an expense is never zero.
 	if !ok || description != expense.Description || amount == "0.00" || expense.ID < 1 ||
@@ -1582,7 +1585,9 @@ func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
 	}
 	// The two rows this list holds, and the reference each one states (S6): an expense the branch
 	// paid out names no other movement, and the correction that answers it names exactly one. A row
-	// of any other shape is not a row of this document.
+	// of any other shape is not a row of this document. The motive beside it is the pair the book
+	// publishes, judged by the one rule of the domain: an expense states it, a correction states none,
+	// and a row that states half of it is a shape this contract never writes (S3, S8).
 	switch {
 	case expense.Kind == "gasto":
 		if expense.CorrectsID != nil {
@@ -1595,13 +1600,17 @@ func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
 	default:
 		return unavailable()
 	}
+	if !closings.ValidMotive(expense.Kind, expense.CategoryID, expense.CategoryLabel) {
+		return unavailable()
+	}
 	occurred, ok := closingMoment(expense.OccurredAt)
 	if !ok {
 		return unavailable()
 	}
 	return closingExpenseDTO{ID: expense.ID, BranchLocationID: expense.BranchID,
 		Kind: expense.Kind, Amount: amount, Description: description, OccurredAt: occurred,
-		CreatedByAccountID: expense.CreatedByAccountID, CorrectsID: expense.CorrectsID}, nil
+		CreatedByAccountID: expense.CreatedByAccountID, CorrectsID: expense.CorrectsID,
+		CategoryID: expense.CategoryID, CategoryLabel: expense.CategoryLabel}, nil
 }
 
 // closingCashMovementRecord admits only a complete movement of the branch's book: a kind the branch
@@ -1615,12 +1624,10 @@ func closingCashMovementRecord(movement closings.Expense) (closingCashMovementDT
 	if !ok {
 		return unavailable()
 	}
-	// The text of the row is the note of an expense, which is optional because its motive states what the
-	// money paid for, and the mandatory description of every other kind (061, S3).
-	description, ok := closings.CanonicalNote(movement.Description)
-	if movement.Kind != "gasto" {
-		description, ok = closings.CanonicalDescription(movement.Description)
-	}
+	// The text of the row is the per-kind rule of the book: the note of an expense, which is optional
+	// because its motive states what the money paid for, and the mandatory description of every other kind
+	// (061, S3).
+	description, ok := closings.CanonicalMovementText(movement.Kind, movement.Description)
 	// A canonical amount of exactly "0.00" is the only non-positive amount canonical text can hold, and a
 	// movement of the book always moves the drawer.
 	if !ok || description != movement.Description || amount == "0.00" || movement.ID < 1 ||
@@ -1753,12 +1760,9 @@ func closingCashLedgerMovementRecord(movement closings.CashMovement) (closingCas
 	if !ok {
 		return closingCashLedgerMovementDTO{}, false
 	}
-	// The text of a row is the note of an expense, optional because its motive states what the money paid
-	// for (061, S3), and the mandatory description of every other kind of the book.
-	description, ok := closings.CanonicalNote(movement.Description)
-	if movement.Kind != "gasto" {
-		description, ok = closings.CanonicalDescription(movement.Description)
-	}
+	// The text of a row is the per-kind rule of the book: the note of an expense, optional because its
+	// motive states what the money paid for (061, S3), and the mandatory description of every other kind.
+	description, ok := closings.CanonicalMovementText(movement.Kind, movement.Description)
 	if !ok || description != movement.Description || movement.ID < 1 ||
 		movement.CreatedByAccountID < 1 || !closingCashMovementKind(movement.Kind) ||
 		!metricsMovementKindValid(movement.EffectKind) {
@@ -1771,15 +1775,8 @@ func closingCashLedgerMovementRecord(movement closings.CashMovement) (closingCas
 	// The motive of the row is one pair that travels together, names an identity and is stated by an
 	// expense only, exactly as the ledger of 061 admits it (S3, S8): a row of any other shape is one this
 	// domain did not write, so it is never published as a book.
-	if (movement.CategoryID == nil) != (movement.CategoryLabel == nil) ||
-		(movement.CategoryID != nil && (*movement.CategoryID < 1 || movement.Kind != "gasto")) {
+	if !closings.ValidMotive(movement.Kind, movement.CategoryID, movement.CategoryLabel) {
 		return closingCashLedgerMovementDTO{}, false
-	}
-	if movement.CategoryLabel != nil {
-		if label, ok := closings.CanonicalLabel(*movement.CategoryLabel); !ok ||
-			label != *movement.CategoryLabel {
-			return closingCashLedgerMovementDTO{}, false
-		}
 	}
 	cents, ok := closings.Signed(effective).Cents()
 	if !ok || cents == 0 {

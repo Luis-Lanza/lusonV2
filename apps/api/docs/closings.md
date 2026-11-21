@@ -521,7 +521,8 @@ POST /api/closings/expenses
 
 ```json
 {"id":12,"branch_location_id":2,"kind":"gasto","amount":"45.50","description":"Alquiler de marzo",
- "occurred_at":"2026-03-02T09:15:00Z","created_by_account_id":2,"corrects_id":null}
+ "occurred_at":"2026-03-02T09:15:00Z","created_by_account_id":2,"corrects_id":null,
+ "category_id":1,"category_label":"Alquiler"}
 ```
 
 * The body states `amount` and `category_id`, and only optionally `description`, and there is no
@@ -533,12 +534,18 @@ POST /api/closings/expenses
 * `category_id` is mandatory: without it the request is `400 {"error":"category_required"}`. A motive
   the list does not offer, or one that is archived, is `400 {"error":"category_unknown"}` — both
   answer the same fact, because neither can be picked on the screen.
-* The answer states the eight keys of a row of the branch's till: `id`, `branch_location_id`,
-  `kind`, `amount`, `description`, `occurred_at`, `created_by_account_id` and `corrects_id`. The row
-  this route writes is a `gasto` that names no other movement, so `corrects_id` is `null` — the key is
-  always published and never omitted — and `kind` is what tells this row from the correction of an
-  expense in the acta that lists both (see [the acta's expense
-  list](#the-actas-expense-list-is-the-ledger-it-totals)).
+* The answer states the ten keys of a row of the branch's till: `id`, `branch_location_id`,
+  `kind`, `amount`, `description`, `occurred_at`, `created_by_account_id`, `corrects_id`,
+  `category_id` and `category_label`. The row this route writes is a `gasto` that names no other
+  movement, so `corrects_id` is `null` — the key is always published and never omitted — and `kind`
+  is what tells this row from the correction of an expense in the acta that lists both (see [the
+  acta's expense list](#the-actas-expense-list-is-the-ledger-it-totals)).
+* `category_id` and `category_label` are the motive the expense was recorded with and the **copy of
+  the label** that motive had at that instant (S8). Both are always published and both are JSON
+  `null` only when the row names no motive at all, which after 061 is the correction of an expense
+  and a row recorded before the closed list existed (S7). They are the same pair the book publishes
+  for the same row, so the settlement, the acta and the book never tell a different story about what
+  the money paid for.
 * The branch is the **session's own**: `branch_location_id` and `created_by_account_id` are the
   account's, never the body's, and `occurred_at` is the database's, so no caller records an
   expense in another till nor backdates one into an already settled period.
@@ -569,6 +576,13 @@ always the positive fact the branch stated, and the ledger's sign is a reading o
 reference is published on every row, `null` on a pay-out and the corrected movement's id on a
 correction, which is the same shape rule the database enforces; a row of any other shape is refused
 instead of described.
+
+Each row also publishes the motive the expense was recorded with — `category_id` and
+`category_label`, the reference and the copy of the label that motive had when the row was written —
+and both are JSON `null` on the correction, which names none, and on every row recorded before the
+closed list existed (S3, S7, S8). This is the pair the book publishes for the same movement, so the
+acta accounts for an expense for the same reason the book does: a row that states only one of the two,
+or a motive on the kind that names none, is refused instead of described.
 
 ## The operational drawer: aportes, recaudaciones and corrections
 
@@ -942,7 +956,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `opened_by_account_id` | The warehouse account that opened it |
 | `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and the `counted_quantity` the opener seeded from it, which is the warehouse's own number where it disagreed; `null` only on a sheet written before that seeding |
 | `material_lines` | The third account: what the period bought of every used model and every scrap material, what the warehouse counted, the difference and the quantity that goes to the warehouse; ordered by model for the used lines and by material id for the scrap ones, the used ones first. See [the third account](#the-third-account-materials) |
-| `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded, with the corrections of those expenses among them |
+| `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded, with the corrections of those expenses among them; each row publishes the motive pair `category_id` and `category_label` beside the movement, exactly as the book does |
 | `rounds` | The proposal history, oldest first |
 | `corrections` | The corrections of the closed settlement, oldest first: the accepted ones with the deltas they applied and the pending one, if any, with its status |
 
@@ -953,10 +967,12 @@ without a second read. Each `material_lines` entry carries `kind`, its key — `
 quantity as decimal text: whole units for a used line and kilograms with exactly three decimals for
 a scrap one, which is what its `unit` states. The counted quantity, the difference and the delivery
 are `null` together, and only while the line is uncounted. Each `expenses` entry carries `id`,
-`branch_location_id`, `kind`, `amount`, `description`, `occurred_at`, `created_by_account_id` and
-`corrects_id`, which is exactly the shape the recording route answers, so the branch reads its own
-expense the same way in both places; `kind` is `gasto` or `correccion`, and `corrects_id` is the
-movement a correction answers and `null` on every pay-out, always published. Each `rounds`
+`branch_location_id`, `kind`, `amount`, `description`, `occurred_at`, `created_by_account_id`,
+`corrects_id`, `category_id` and `category_label`, which is exactly the shape the recording route
+answers, so the branch reads its own expense the same way in both places; `kind` is `gasto` or
+`correccion`, `corrects_id` is the movement a correction answers and `null` on every pay-out, always
+published, and the two motive keys are the motive of the expense and the copy of its label, `null` in
+both on a row that names none. Each `rounds`
 entry carries `id`, `round` (the database's own sequence), `offer`, `proposed_by_account_id`,
 `proposed_at`, `decision` (`""` while pending, `accepted` or `rejected`), `decision_reason`,
 `decided_by_account_id` and `decided_at`; a decided round states who answered it and when, and a

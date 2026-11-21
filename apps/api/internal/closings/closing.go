@@ -911,12 +911,26 @@ func CanonicalDescription(description string) (string, bool) {
 // CanonicalNote admits the optional note of an expense (S3) and returns the exact text that is
 // persisted: valid UTF-8, no NUL, at most 500 characters, and the empty string when the branch states
 // no note at all. What the note pays for is the motive, so a note that says nothing is a row that
-// says everything through the motive beside it.
+// says everything through the motive beside it. Callers that persist the text require the result to be
+// the text they were given, so a padded note is refused instead of trimmed (S3).
 func CanonicalNote(note string) (string, bool) {
 	if !validText(note, MaxDescription) {
 		return "", false
 	}
 	return strings.TrimSpace(note), true
+}
+
+// CanonicalMovementText is the one per-kind text rule of the branch's book (S3): an expense states the
+// optional note beside its motive, so its text may be the empty string and is read as the note it is,
+// while the contribution, the collection, the correction and the transfers of a settlement still say
+// what they are for. The write path and every read of the same row call this one function and then
+// require the text they were given to be the canonical text of its kind, so the rule a row is written
+// with and the rule it is read back with cannot drift apart again (S3).
+func CanonicalMovementText(kind, text string) (string, bool) {
+	if kind == metricsMovementExpense {
+		return CanonicalNote(text)
+	}
+	return CanonicalDescription(text)
 }
 
 // CanonicalLabel admits the label of one motive of the closed list and returns the exact text the
@@ -931,6 +945,24 @@ func CanonicalLabel(label string) (string, bool) {
 		return "", false
 	}
 	return trimmed, true
+}
+
+// ValidMotive reports whether a motive reference and the copy of the label recorded beside it are the
+// pair this domain writes (S3, S8): both are stated together or not at all, the reference is an identity
+// of the closed list, and only an expense names one -- a contribution, a collection, a correction and
+// the transfers of a settlement state none. The write path and every read of the book and of the acta
+// judge the same pair with this one function, so a motive cannot be admitted by the writer and refused
+// by a reader, nor the other way round.
+func ValidMotive(kind string, categoryID *int64, label *string) bool {
+	if (categoryID == nil) != (label == nil) ||
+		(categoryID != nil && (*categoryID < 1 || kind != metricsMovementExpense)) {
+		return false
+	}
+	if label == nil {
+		return true
+	}
+	canonical, ok := CanonicalLabel(*label)
+	return ok && canonical == *label
 }
 
 // validText is the house text bound: valid UTF-8, no NUL and at most maximum characters.

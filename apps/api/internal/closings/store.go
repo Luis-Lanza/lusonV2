@@ -724,14 +724,13 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 	} else if categoryID != nil {
 		return Expense{}, ErrCategoryNotApplicable
 	}
-	// The text of the row: the note of an expense is optional because its motive states what the money
-	// paid for (S3), and every other kind still says what it is for.
-	var canonicalText string
-	var ok bool
-	if kind == metricsMovementExpense {
-		canonicalText, ok = CanonicalNote(description)
-	} else {
-		canonicalText, ok = CanonicalDescription(description)
+	// The text of the row is the one per-kind rule of the book (S3): the note of an expense, which is
+	// optional because its motive states what the money paid for, and the mandatory description of every
+	// other kind. An expense stores the note exactly as it is stated -- a padded one is refused instead of
+	// trimmed into a text the branch never wrote -- and every other kind keeps the admission it always had.
+	canonicalText, ok := CanonicalMovementText(kind, description)
+	if ok && kind == metricsMovementExpense && canonicalText != description {
+		ok = false
 	}
 	if !ok {
 		return Expense{}, ErrInvalid
@@ -791,21 +790,10 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 	if !sameMotive(movement.CategoryID, categoryID) {
 		return Expense{}, ErrUnavailable
 	}
-	if (movement.CategoryID == nil) != (movement.CategoryLabel == nil) {
+	if !ValidMotive(movement.Kind, movement.CategoryID, movement.CategoryLabel) {
 		return Expense{}, ErrUnavailable
 	}
-	if movement.CategoryLabel != nil {
-		if canonical, ok := CanonicalLabel(*movement.CategoryLabel); !ok ||
-			canonical != *movement.CategoryLabel {
-			return Expense{}, ErrUnavailable
-		}
-	}
-	if kind == metricsMovementExpense {
-		if canonical, ok := CanonicalNote(movement.Description); !ok ||
-			canonical != movement.Description {
-			return Expense{}, ErrUnavailable
-		}
-	} else if canonical, ok := CanonicalDescription(movement.Description); !ok ||
+	if canonical, ok := CanonicalMovementText(movement.Kind, movement.Description); !ok ||
 		canonical != movement.Description {
 		return Expense{}, ErrUnavailable
 	}
@@ -1163,24 +1151,15 @@ func (m *CashMovement) stored(branch int16, amount, effect string) (int64, bool)
 		return 0, false
 	}
 	// The motive of a row is one pair that always travels together, names an identity, is offered by the
-	// closed list and is stated by an expense only (S3, S8): a row of any other shape is one this domain
-	// did not write and is never published.
-	if (m.CategoryID == nil) != (m.CategoryLabel == nil) ||
-		(m.CategoryID != nil && (*m.CategoryID < 1 || m.Kind != metricsMovementExpense)) {
+	// closed list and is stated by an expense only (S3, S8): the same rule the writer of the row applies.
+	if !ValidMotive(m.Kind, m.CategoryID, m.CategoryLabel) {
 		return 0, false
 	}
-	if m.CategoryLabel != nil {
-		if canonical, ok := CanonicalLabel(*m.CategoryLabel); !ok || canonical != *m.CategoryLabel {
-			return 0, false
-		}
-	}
-	// The text of the row is the note of an expense -- optional, because its motive states the fact -- and
-	// the mandatory description of every other kind (S3).
-	if m.Kind == metricsMovementExpense {
-		if canonical, ok := CanonicalNote(m.Description); !ok || canonical != m.Description {
-			return 0, false
-		}
-	} else if canonical, ok := CanonicalDescription(m.Description); !ok || canonical != m.Description {
+	// The text of the row is the per-kind rule of the book, and it is read back exactly as it is written:
+	// the note of an expense -- optional, because its motive states the fact -- and the mandatory
+	// description of every other kind (S3).
+	if canonical, ok := CanonicalMovementText(m.Kind, m.Description); !ok ||
+		canonical != m.Description {
 		return 0, false
 	}
 	stored := Money(amount)
@@ -2461,7 +2440,7 @@ func materialKeyAfter(previous, line MaterialLine) bool {
 func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 	rows, err := q.Query(ctx, `SELECT expense.id,expense.branch_location_id,expense.amount::text,
   expense.description,expense.occurred_at,expense.created_by_account_id,
-  expense.kind,expense.corrects_id
+  expense.kind,expense.corrects_id,expense.category_id,expense.category_label
  FROM branch_cash_ledger expense
  JOIN branch_closings closing ON closing.branch_location_id=expense.branch_location_id
  WHERE closing.id=$1 AND expense.effect_kind='gasto' AND expense.closing_id IS NULL
@@ -2477,7 +2456,7 @@ func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 		var stored string
 		if rows.Scan(&expense.ID, &expense.BranchID, &stored, &expense.Description,
 			&expense.OccurredAt, &expense.CreatedByAccountID, &expense.Kind,
-			&expense.CorrectsID) != nil {
+			&expense.CorrectsID, &expense.CategoryID, &expense.CategoryLabel) != nil {
 			return nil, fail(ctx)
 		}
 		amount, err := ParseAmount(stored)
@@ -2501,14 +2480,16 @@ func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 			(expense.CorrectsID != nil && *expense.CorrectsID < 1) {
 			return nil, ErrUnavailable
 		}
-		// The text of the row is the note of the expense, which is optional because the motive it names
-		// states what the money paid for (061, S3), and the mandatory description of the correction that
-		// answers it.
-		canonical, ok := CanonicalNote(expense.Description)
-		if expense.Kind == cashMovementCorrection {
-			canonical, ok = CanonicalDescription(expense.Description)
+		// The motive of the row is the pair the book publishes, judged by the one rule of this domain
+		// (S3, S8): the expense states it and the correction that answers one states none.
+		if !ValidMotive(expense.Kind, expense.CategoryID, expense.CategoryLabel) {
+			return nil, ErrUnavailable
 		}
-		if !ok || canonical != expense.Description {
+		// The text of the row is the per-kind rule of the book, applied here exactly as the writer applies
+		// it: the note of an expense, which may be empty because its motive states what the money paid for
+		// (061, S3), and the mandatory description of the correction that answers it.
+		if canonical, ok := CanonicalMovementText(expense.Kind, expense.Description); !ok ||
+			canonical != expense.Description {
 			return nil, ErrUnavailable
 		}
 		if cents, ok := amountCents(expense.Amount); !ok || cents < 1 {

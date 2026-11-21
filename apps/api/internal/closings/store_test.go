@@ -1851,8 +1851,10 @@ func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
 	e.contribute(t, 2, "45.50", "Fondo de la caja")
 	e.contribute(t, 3, "5.00", "Fondo de la otra sucursal")
 	// The branch records its own expense and reads it back with its own identity: the branch of
-	// the movement is the account's own location, never a value the caller promises.
-	expense := e.expense(t, 2, "45.5", "  Flete de la semana  ")
+	// the movement is the account's own location, never a value the caller promises. The note is the
+	// text the branch stated: this store trims nothing (S3, see the padded note in the malformed list
+	// below).
+	expense := e.expense(t, 2, "45.5", "Flete de la semana")
 	if expense.ID < 1 || expense.BranchID != 2 || expense.Amount != "45.50" ||
 		expense.Description != "Flete de la semana" || expense.CreatedByAccountID != 2 ||
 		expense.OccurredAt.IsZero() {
@@ -1884,17 +1886,21 @@ func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
 
 	// Every malformed expense is refused before the database and writes nothing: the amount has
 	// to be money the drawer can hold and the note a real one. An empty note is not among them: it
-	// is the optional note of an expense that names a motive (061, S3).
+	// is the optional note of an expense that names a motive (061, S3). A padded one is: the note is
+	// stored exactly as it is stated, so a text this store would have to trim into something else --
+	// blank or surrounded by spaces -- is refused instead of rewritten (S3).
 	for name, value := range map[string]struct{ amount, description string }{
-		"zero":      {"0.00", "Flete"},
-		"three_dec": {"1.005", "Flete"},
-		"negative":  {"-1.00", "Flete"},
-		"signed":    {"+1.00", "Flete"},
-		"padded":    {"010.00", "Flete"},
-		"text":      {"diez", "Flete"},
-		"above":     {"10000000000.00", "Flete"},
-		"nul":       {"10.00", "a\x00b"},
-		"too_long":  {"10.00", strings.Repeat("ñ", closings.MaxDescription+1)},
+		"zero":        {"0.00", "Flete"},
+		"three_dec":   {"1.005", "Flete"},
+		"negative":    {"-1.00", "Flete"},
+		"signed":      {"+1.00", "Flete"},
+		"padded":      {"010.00", "Flete"},
+		"text":        {"diez", "Flete"},
+		"above":       {"10000000000.00", "Flete"},
+		"blank_note":  {"10.00", "   "},
+		"padded_note": {"10.00", "  Flete  "},
+		"nul":         {"10.00", "a\x00b"},
+		"too_long":    {"10.00", strings.Repeat("ñ", closings.MaxDescription+1)},
 	} {
 		if _, err := e.store.RecordExpense(e.ctx, identity(2), closings.Money(value.amount),
 			value.description, e.defaultMotive(t)); !errors.Is(err, closings.ErrInvalid) {
@@ -4331,18 +4337,24 @@ func TestRecordCashMovementIsTheBranchOwn(t *testing.T) {
 	}
 	// A correction is not a direction the branch states here, and a shape the ledger never admits is
 	// refused before the database is touched. An expense of this loop states its motive, because a note
-	// that says nothing is the optional note of an expense (061, S3) and not a malformed one.
+	// that says nothing is the optional note of an expense (061, S3) and not a malformed one; a note
+	// that says nothing but is padded is, because this store never trims the text it stores.
+	before := e.scalar(t, `SELECT count(*) FROM branch_cash_movements`)
 	for _, tc := range []struct{ kind, amount, description string }{
 		{"correccion", "1.00", "Corrijo el flete"},
 		{"devolucion", "1.00", "Flete"},
 		{"gasto", "0.00", "Flete"},
 		{"gasto", "-1.00", "Flete"},
 		{"gasto", "1.234", "Flete"},
+		{"gasto", "1.00", "   "},
 		{"gasto", "1.00", strings.Repeat("ñ", closings.MaxDescription+1)},
 	} {
 		_, err := e.store.RecordCashMovement(e.ctx, identity(2), tc.kind,
 			closings.Money(tc.amount), tc.description, e.periodMotive(t, tc.kind))
 		refused(t, err, closings.ErrInvalid)
+	}
+	if after := e.scalar(t, `SELECT count(*) FROM branch_cash_movements`); after != before {
+		t.Fatalf("a refused movement wrote a row: %d after %d", after, before)
 	}
 	// An expense without a motive is a request this vertical refuses, and so is a motive on a kind that
 	// states none (061, S3).
@@ -4732,6 +4744,17 @@ func TestExpenseNoteIsOptional(t *testing.T) {
 	refused(t, err, closings.ErrInvalid)
 	_, err = e.store.RecordExpense(e.ctx, identity(2), money("1.00"), "a\x00b", e.defaultMotive(t))
 	refused(t, err, closings.ErrInvalid)
+	// The note is stored exactly as it is stated: a padded one is refused instead of trimmed into a text
+	// the branch never wrote, and a blank one is not the empty note an expense may state (S3).
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("1.00"), "  Flete  ", e.defaultMotive(t))
+	refused(t, err, closings.ErrInvalid)
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("1.00"), "   ", e.defaultMotive(t))
+	refused(t, err, closings.ErrInvalid)
+	// A refused note writes nothing: the funded till holds the contribution and the one expense above.
+	if written := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
+ WHERE branch_location_id=2`); written != 2 {
+		t.Fatalf("a refused note wrote a row: %d", written)
+	}
 	// A movement that names no motive still says what it is for: the text is what makes it a fact.
 	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "aporte", money("1.00"), "", nil)
 	refused(t, err, closings.ErrInvalid)
@@ -4784,5 +4807,87 @@ func TestCashLedgerPublishesTheMotiveOfAnExpense(t *testing.T) {
 	}
 	if seen != 3 {
 		t.Fatalf("the book must publish the three rows of the window: %+v", book.Movements)
+	}
+}
+
+// TestTheActaPublishesTheMotiveOfAnExpense pins S8 on the settlement document: the expense of its own
+// window reads back with the motive it was recorded with and the copy of the label that motive had,
+// exactly as the book publishes them, and the correction that answers it names no motive of its own
+// (S10). Renaming the motive afterwards changes the future and never the past: the acta keeps the label
+// it recorded, which is the whole point of keeping the copy.
+func TestTheActaPublishesTheMotiveOfAnExpense(t *testing.T) {
+	e := fixture(t)
+	// The previous period leaves this one a fund of 200.00, so the expense of the window below is the
+	// only fact of the document that names a motive.
+	e.closeFirstSettlement(t, "200.00")
+	transporte := e.motive(t, "Transporte")
+	// The row the verification read back with no visible reason: a motive and no note at all (S3).
+	flete := e.expenseWith(t, 2, "Transporte", "20.00", "")
+	if _, err := e.store.CorrectCashMovement(e.ctx, identity(2), flete.ID, money("5.00"),
+		"Flete mal cargado"); err != nil {
+		t.Fatalf("the correction could not be recorded: %v", err)
+	}
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	if len(opened.Expenses) != 2 {
+		t.Fatalf("the acta must publish the expenses of its window: %+v", opened.Expenses)
+	}
+	listed := opened.Expenses[0]
+	if listed.ID != flete.ID || listed.Description != "" || listed.CategoryID == nil ||
+		*listed.CategoryID != transporte || listed.CategoryLabel == nil ||
+		*listed.CategoryLabel != "Transporte" {
+		t.Fatalf("the acta must publish the motive of the expense: %+v", listed)
+	}
+	// The correction of an expense is a row of the same list and states no motive of its own (S10).
+	if answered := opened.Expenses[1]; answered.Kind != "correccion" ||
+		answered.CategoryID != nil || answered.CategoryLabel != nil {
+		t.Fatalf("a correction names no motive of its own: %+v", answered)
+	}
+	// S9: the motive is a fact of the row and never a term of the drawer. 200.00 inherited, 20.00 paid
+	// out and 5.00 returned by the correction are 185.00 expected, exactly as they are without it.
+	if opened.CashExpenses != "15.00" || opened.CashEffective != "-15.00" ||
+		opened.ExpectedCash != "185.00" {
+		t.Fatalf("the motive moves no money: %+v", opened)
+	}
+	// The copy is what every later read keeps stating: renaming the motive rewrites the future and never
+	// the past (S8, S7).
+	if _, err := e.pool.Exec(e.ctx, `UPDATE branch_cash_categories SET label='Transporte y fletes'
+ WHERE id=$1`, transporte); err != nil {
+		t.Fatalf("the motive could not be renamed: %v", err)
+	}
+	after, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement must still be readable: %v", err)
+	}
+	if after.Expenses[0].CategoryID == nil || *after.Expenses[0].CategoryID != transporte ||
+		after.Expenses[0].CategoryLabel == nil || *after.Expenses[0].CategoryLabel != "Transporte" {
+		t.Fatalf("the acta keeps the label the motive had: %+v", after.Expenses[0])
+	}
+}
+
+// TestTheActaRefusesATextItsKindDoesNotWrite pins the read of the acta against the write of the same row
+// (S3): the note of an expense is read as the text its kind admits, and a text this store would never
+// write is refused instead of described. The row is written straight into the ledger because the store
+// itself refuses it, which is exactly the agreement between the two sides this test keeps.
+func TestTheActaRefusesATextItsKindDoesNotWrite(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "200.00")
+	motive := e.defaultMotive(t)
+	// A note this store never writes: it stores the text it is given or refuses it, never a trimmed one.
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_cash_movements(
+  branch_location_id,kind,amount,description,category_id,created_by_account_id)
+ VALUES(2,'gasto','1.00','  Flete  ',$1,2)`, *motive); err != nil {
+		t.Fatalf("the padded row could not be written: %v", err)
+	}
+	// The window of the settlement holds that row, so the document fails closed instead of publishing a
+	// text its own writer would have refused.
+	_, err := e.store.Open(e.ctx, warehouse(), 2)
+	refused(t, err, closings.ErrUnavailable)
+	// A refused read writes nothing: the settlement the open would have inserted does not exist.
+	if opened := e.scalar(t, `SELECT count(*) FROM branch_closings WHERE branch_location_id=2
+ AND status='open'`); opened != 0 {
+		t.Fatalf("a refused read wrote a settlement: %d open", opened)
 	}
 }
