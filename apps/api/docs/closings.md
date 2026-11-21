@@ -99,14 +99,15 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings/{id}/corrections` | POST | 201 with the proposed correction |
 | `/api/closings/corrections/{correction}/decision` | POST | 200 with the correction and the branch's answer |
 | `/api/closings/expenses` | POST | 201 with the recorded expense |
+| `/api/closings/cash-categories` | GET | 200 with the closed list of motives an expense is recorded with |
 | `/api/closings/cash-movements` | POST | 201 with the recorded movement of the operational drawer |
 | `/api/closings/cash-corrections` | POST | 201 with the recorded correction of one movement |
 | `/api/closings/cash-ledger` | GET | 200 with the book of the drawer over one window |
 
 No other method and no other path is served by this contract: `405 method_not_allowed` with
 an explicit `Allow` header (`GET, POST` for the collection, `GET, POST` for the commission,
-`POST` for the expenses and for the two writes of the drawer, `GET` for the book of the drawer and
-for one settlement, `POST` for each operation). Every mutation
+`POST` for the expenses and for the two writes of the drawer, `GET` for the closed list of motives,
+for the book of the drawer and for one settlement, `POST` for each operation). Every mutation
 requires the usual same-origin session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`;
 every read requires the session only. A query string is not part of any route here except the
 branch history (`GET /api/closings`) and the book of the drawer (`GET
@@ -123,6 +124,8 @@ trailing slash is `404 not_found`, never a redirect.
 The commission path is a longer literal path than a settlement id, so it is never captured by
 `{id}` and never collides with the suffix of an operation. `expenses` is a literal path beside
 `{id}` for the same reason: it is never read as a settlement id, and it names no settlement at all.
+`cash-categories` is the same kind of literal path: it is the closed list of motives, never a
+settlement id.
 `corrections` is the literal suffix of one settlement's own collection, so it is never read as an
 id either, and `count`, `materials` and `cash` are the same kind of literal suffix, which is why the
 three sheets of a settlement are never confused with a document id. The decision of a correction is
@@ -467,6 +470,44 @@ POST /api/closings/1/materials
   of the commission and none of the envelope of the purchase fund (S12): they are the register of
   what the money of that envelope bought, published beside it.
 
+## The motives of an expense
+
+The motive of an expense is not free text: it is one option of a closed list the database states, so
+the branch picks what the money paid for instead of typing it (S1, S2). The list is **global** to
+every branch — there is no branch column anywhere in it — and it is seeded once by the migration, so
+the administration of the catalogue is only CRUD over a table that already exists (S5, S6).
+
+```
+GET /api/closings/cash-categories
+```
+
+```json
+{"categories":[{"id":1,"label":"Alquiler"},{"id":2,"label":"Internet"},
+ {"id":3,"label":"Energía eléctrica"},{"id":4,"label":"Agua"},{"id":5,"label":"Limpieza"},
+ {"id":6,"label":"Sueldos"},{"id":7,"label":"Transporte"},{"id":8,"label":"Insumos de tienda"},
+ {"id":9,"label":"Mantenimiento"},{"id":10,"label":"Impuestos"},{"id":11,"label":"Otros gastos"}]}
+```
+
+* The list is the one the seed of this delivery states, in this order, and the read publishes only
+  the motives that are still offered, ordered by their place in the list and then by their label:
+  `categories` is an array of objects that state exactly their `id` and their `label`. An archived
+  motive is not an option of the screen and is not listed (S8); an empty catalogue is
+  `{"categories":[]}`, never a missing key.
+* `Otros gastos` is the **last** option and it is the only escape valve: it does not reopen free
+  text — the clarification of what it paid for goes in the note of the expense (S2).
+* The read is not anonymous: it requires a session, exactly like every other read of this contract.
+  It states no branch, because the list is the same for every branch, so a branch account and the
+  warehouse account read exactly the same answer. A query string is not part of this route
+  (`400 invalid_request`), and the route is `GET` only (`405 method_not_allowed` with `Allow: GET`).
+* No route of this delivery creates, renames, archives or deletes an option: that is the
+  administration vertical (S6), and nothing here offers it.
+
+Every expense of this contract — the `gasto` of the operational drawer and the row the expense route
+writes — states a motive of this list, keeps a **copy of the label** that motive had when the row was
+written (S8), and is refused with its own code when the motive is missing, unknown or archived. A
+contribution, a collection, a correction and the transfers of a settlement name no motive at all
+(S3, S4).
+
 ## Expenses of the branch
 
 The branch records the small expenses it pays out of its own till as they happen (S12): no approval
@@ -475,18 +516,23 @@ whose period contains the instant it was recorded.
 
 ```
 POST /api/closings/expenses
-{"amount":"45.50","description":"Flete"}
+{"amount":"45.50","category_id":1,"description":"Alquiler de marzo"}
 ```
 
 ```json
-{"id":12,"branch_location_id":2,"kind":"gasto","amount":"45.50","description":"Flete",
+{"id":12,"branch_location_id":2,"kind":"gasto","amount":"45.50","description":"Alquiler de marzo",
  "occurred_at":"2026-03-02T09:15:00Z","created_by_account_id":2,"corrects_id":null}
 ```
 
-* Both keys of the body are mandatory and there are no others. `amount` is canonical two-decimal text and is
-  never zero; `description` is valid UTF-8 without NUL, at most 500 characters and never blank
-  once trimmed, and it is published exactly as it is stored, so a padded `" Flete "` is `400
-  invalid_request` instead of a silently trimmed one.
+* The body states `amount` and `category_id`, and only optionally `description`, and there is no
+  other key. `amount` is canonical two-decimal text and is never zero; `category_id` is a canonical
+  positive integer of the closed list; `description` is the **optional** note of the expense (S3) —
+  valid UTF-8 without NUL, at most 500 characters, published exactly as it is stored, so a padded
+  `" Flete "` is `400 invalid_request` instead of a silently trimmed one. An expense with no note at
+  all is published as `"description":""`, because its motive already states what the money paid for.
+* `category_id` is mandatory: without it the request is `400 {"error":"category_required"}`. A motive
+  the list does not offer, or one that is archived, is `400 {"error":"category_unknown"}` — both
+  answer the same fact, because neither can be picked on the screen.
 * The answer states the eight keys of a row of the branch's till: `id`, `branch_location_id`,
   `kind`, `amount`, `description`, `occurred_at`, `created_by_account_id` and `corrects_id`. The row
   this route writes is a `gasto` that names no other movement, so `corrects_id` is `null` — the key is
@@ -549,11 +595,18 @@ POST /api/closings/cash-movements
  "created_by_account_id":2}
 ```
 
-* The three keys are mandatory and there are no others: `kind` is one of `gasto`, `aporte` and
-  `recaudacion`, `amount` is canonical two-decimal text and is never zero, and `description` is the
-  same text the expense route admits (valid UTF-8 without NUL, at most 500 characters, never blank
-  once trimmed, and published exactly as it is stored). An extra key, a `correccion` here, a padded
-  description or a JSON number for an amount is `400 invalid_request`.
+* `kind` and `amount` are mandatory and there is no other key: `kind` is one of `gasto`, `aporte`
+  and `recaudacion`, and `amount` is canonical two-decimal text and is never zero. `category_id` and
+  `description` are judged **per kind** (S3, S4):
+  * `kind: "gasto"` names a **motive of the closed list** (`category_id`, mandatory) and its
+    `description` is the **optional** note beside it; a `gasto` with no motive is
+    `400 {"error":"category_required"}`, and one with a motive the list does not offer or that is
+    archived is `400 {"error":"category_unknown"}`.
+  * `kind: "aporte"` and `kind: "recaudacion"` name **no motive** and still state what they are for:
+    a `category_id` on either of them is `400 {"error":"category_not_applicable"}`, and a `description`
+    that is missing, blank once trimmed or above 500 characters is `400 invalid_request`.
+  * An extra key, a `correccion` here, a padded text, a JSON number for an amount or a
+    `category_id` that is not a canonical positive integer is `400 invalid_request`.
 * The branch is the **session's own** (S12): `branch_location_id` and `created_by_account_id` are the
   account's and never the body's, and `occurred_at` is the database's, so no caller writes another
   branch's drawer nor backdates a movement into a period that is already settled.
@@ -590,6 +643,19 @@ POST /api/closings/cash-movements
   the acta states them and its own checks govern them — so a counted cash below the expected cash is
   still a shortage the closing admits, not a refused movement. Correcting an `aporte` obeys the same
   bound, because a correction answers the direction it corrects.
+* The motive of an expense is the **last** answer of a row, and it never masks a refusal that already
+  exists. The database runs four `BEFORE INSERT` triggers on the ledger in name order, and the guard
+  of the motive is the last of them, so the precedence is exactly this one:
+
+  `LC001` (frozen branch) → `LC030` (a correction of a movement it may not answer) → `LC031` (the
+  corrections above the corrected amount) → `LC032` (the drawer) → `LC033` (the motive).
+
+  A `gasto` without a motive on a frozen branch is therefore `409 branch_frozen`, not
+  `category_required`; one on a drawer that does not hold the money is
+  `409 {"error":"drawer_insufficient",…}`; and only a row that every older rule admits is answered by
+  the list. The surface judges the shape of the body first, exactly like every other request of this
+  contract, so a body that states no motive at all is `400 category_required` before the branch's
+  state is read.
 
 ### Corrections of the drawer's book
 
@@ -633,10 +699,12 @@ GET /api/closings/cash-ledger?from=2026-03-01T00:00:00Z&to=2026-03-23T18:30:00Z
  "movements":[
   {"id":21,"kind":"gasto","effect_kind":"gasto","amount":"45.50","effective":"-45.50",
    "description":"Detergente","occurred_at":"2026-03-02T09:15:00Z",
-   "created_by_account_id":2,"corrects_id":null},
+   "created_by_account_id":2,"corrects_id":null,"category_id":5,
+   "category_label":"Limpieza"},
   {"id":22,"kind":"correccion","effect_kind":"gasto","amount":"10.00","effective":"10.00",
    "description":"Detergente mal cargado","occurred_at":"2026-03-02T09:22:00Z",
-   "created_by_account_id":2,"corrects_id":21}]}
+   "created_by_account_id":2,"corrects_id":21,"category_id":null,
+   "category_label":null}]}
 ```
 
 * `from` and `to` are both optional and each appears at most once, as an RFC3339 instant. An absent
@@ -660,6 +728,14 @@ GET /api/closings/cash-ledger?from=2026-03-01T00:00:00Z&to=2026-03-23T18:30:00Z
   start with `-`. The amount of a row is always positive and `effect_kind` states the direction: an
   `aporte` moves the drawer in, a `gasto` and a `recaudacion` move it out, and a `correccion` carries the
   kind of the movement it answers with the opposite sign.
+* Every movement publishes `category_id` and `category_label`, which are the motive of an expense and
+  the **copy of the label** that motive had when the row was written (S8). Both keys are always
+  stated and both are JSON `null` when the row names no motive: a contribution, a collection, a
+  correction, and every row recorded before the closed list existed. The copy is what makes renaming
+  or archiving a motive in the administration vertical a change of the future and never of the past —
+  the book, the acta and the report keep counting the same story. A row that states only one of the
+  two, or a motive on a kind that names none, is refused instead of described, exactly like every
+  other shape this contract does not publish.
 * `movements` is published **oldest first**, because a book is read in the order it happened.
 * `truncated` reports that the window holds more movements than the answer lists: the list is the newest
   500 rows and every number beside it counts the whole window, so a long period publishes a shorter list
@@ -972,6 +1048,9 @@ about instead of a generic code.
 |---|---|---|---|
 | 400 | `invalid_request` | — | Malformed body or framing, an unknown or duplicate key, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
 | 400 | `correction_target_invalid` | — | A correction of the drawer names a movement it may not answer: an unknown one, one of another branch, another correction, the transfer of a settlement or a movement of a period a closure already signed (LC030) |
+| 400 | `category_required` | — | An expense states no motive, and the motive is mandatory (LC033) |
+| 400 | `category_unknown` | — | The motive of an expense is not one the closed list offers, or it is archived (LC033) |
+| 400 | `category_not_applicable` | — | A motive was stated on a kind that names none: only an expense is recorded with one (LC033) |
 | 401 | `unauthenticated` | — | No session |
 | 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, warehouse on an expense, warehouse or another branch on a decision) |
 | 404 | `not_found` | — | No such settlement for this caller, no setting for that branch, or an aliased path |
@@ -1010,8 +1089,9 @@ only the closure's own trigger writes.
 ## Database invariants
 
 `branch_closings`, `closing_count_lines`, `closing_material_lines`, `closing_proposals`,
-`closing_corrections`, `closing_correction_effects`, `branch_cash_movements` and `branch_settings`
-are the settlement's own tables; the closed settlement, its rounds, its corrections, the journal of
+`closing_corrections`, `closing_correction_effects`, `branch_cash_movements`,
+`branch_cash_categories` and `branch_settings` are the settlement's own tables (the closed list of
+motives is global and belongs to no branch); the closed settlement, its rounds, its corrections, the journal of
 their deltas, the sheets of its materials and the cash ledger are immutable. The database, not the application, decides the following, with
 stable SQLSTATEs:
 
@@ -1043,6 +1123,8 @@ stable SQLSTATEs:
 | `LC030` | A correction of the drawer names a movement it may not answer: an unknown one, one of another branch, another correction, the transfer of a settlement, or a movement of a period a closure already signed | 400 `correction_target_invalid` |
 | `LC031` | The corrections of one movement of the drawer never exceed the amount that movement stated | 409 `correction_exceeds` |
 | `LC024` | Location 1 is the warehouse: an expense belongs to a branch | `403 forbidden` from the expense route, 503 `service_unavailable` elsewhere |
+| `LC033` | The motive of an expense is one the closed list offers and is not archived, no other kind names one, and the note is optional only where a motive is stated | 400 `category_required`, `category_unknown` or `category_not_applicable`; 503 `service_unavailable` only for a row this layer could not have written |
+| — | The four `BEFORE INSERT` triggers of the ledger answer in name order, so the motive is the last word: `LC001` → `LC030` → `LC031` → `LC032` → `LC033` | The first refusal of an older rule is the one the caller reads |
 
 One live settlement per branch is a unique index, reported as `409 settlement_live`; a
 reference to a settlement that does not exist is reported as `404 not_found`, and a second

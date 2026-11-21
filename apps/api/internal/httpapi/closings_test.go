@@ -371,31 +371,54 @@ func TestClosingDecoders(t *testing.T) {
 			t.Fatalf("%s must be refused", name)
 		}
 	}
-	// The expense of a branch is its amount and its description, and nothing else.
-	amount, description, err := decodeClosingExpense(post(`{"amount":"45.50","description":"Flete"}`))
-	if err != nil || amount != "45.50" || description != "Flete" {
-		t.Fatalf("a canonical expense must be admitted: %q %q %v", amount, description, err)
+	// The expense of a branch is its amount, the motive of the closed list it names and its optional
+	// note, and nothing else (061, S3).
+	expense, err := decodeClosingExpense(post(`{"amount":"45.50","description":"Flete","category_id":2}`))
+	if err != nil || expense.Amount != "45.50" || expense.Description != "Flete" ||
+		expense.CategoryID == nil || *expense.CategoryID != 2 {
+		t.Fatalf("a canonical expense must be admitted: %+v %v", expense, err)
+	}
+	// The note may be absent or empty: the motive beside it already states what the money paid for.
+	for _, body := range []string{
+		`{"amount":"45.50","category_id":2}`,
+		`{"amount":"45.50","description":"","category_id":2}`,
+	} {
+		expense, err := decodeClosingExpense(post(body))
+		if err != nil || expense.Description != "" || expense.CategoryID == nil ||
+			*expense.CategoryID != 2 {
+			t.Fatalf("the note of an expense is optional: %+v %v", expense, err)
+		}
 	}
 	for name, body := range map[string]string{
-		"expense_amount_absent":      `{"description":"Flete"}`,
-		"expense_amount_number":      `{"amount":45.5,"description":"Flete"}`,
-		"expense_amount_one":         `{"amount":"45.5","description":"Flete"}`,
-		"expense_amount_padded":      `{"amount":"045.50","description":"Flete"}`,
-		"expense_amount_negative":    `{"amount":"-45.50","description":"Flete"}`,
-		"expense_amount_three":       `{"amount":"45.505","description":"Flete"}`,
-		"expense_description_blank":  `{"amount":"45.50","description":"   "}`,
-		"expense_description_pad":    `{"amount":"45.50","description":" Flete "}`,
-		"expense_description_null":   `{"amount":"45.50","description":null}`,
-		"expense_description_absent": `{"amount":"45.50"}`,
-		"expense_extra":              `{"amount":"45.50","description":"Flete","kind":"gasto"}`,
-		"expense_duplicate":          `{"amount":"45.50","amount":"10.00","description":"Flete"}`,
-		"expense_trailing":           `{"amount":"45.50","description":"Flete"}{}`,
+		"expense_amount_absent":     `{"description":"Flete","category_id":2}`,
+		"expense_amount_number":     `{"amount":45.5,"description":"Flete","category_id":2}`,
+		"expense_amount_one":        `{"amount":"45.5","description":"Flete","category_id":2}`,
+		"expense_amount_padded":     `{"amount":"045.50","description":"Flete","category_id":2}`,
+		"expense_amount_negative":   `{"amount":"-45.50","description":"Flete","category_id":2}`,
+		"expense_amount_three":      `{"amount":"45.505","description":"Flete","category_id":2}`,
+		"expense_description_blank": `{"amount":"45.50","description":"   ","category_id":2}`,
+		"expense_description_pad":   `{"amount":"45.50","description":" Flete ","category_id":2}`,
+		"expense_description_null":  `{"amount":"45.50","description":null,"category_id":2}`,
+		"expense_extra":             `{"amount":"45.50","description":"Flete","category_id":2,"kind":"gasto"}`,
+		"expense_duplicate":         `{"amount":"45.50","amount":"10.00","description":"Flete","category_id":2}`,
+		"expense_trailing":          `{"amount":"45.50","description":"Flete","category_id":2}{}`,
+		"expense_category_null":     `{"amount":"45.50","description":"Flete","category_id":null}`,
+		"expense_category_text":     `{"amount":"45.50","description":"Flete","category_id":"2"}`,
+		"expense_category_zero":     `{"amount":"45.50","description":"Flete","category_id":0}`,
+		"expense_category_negative": `{"amount":"45.50","description":"Flete","category_id":-2}`,
+		"expense_category_padded":   `{"amount":"45.50","description":"Flete","category_id":"02"}`,
 		"expense_long": `{"amount":"45.50","description":"` +
-			strings.Repeat("ñ", closings.MaxDescription+1) + `"}`,
+			strings.Repeat("ñ", closings.MaxDescription+1) + `","category_id":2}`,
 	} {
-		if _, _, err := decodeClosingExpense(post(body)); !errors.Is(err, closings.ErrInvalid) {
+		if _, err := decodeClosingExpense(post(body)); !errors.Is(err, closings.ErrInvalid) {
 			t.Fatalf("%s must be refused", name)
 		}
+	}
+	// The motive of an expense is mandatory (S3), and the refusal names that fact instead of the
+	// generic malformed body, so the screen can tell the operator what is missing.
+	if _, err := decodeClosingExpense(post(`{"amount":"45.50","description":"Flete"}`)); !errors.Is(err,
+		closings.ErrCategoryRequired) {
+		t.Fatalf("an expense without a motive must name the missing motive, got %v", err)
 	}
 	// The framing is exact: one canonical JSON content type and a body inside the limit.
 	for name, headers := range map[string][]string{
@@ -2071,39 +2094,39 @@ func TestClosingsExpenses(t *testing.T) {
 
 	// The branch records its own expense: the amount and the description, and nothing else.
 	flete := closingExpenseWire(t, f.serve(t, f.request(2, "POST", "/api/closings/expenses",
-		`{"amount":"45.50","description":"Flete"}`)), 201)
+		`{"amount":"45.50","description":"Flete","category_id":1}`)), 201)
 	if flete.ID < 1 || flete.BranchLocationID != 2 || flete.Amount != "45.50" ||
 		flete.Description != "Flete" || flete.CreatedByAccountID != 2 || flete.OccurredAt == "" {
 		t.Fatalf("the recorded expense is not the published contract: %+v", flete)
 	}
 	insumos := closingExpenseWire(t, f.serve(t, f.request(2, "POST", "/api/closings/expenses",
-		`{"amount":"10.00","description":"Insumos"}`)), 201)
+		`{"amount":"10.00","description":"Insumos","category_id":1}`)), 201)
 	if insumos.ID <= flete.ID || insumos.BranchLocationID != 2 {
 		t.Fatalf("every expense is its own movement of the branch's ledger: %+v", insumos)
 	}
 	// The warehouse records no expense: the till the money comes out of is the branch's own.
 	f.refused(t, f.request(1, "POST", "/api/closings/expenses",
-		`{"amount":"10.00","description":"Flete del almacén"}`), 403, `{"error":"forbidden"}`)
+		`{"amount":"10.00","description":"Flete del almacén","category_id":1}`), 403, `{"error":"forbidden"}`)
 	// The other branch records its own, which never reads as an expense of this branch.
 	// The other branch funds its own till first, so its expense lands in its own book and never here (S1).
 	f.contribute(t, 3, "99.00", "Cambio de la otra sucursal")
 	other := closingExpenseWire(t, f.serve(t, f.request(3, "POST", "/api/closings/expenses",
-		`{"amount":"99.00","description":"Flete de la otra sucursal"}`)), 201)
+		`{"amount":"99.00","description":"Flete de la otra sucursal","category_id":1}`)), 201)
 	if other.BranchLocationID != 3 || other.CreatedByAccountID != 3 {
 		t.Fatalf("a branch records only its own expenses: %+v", other)
 	}
 	// A malformed amount or description is refused and writes nothing anywhere.
 	for _, body := range []string{
-		`{"amount":"0.00","description":"Flete"}`,
-		`{"amount":"45.5","description":"Flete"}`,
-		`{"amount":"-45.50","description":"Flete"}`,
-		`{"amount":"45.50","description":""}`,
-		`{"amount":"45.50","description":"   "}`,
-		`{"amount":45.50,"description":"Flete"}`,
-		`{"amount":"45.50"}`,
+		`{"amount":"0.00","description":"Flete","category_id":1}`,
+		`{"amount":"45.5","description":"Flete","category_id":1}`,
+		`{"amount":"-45.50","description":"Flete","category_id":1}`,
+		`{"amount":"45.50","description":"   ","category_id":1}`,
+		`{"amount":"45.50","description":"Flete","category_id":0}`,
+		`{"amount":"45.50","description":"Flete","category_id":"1"}`,
+		`{"amount":45.50,"description":"Flete","category_id":1}`,
 		`{"description":"Flete"}`,
 		`{"amount":"45.50","description":"Flete","kind":"recaudacion"}`,
-		`{"amount":"45.50","description":"` + strings.Repeat("ñ", closings.MaxDescription+1) + `"}`,
+		`{"amount":"45.50","description":"` + strings.Repeat("ñ", closings.MaxDescription+1) + `","category_id":1}`,
 	} {
 		f.refused(t, f.request(2, "POST", "/api/closings/expenses", body), 400,
 			`{"error":"invalid_request"}`)
@@ -2134,7 +2157,7 @@ func TestClosingsExpenses(t *testing.T) {
 
 	// The branch is frozen now: the same expense is refused by name and writes nothing.
 	f.refused(t, f.request(2, "POST", "/api/closings/expenses",
-		`{"amount":"5.00","description":"Agua"}`), 409, `{"error":"branch_frozen"}`)
+		`{"amount":"5.00","description":"Agua","category_id":1}`), 409, `{"error":"branch_frozen"}`)
 
 	// The offer freezes the total of the listed expenses and subtracts it from the expected
 	// drawer: 100.00 inherited minus 55.50 paid out is the 44.50 the branch hand counted.
@@ -2178,7 +2201,7 @@ func TestClosingsExpenseRowShape(t *testing.T) {
 		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo"}`)
 	var gasto closingCashMovementWire
 	closingCashWire(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`)), 201,
+		`{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}`)), 201,
 		closingCashMovementKeys, &gasto)
 	var correction closingCashMovementWire
 	closingCashWire(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-corrections",
@@ -2587,7 +2610,7 @@ func TestClosingsCorrectionOfAClosedSettlement(t *testing.T) {
 	}
 	// A correction never freezes the branch: it is still operating after it.
 	if w := f.serve(t, f.request(3, "POST", "/api/closings/expenses",
-		`{"amount":"5.00","description":"Flete"}`)); w.Code != 201 {
+		`{"amount":"5.00","description":"Flete","category_id":1}`)); w.Code != 201 {
 		t.Fatalf("a correction must not freeze the branch: %d %s", w.Code, w.Body.String())
 	}
 	// The fund is the opening cash of the next period, so its delta folds into that opening exactly
@@ -2997,7 +3020,7 @@ func TestSettlementCycleEndToEnd(t *testing.T) {
 		t.Fatalf("step 5: the branch must sell in its new period: %d %s", w.Code, w.Body.String())
 	}
 	expense := closingExpenseWire(t, f.serve(t, f.request(int(branch), "POST", "/api/closings/expenses",
-		`{"amount":"45.50","description":"Flete"}`)), 201)
+		`{"amount":"45.50","description":"Flete","category_id":1}`)), 201)
 	if expense.Amount != "45.50" || expense.Description != "Flete" ||
 		expense.BranchLocationID != branch || expense.CreatedByAccountID != branch {
 		t.Fatalf("step 5: the expense of the period is the branch's own: %+v", expense)
@@ -3484,15 +3507,17 @@ type closingCashLedgerWire struct {
 // closingCashLedgerRowWire is one row of the book: the kind the branch recorded, the kind whose direction
 // it carries, the positive amount it stated and the signed effect the drawer moves by.
 type closingCashLedgerRowWire struct {
-	ID                 int64  `json:"id"`
-	Kind               string `json:"kind"`
-	EffectKind         string `json:"effect_kind"`
-	Amount             string `json:"amount"`
-	Effective          string `json:"effective"`
-	Description        string `json:"description"`
-	OccurredAt         string `json:"occurred_at"`
-	CreatedByAccountID int64  `json:"created_by_account_id"`
-	CorrectsID         *int64 `json:"corrects_id"`
+	ID                 int64   `json:"id"`
+	Kind               string  `json:"kind"`
+	EffectKind         string  `json:"effect_kind"`
+	Amount             string  `json:"amount"`
+	Effective          string  `json:"effective"`
+	Description        string  `json:"description"`
+	OccurredAt         string  `json:"occurred_at"`
+	CreatedByAccountID int64   `json:"created_by_account_id"`
+	CorrectsID         *int64  `json:"corrects_id"`
+	CategoryID         *int64  `json:"category_id"`
+	CategoryLabel      *string `json:"category_label"`
 }
 
 // The published key sets of the drawer: a missing, renamed or extra key is a change of the contract.
@@ -3503,7 +3528,8 @@ var (
 	closingCashLedgerKeys     = []string{"since", "until", "opening", "sales", "effective", "expected",
 		"truncated", "movements"}
 	closingCashLedgerRowKeys = []string{"id", "kind", "effect_kind", "amount", "effective",
-		"description", "occurred_at", "created_by_account_id", "corrects_id"}
+		"description", "occurred_at", "created_by_account_id", "corrects_id", "category_id",
+		"category_label"}
 )
 
 // closingCashWire admits an answer of the drawer: it states exactly the published keys and decodes into
@@ -3549,7 +3575,7 @@ func TestClosingsCashMovementsOfTheDrawer(t *testing.T) {
 		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
 
 	gasto := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`)), 201, closingCashMovementKeys)
+		`{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}`)), 201, closingCashMovementKeys)
 	if gasto.ID < 1 || gasto.BranchLocationID != 2 || gasto.Kind != "gasto" || gasto.Amount != "45.50" ||
 		gasto.Description != "Detergente" || gasto.CreatedByAccountID != 2 || gasto.OccurredAt == "" ||
 		gasto.CorrectsID != nil {
@@ -3568,7 +3594,7 @@ func TestClosingsCashMovementsOfTheDrawer(t *testing.T) {
 	}
 	// The warehouse has no drawer of its own, and another branch writes only its own.
 	f.refused(t, f.request(1, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"10.00","description":"Flete del almacén"}`), 403, `{"error":"forbidden"}`)
+		`{"kind":"gasto","amount":"10.00","description":"Flete del almacén","category_id":1}`), 403, `{"error":"forbidden"}`)
 	other := closingCashMovementReply(t, f.serve(t, f.request(3, "POST", "/api/closings/cash-movements",
 		`{"kind":"aporte","amount":"5.00","description":"Cambio de la otra sucursal"}`)), 201,
 		closingCashMovementKeys)
@@ -3578,20 +3604,22 @@ func TestClosingsCashMovementsOfTheDrawer(t *testing.T) {
 	// A malformed body writes nothing anywhere: the branch is never in the body, the instant is never the
 	// caller's and the kind is never the correction that belongs to its own route (S6).
 	for _, body := range []string{
-		`{"kind":"gasto","amount":"1.00","description":"Agua","branch_location_id":3}`,
-		`{"kind":"gasto","amount":"1.00","description":"Agua","occurred_at":"2026-03-02T09:15:00Z"}`,
-		`{"kind":"gasto","amount":"1.00","description":"Agua","corrects_id":1}`,
-		`{"kind":"gasto","amount":"0.00","description":"Agua"}`,
-		`{"kind":"gasto","amount":"-1.00","description":"Agua"}`,
-		`{"kind":"gasto","amount":"1.5","description":"Agua"}`,
-		`{"kind":"gasto","amount":1.00,"description":"Agua"}`,
-		`{"kind":"gasto","amount":"1.00"}`,
-		`{"kind":"gasto","amount":"1.00","description":" Agua "}`,
-		`{"kind":"gasto","amount":"1.00","description":""}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","branch_location_id":3,"category_id":1}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","occurred_at":"2026-03-02T09:15:00Z","category_id":1}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","corrects_id":1,"category_id":1}`,
+		`{"kind":"gasto","amount":"0.00","description":"Agua","category_id":1}`,
+		`{"kind":"gasto","amount":"-1.00","description":"Agua","category_id":1}`,
+		`{"kind":"gasto","amount":"1.5","description":"Agua","category_id":1}`,
+		`{"kind":"gasto","amount":1.00,"description":"Agua","category_id":1}`,
+		`{"kind":"aporte","amount":"1.00"}`,
+		`{"kind":"gasto","amount":"1.00","description":" Agua ","category_id":1}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","category_id":"1"}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","category_id":0}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","category_id":null}`,
 		`{"kind":"correccion","amount":"1.00","description":"Corrijo el flete"}`,
 		`{"kind":"devolucion","amount":"1.00","description":"Agua"}`,
-		`{"kind":"gasto","amount":"1.00","description":"` + strings.Repeat("ñ", closings.MaxDescription+1) + `"}`,
-		`{"kind":"gasto","amount":"1.00","description":"Agua"} {}`,
+		`{"kind":"gasto","amount":"1.00","description":"` + strings.Repeat("ñ", closings.MaxDescription+1) + `","category_id":1}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","category_id":1} {}`,
 	} {
 		f.refused(t, f.request(2, "POST", "/api/closings/cash-movements", body), 400,
 			`{"error":"invalid_request"}`)
@@ -3618,7 +3646,7 @@ func TestClosingsCashCorrectionsOfAMovement(t *testing.T) {
 	f.closeSettlement(t, 2,
 		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
 	gasto := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"50.00","description":"Flete"}`)), 201, closingCashMovementKeys)
+		`{"kind":"gasto","amount":"50.00","description":"Flete","category_id":1}`)), 201, closingCashMovementKeys)
 
 	correction := closingCashMovementReply(t, f.serve(t, f.request(2, "POST",
 		"/api/closings/cash-corrections", fmt.Sprintf(
@@ -3637,7 +3665,7 @@ func TestClosingsCashCorrectionsOfAMovement(t *testing.T) {
 	// The other branch funds its own till first, so its movement is admitted on a drawer that holds it (S1).
 	f.contribute(t, 3, "10.00", "Cambio de la otra sucursal")
 	foreign := closingCashMovementReply(t, f.serve(t, f.request(3, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"10.00","description":"Flete de la otra sucursal"}`)), 201,
+		`{"kind":"gasto","amount":"10.00","description":"Flete de la otra sucursal","category_id":1}`)), 201,
 		closingCashMovementKeys)
 	f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
 		`{"corrects_id":%d,"amount":"5.00","description":"No es un movimiento mío"}`, foreign.ID)), 400,
@@ -3662,7 +3690,7 @@ func TestClosingsCashCorrectionsOfAMovement(t *testing.T) {
 		fmt.Sprintf(`{"corrects_id":%d,"amount":"1.00"}`, gasto.ID),
 		fmt.Sprintf(`{"corrects_id":"%d","amount":"1.00","description":"Flete"}`, gasto.ID),
 		fmt.Sprintf(`{"corrects_id":0,"amount":"1.00","description":"Flete"}`),
-		`{"amount":"1.00","description":"Flete"}`,
+		`{"amount":"1.00","description":"Flete","category_id":1}`,
 	} {
 		f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", body), 400,
 			`{"error":"invalid_request"}`)
@@ -3692,7 +3720,7 @@ func TestClosingsCashLedgerRead(t *testing.T) {
 	closed := f.closeSettlement(t, 2,
 		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
 	gasto := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`)), 201, closingCashMovementKeys)
+		`{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}`)), 201, closingCashMovementKeys)
 	correction := closingCashMovementReply(t, f.serve(t, f.request(2, "POST",
 		"/api/closings/cash-corrections", fmt.Sprintf(
 			`{"corrects_id":%d,"amount":"10.00","description":"Detergente mal cargado"}`, gasto.ID))), 201,
@@ -3937,7 +3965,7 @@ func TestClosingsActaAndBookAreOneArithmetic(t *testing.T) {
 	f.closeSettlement(t, 2,
 		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo"}`)
 	for _, body := range []string{
-		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`,
+		`{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}`,
 		`{"kind":"aporte","amount":"30.00","description":"Cambio para el cajón"}`,
 	} {
 		if w := f.serve(t, f.request(2, "POST", "/api/closings/cash-movements", body)); w.Code != 201 {
@@ -4004,4 +4032,216 @@ func TestClosingsActaAndBookAreOneArithmetic(t *testing.T) {
 	if len(closed.Expenses) != 1 || closed.Expenses[0].Amount != "45.50" {
 		t.Fatalf("the acta lists the pay-out of its window: %+v", closed.Expenses)
 	}
+}
+
+// closingCashCategoriesWire is the closed list of motives exactly as the route publishes it: one array
+// of the options the screen offers, each stating its identity and the label it shows (S2, S5).
+type closingCashCategoriesWire struct {
+	Categories []closingCashCategoryWire `json:"categories"`
+}
+
+// closingCashCategoryWire is one option of that list.
+type closingCashCategoryWire struct {
+	ID    int64  `json:"id"`
+	Label string `json:"label"`
+}
+
+// closingCashCategoriesKeys is the whole answer of the read: the list and nothing else.
+var closingCashCategoriesKeys = []string{"categories"}
+
+// closingCashCategoriesOf reads the closed list of motives and checks the published shape: one array of
+// options that state exactly their identity and their label, in the order the seed states them.
+func closingCashCategoriesOf(t *testing.T, w *httptest.ResponseRecorder) []closingCashCategoryWire {
+	t.Helper()
+	var answer closingCashCategoriesWire
+	closingCashWire(t, w, 200, closingCashCategoriesKeys, &answer)
+	var value map[string]json.RawMessage
+	if json.Unmarshal(w.Body.Bytes(), &value) != nil {
+		t.Fatalf("the answer is not decodable: %s", w.Body.String())
+	}
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(value["categories"], &rows) != nil {
+		t.Fatalf("the list is not an array of options: %s", w.Body.String())
+	}
+	for _, row := range rows {
+		if len(row) != 2 {
+			t.Fatalf("an option states its identity and its label: %s", w.Body.String())
+		}
+		for _, key := range []string{"id", "label"} {
+			if _, ok := row[key]; !ok {
+				t.Fatalf("an option key %q is missing: %s", key, w.Body.String())
+			}
+		}
+	}
+	return answer.Categories
+}
+
+// TestClosingsCashCategoriesRead pins S2 and S5 over HTTP: the closed list of motives an expense is
+// recorded with is one read of the contract, global to every branch, in the order of the seed and with
+// the archived options left out.
+func TestClosingsCashCategoriesRead(t *testing.T) {
+	f := closingFixture(t)
+
+	want := []string{"Alquiler", "Internet", "Energía eléctrica", "Agua", "Limpieza", "Sueldos",
+		"Transporte", "Insumos de tienda", "Mantenimiento", "Impuestos", "Otros gastos"}
+	// The branch that spends and the warehouse that administers read the same list: it is global (S5).
+	for _, actor := range []int{2, 3, 1} {
+		categories := closingCashCategoriesOf(t, f.serve(t, f.request(actor, "GET",
+			"/api/closings/cash-categories", "")))
+		if len(categories) != len(want) {
+			t.Fatalf("the list states %d motives, want %d: %+v", len(categories), len(want), categories)
+		}
+		for index, label := range want {
+			if categories[index].Label != label || categories[index].ID < 1 {
+				t.Fatalf("the list must be the seed in order: got %+v want %v", categories, want)
+			}
+		}
+		// The escape valve is the last option of the list (S2).
+		if last := categories[len(categories)-1].Label; last != "Otros gastos" {
+			t.Fatalf("the escape valve must be the last option, got %q", last)
+		}
+	}
+	// The read is not anonymous and it is a read: no query, one method.
+	f.refused(t, f.request(0, "GET", "/api/closings/cash-categories", ""), 401,
+		`{"error":"unauthenticated"}`)
+	f.refused(t, f.request(2, "GET", "/api/closings/cash-categories?page=1", ""), 400,
+		`{"error":"invalid_request"}`)
+	w := f.serve(t, f.request(2, "POST", "/api/closings/cash-categories", ""))
+	closingFailureBody(t, w, 405, `{"error":"method_not_allowed"}`)
+	if allow := w.Header().Get("Allow"); allow != "GET" {
+		t.Fatalf("a GET-only route must advertise GET, got %q", allow)
+	}
+	// An archived motive stops being offered (S8), and the expenses that already name it keep their own
+	// copy of the label it had.
+	if _, err := f.p.Exec(f.ctx, `UPDATE branch_cash_categories SET retired_at=now()
+ WHERE label='Agua'`); err != nil {
+		t.Fatalf("a motive must be archivable: %v", err)
+	}
+	categories := closingCashCategoriesOf(t, f.serve(t, f.request(2, "GET",
+		"/api/closings/cash-categories", "")))
+	if len(categories) != len(want)-1 {
+		t.Fatalf("an archived motive must not be offered: %+v", categories)
+	}
+	for _, category := range categories {
+		if category.Label == "Agua" {
+			t.Fatal("an archived motive must not be offered")
+		}
+	}
+}
+
+// TestClosingsExpenseMotiveOnTheDrawer pins S3, S4 and S8 over HTTP: the motive of an expense is
+// mandatory and comes from the closed list, the note beside it is optional, no other kind states a
+// motive, and the book publishes the motive and the label the row kept. The freeze of a branch answers
+// first, exactly as it does for every other movement of the till (LC001 before LC033).
+func TestClosingsExpenseMotiveOnTheDrawer(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo"}`)
+
+	// An expense without a motive names what is missing, before anything is written.
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"10.00","description":"Flete"}`), 400,
+		`{"error":"category_required"}`)
+	// A motive the list does not offer is not an option of the screen.
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"10.00","description":"Flete","category_id":999999}`), 400,
+		`{"error":"category_unknown"}`)
+	// Only an expense states a motive (S3, S4): the contribution and the collection name none.
+	for _, kind := range []string{"aporte", "recaudacion"} {
+		f.refused(t, f.request(2, "POST", "/api/closings/cash-movements", fmt.Sprintf(
+			`{"kind":%q,"amount":"10.00","description":"Movimiento de la caja","category_id":1}`,
+			kind)), 400, `{"error":"category_not_applicable"}`)
+	}
+	// A body whose motive is not a positive integer is malformed, never a motive.
+	for _, body := range []string{
+		`{"kind":"gasto","amount":"10.00","description":"Flete","category_id":null}`,
+		`{"kind":"gasto","amount":"10.00","description":"Flete","category_id":"1"}`,
+		`{"kind":"gasto","amount":"10.00","description":"Flete","category_id":0}`,
+		`{"kind":"gasto","amount":"10.00","description":"Flete","category_id":-1}`,
+		`{"kind":"gasto","amount":"10.00","description":"Flete","category_id":1.5}`,
+		`{"amount":"10.00","description":"Flete","category_id":1}`,
+	} {
+		f.refused(t, f.request(2, "POST", "/api/closings/cash-movements", body), 400,
+			`{"error":"invalid_request"}`)
+	}
+	// The expense route of the same till states the same rule (S3): it writes a gasto, so it names the
+	// motive and its note is optional.
+	f.refused(t, f.request(2, "POST", "/api/closings/expenses",
+		`{"amount":"10.00","description":"Flete"}`), 400, `{"error":"category_required"}`)
+	f.refused(t, f.request(2, "POST", "/api/closings/expenses",
+		`{"amount":"10.00","description":"Flete","category_id":999999}`), 400,
+		`{"error":"category_unknown"}`)
+
+	// An expense with an offered motive and no note at all is a complete expense (S3).
+	gasto := closingCashMovementReply(t, f.serve(t, f.request(2, "POST",
+		"/api/closings/cash-movements", `{"kind":"gasto","amount":"10.00","category_id":2}`)), 201,
+		closingCashMovementKeys)
+	if gasto.Kind != "gasto" || gasto.Amount != "10.00" || gasto.Description != "" {
+		t.Fatalf("the expense is the row the branch stated: %+v", gasto)
+	}
+	expense := closingExpenseWire(t, f.serve(t, f.request(2, "POST", "/api/closings/expenses",
+		`{"amount":"5.00","category_id":3}`)), 201)
+	if expense.Amount != "5.00" || expense.Description != "" || expense.Kind != "gasto" {
+		t.Fatalf("the expense route records the same shape: %+v", expense)
+	}
+
+	// The book publishes the motive of every expense and the label it had, and null in both on the
+	// kinds that state none (S8).
+	if w := f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"5.00","description":"Cambio para el cajón"}`)); w.Code != 201 {
+		t.Fatalf("the contribution must be recorded: %d %s", w.Code, w.Body.String())
+	}
+	var book closingCashLedgerWire
+	closingCashWire(t, f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", "")), 200,
+		closingCashLedgerKeys, &book)
+	// The expectation of the window is the drawer's own arithmetic: 100.00 inherited, 15.00 paid out
+	// and 5.00 in (S9).
+	if book.Opening != "100.00" || book.Effective != "-10.00" || book.Expected != "90.00" {
+		t.Fatalf("the motive moves no money: %+v", book)
+	}
+	seen := 0
+	for _, movement := range book.Movements {
+		switch movement.ID {
+		case gasto.ID:
+			seen++
+			if movement.CategoryID == nil || *movement.CategoryID != 2 || movement.CategoryLabel == nil ||
+				*movement.CategoryLabel != "Internet" {
+				t.Fatalf("the expense publishes its motive and its label: %+v", movement)
+			}
+		case expense.ID:
+			seen++
+			if movement.CategoryID == nil || *movement.CategoryID != 3 ||
+				movement.CategoryLabel == nil || *movement.CategoryLabel != "Energía eléctrica" {
+				t.Fatalf("the expense of the other route publishes its motive too: %+v", movement)
+			}
+		default:
+			// The contribution of this window names no motive, so it publishes null in both.
+			if movement.Kind != "aporte" {
+				continue
+			}
+			seen++
+			if movement.CategoryID != nil || movement.CategoryLabel != nil {
+				t.Fatalf("a movement of the till that names no motive publishes null in both: %+v",
+					movement)
+			}
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("the book must publish the three rows of the window: %+v", book.Movements)
+	}
+
+	// A frozen branch answers the freeze before the drawer and before the catalogue, exactly like the
+	// expense of the same till (S9). The body itself is judged first, so a request that states no motive
+	// is answered as the malformed body it is: the surface never lets a shape it can see reach a branch
+	// that is being counted.
+	f.open(t, 2)
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"1.00","description":"Flete"}`), 400,
+		`{"error":"category_required"}`)
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"1.00","description":"Flete","category_id":1}`), 409,
+		`{"error":"branch_frozen"}`)
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"1.00","description":"Flete","category_id":999999}`), 409,
+		`{"error":"branch_frozen"}`)
 }

@@ -753,7 +753,7 @@ func TestT5BranchFundsLoadsBothEnvelopes(t *testing.T) {
 	}
 	// S6: the branch is not frozen and a sale-free day can still be recorded by its own account.
 	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,amount,
-         description,created_by_account_id) VALUES(2,'gasto',150.00,'Gasto del dia',2)`); err != nil {
+         description,category_id,created_by_account_id) VALUES(2,'gasto',150.00,'Gasto del dia',1,2)`); err != nil {
 		t.Fatalf("the branch must keep operating after a load: %v", err)
 	}
 	if rows = f.balances(); rows[0].CashBalance != "4850.00" {
@@ -791,7 +791,7 @@ func TestT5BranchBalanceIsTheDrawersExpectation(t *testing.T) {
 		t.Fatalf("the branch must be able to spend its fund: %v", err)
 	}
 	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,amount,
-         description,created_by_account_id) VALUES(2,'gasto',250.00,'Gasto del dia',2)`); err != nil {
+         description,category_id,created_by_account_id) VALUES(2,'gasto',250.00,'Gasto del dia',1,2)`); err != nil {
 		t.Fatalf("the branch must be able to pay an expense: %v", err)
 	}
 	rows := f.balances()

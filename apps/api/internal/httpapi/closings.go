@@ -76,6 +76,10 @@ const (
 	// operational till reads (S4, S8). It is the second read of this contract that accepts a query of
 	// its own: the two instants of the window it asks for.
 	closingsCashLedgerPath = closingsCollectionPath + "/cash-ledger"
+	// closingsCashCategoriesPath is the closed list of motives an expense is recorded with (S2, S5): the
+	// options the screen offers, global to every branch and seeded by the database. It is a literal path
+	// beside `{id}`, so it is never read as a settlement id.
+	closingsCashCategoriesPath = closingsCollectionPath + "/cash-categories"
 	// closingsCorrectionsPath is the corrections of one closed settlement: the warehouse appends one
 	// and the branch decides it, exactly like a round of a live settlement (S16). `corrections` is a
 	// literal suffix of the settlement id, so it is never read as one.
@@ -172,6 +176,7 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux.HandleFunc(closingsCashMovementsPath, a.closingCashMovements(store))
 	mux.HandleFunc(closingsCashCorrectionsPath, a.closingCashCorrections(store))
 	mux.HandleFunc(closingsCashLedgerPath, a.closingCashLedger(store))
+	mux.HandleFunc(closingsCashCategoriesPath, a.closingCashCategories(store))
 	mux.HandleFunc(closingsCorrectionsPath, a.closingCorrections(store))
 	mux.HandleFunc(closingsCorrectionDecisionPath, a.closingCorrectionDecision(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/count", a.closingCount(store))
@@ -295,6 +300,19 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// The till of an expense is the branch's own, so the warehouse recording one is not the
 		// actor of this operation (LC011).
 		failure(w, 403, "forbidden")
+	case errors.Is(err, closings.ErrCategoryRequired):
+		// An expense names the motive of the closed list and this request names none (LC033, S3). It is a
+		// request the branch completes by picking an option, so the code names the missing fact instead of
+		// the generic malformed body.
+		failure(w, 400, "category_required")
+	case errors.Is(err, closings.ErrCategoryUnknown):
+		// The motive is not one the list offers, or it is archived (LC033, S3, S8): neither is an option of
+		// the screen, so the request is answered with the fact the operator acts on.
+		failure(w, 400, "category_unknown")
+	case errors.Is(err, closings.ErrCategoryNotApplicable):
+		// A motive on a kind that states none (LC033, S3, S4): only an expense is recorded with one, so the
+		// contribution and the collection are answered with their own code.
+		failure(w, 400, "category_not_applicable")
 	case errors.Is(err, closings.ErrInvalid):
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, closings.ErrForbidden):
@@ -808,105 +826,160 @@ func closingMaterialLines(d *json.Decoder) ([]closings.MaterialCounted, error) {
 	return lines, nil
 }
 
-// decodeClosingExpense reads the expense of a branch: the amount it paid out of its till and what
-// for, and nothing else. The branch is the session's own account and the instant is the database's,
-// so neither is part of this body: a caller can never record an expense in another till nor
-// backdate one into a settled period.
-func decodeClosingExpense(r *http.Request) (closings.Money, string, error) {
+// closingExpenseInput is the body of one expense of the branch's own till, judged before the store is
+// touched: the amount it paid out, the motive of the closed list it names and the optional note beside
+// it (S3).
+type closingExpenseInput struct {
+	Amount      closings.Money
+	CategoryID  *int64
+	Description string
+}
+
+// decodeClosingExpense reads the expense of a branch: the amount it paid out of its till, the motive of
+// the closed list and the note beside it, and nothing else. The branch is the session's own account and
+// the instant is the database's, so neither is part of this body: a caller can never record an expense
+// in another till nor backdate one into a settled period.
+//
+// The motive is mandatory and the note is not (S3): what the money paid for is the motive, and the note
+// is the short clarification of an expense whose motive is "Otros gastos" or whose text adds something
+// the motive cannot say. A request that names no motive is answered with that fact instead of the
+// generic malformed body, so the screen can state what is missing.
+func decodeClosingExpense(r *http.Request) (closingExpenseInput, error) {
 	d, err := closingDecoder(r)
 	if err != nil || !closingDelimiter(d, '{') {
-		return "", "", closings.ErrInvalid
+		return closingExpenseInput{}, closings.ErrInvalid
 	}
-	var amount closings.Money
-	var description string
+	input := closingExpenseInput{}
 	seen := map[string]bool{}
 	for d.More() {
 		key, err := closingString(d)
 		if err != nil || seen[key] {
-			return "", "", closings.ErrInvalid
+			return closingExpenseInput{}, closings.ErrInvalid
 		}
 		seen[key] = true
 		switch key {
 		case "amount":
-			amount, err = closingAmount(d)
+			input.Amount, err = closingAmount(d)
+		case "category_id":
+			var motive int64
+			if motive, err = closingID(d, math.MaxInt64); err == nil {
+				input.CategoryID = &motive
+			}
 		case "description":
-			description, err = closingString(d)
+			input.Description, err = closingString(d)
 		default:
-			return "", "", closings.ErrInvalid
+			return closingExpenseInput{}, closings.ErrInvalid
 		}
 		if err != nil {
-			return "", "", closings.ErrInvalid
+			return closingExpenseInput{}, closings.ErrInvalid
 		}
 	}
-	// Both keys are mandatory: an expense states its amount and what it was for.
-	if len(seen) != 2 || !closingDelimiter(d, '}') {
-		return "", "", closings.ErrInvalid
+	// The amount is mandatory and there is no other key: the motive and the note are read above.
+	if !seen["amount"] || !closingDelimiter(d, '}') {
+		return closingExpenseInput{}, closings.ErrInvalid
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return "", "", closings.ErrInvalid
+		return closingExpenseInput{}, closings.ErrInvalid
 	}
-	// The description is persisted verbatim, so it is exactly the canonical text the ledger admits:
-	// trimmed, never blank and inside its own bound.
-	canonical, ok := closings.CanonicalDescription(description)
-	if !ok || canonical != description {
-		return "", "", closings.ErrInvalid
+	if input.CategoryID == nil {
+		return closingExpenseInput{}, closings.ErrCategoryRequired
 	}
-	return amount, canonical, nil
+	// The note is persisted verbatim, so it is exactly the canonical text the ledger admits: trimmed,
+	// inside its own bound and empty when the branch states none (S3).
+	note, ok := closings.CanonicalNote(input.Description)
+	if !ok || note != input.Description {
+		return closingExpenseInput{}, closings.ErrInvalid
+	}
+	input.Description = note
+	return input, nil
+}
+
+// closingCashMovementInput is the body of one movement of the branch's operational drawer, judged before
+// the store is touched: the kind it states, the amount, the motive an expense names and the text beside
+// it (S3, S4).
+type closingCashMovementInput struct {
+	Kind        string
+	Amount      closings.Money
+	CategoryID  *int64
+	Description string
 }
 
 // decodeClosingCashMovement reads one movement the branch writes in its own operational drawer: the kind
-// it states, the amount and what for, and nothing else. The branch is the session's own account and the
-// instant is the database's, so neither is part of this body: a caller records no movement in another
-// drawer and backdates none into a settled period (S12).
-func decodeClosingCashMovement(r *http.Request) (string, closings.Money, string, error) {
+// it states, the amount, the motive of an expense and what it was for, and nothing else. The branch is the
+// session's own account and the instant is the database's, so neither is part of this body: a caller
+// records no movement in another drawer and backdates none into a settled period (S12).
+//
+// The four keys are read per kind, and the rule is the contract's own (S3, S4): an expense names a motive
+// of the closed list and its note is optional, because what the money paid for is the motive; the
+// contribution and the collection name no motive and still say what they are for. A motive where the kind
+// does not state one is refused by name instead of being ignored, so the screen can never offer it.
+func decodeClosingCashMovement(r *http.Request) (closingCashMovementInput, error) {
 	d, err := closingDecoder(r)
 	if err != nil || !closingDelimiter(d, '{') {
-		return "", "", "", closings.ErrInvalid
+		return closingCashMovementInput{}, closings.ErrInvalid
 	}
-	var kind string
-	var amount closings.Money
-	var description string
+	input := closingCashMovementInput{}
 	seen := map[string]bool{}
 	for d.More() {
 		key, err := closingString(d)
 		if err != nil || seen[key] {
-			return "", "", "", closings.ErrInvalid
+			return closingCashMovementInput{}, closings.ErrInvalid
 		}
 		seen[key] = true
 		switch key {
 		case "kind":
-			kind, err = closingString(d)
+			input.Kind, err = closingString(d)
 		case "amount":
-			amount, err = closingAmount(d)
+			input.Amount, err = closingAmount(d)
+		case "category_id":
+			var motive int64
+			if motive, err = closingID(d, math.MaxInt64); err == nil {
+				input.CategoryID = &motive
+			}
 		case "description":
-			description, err = closingString(d)
+			input.Description, err = closingString(d)
 		default:
-			return "", "", "", closings.ErrInvalid
+			return closingCashMovementInput{}, closings.ErrInvalid
 		}
 		if err != nil {
-			return "", "", "", closings.ErrInvalid
+			return closingCashMovementInput{}, closings.ErrInvalid
 		}
 	}
-	// The three keys are mandatory and there is no other: a movement states its kind, its amount and what
-	// it was for.
-	if len(seen) != 3 || !closingDelimiter(d, '}') {
-		return "", "", "", closings.ErrInvalid
+	// The kind and the amount are mandatory and there is no other key: the motive and the text are read
+	// above and are judged per kind below.
+	if !seen["kind"] || !seen["amount"] || !closingDelimiter(d, '}') {
+		return closingCashMovementInput{}, closings.ErrInvalid
 	}
 	if _, err := d.Token(); err != io.EOF {
-		return "", "", "", closings.ErrInvalid
+		return closingCashMovementInput{}, closings.ErrInvalid
 	}
 	// A correction is not a direction of the drawer and is never recorded here: it answers another
 	// movement and has a route of its own (S6).
-	if !metricsMovementKindValid(kind) {
-		return "", "", "", closings.ErrInvalid
+	if !metricsMovementKindValid(input.Kind) {
+		return closingCashMovementInput{}, closings.ErrInvalid
 	}
-	// The description is persisted verbatim, so it is exactly the canonical text the ledger admits:
-	// trimmed, never blank and inside its own bound.
-	canonical, ok := closings.CanonicalDescription(description)
-	if !ok || canonical != description {
-		return "", "", "", closings.ErrInvalid
+	if input.Kind == "gasto" {
+		if input.CategoryID == nil {
+			return closingCashMovementInput{}, closings.ErrCategoryRequired
+		}
+		note, ok := closings.CanonicalNote(input.Description)
+		if !ok || note != input.Description {
+			return closingCashMovementInput{}, closings.ErrInvalid
+		}
+		input.Description = note
+		return input, nil
 	}
-	return kind, amount, canonical, nil
+	if input.CategoryID != nil {
+		return closingCashMovementInput{}, closings.ErrCategoryNotApplicable
+	}
+	// The text is persisted verbatim, so it is exactly the canonical text the ledger admits: trimmed,
+	// never blank and inside its own bound.
+	canonical, ok := closings.CanonicalDescription(input.Description)
+	if !ok || canonical != input.Description {
+		return closingCashMovementInput{}, closings.ErrInvalid
+	}
+	input.Description = canonical
+	return input, nil
 }
 
 // decodeClosingCashCorrection reads the compensating movement of one row of the branch's book: the
@@ -1241,21 +1314,39 @@ type closingCashMovementDTO struct {
 	CorrectsID         *int64 `json:"corrects_id,omitempty"`
 }
 
+// closingCashCategoryDTO is one motive of the closed list an expense is recorded with (S2, S5): the
+// identity the row states and the label the screen offers, which is what the branch picks and what the
+// row keeps a copy of (S8).
+type closingCashCategoryDTO struct {
+	ID    int64  `json:"id"`
+	Label string `json:"label"`
+}
+
+// closingCashCategoriesDTO is that list, in the order the database states: the options of the screen and
+// nothing else, so a reader never has to know which of them is first.
+type closingCashCategoriesDTO struct {
+	Categories []closingCashCategoryDTO `json:"categories"`
+}
+
 // closingCashLedgerMovementDTO is one row of the book as the screen reads it: the kind the branch
 // recorded, the kind whose direction the row carries -- its own, or the one it answers when it is a
 // correction -- the positive amount it stated and the effect signed the way the drawer moves (S4, S13).
 // `effective` is the only signed money of this contract and it is published as the decimal text it is, so
-// a movement out of the drawer starts with `-`.
+// a movement out of the drawer starts with `-`. `category_id` and `category_label` are the motive of an
+// expense and the copy of the label it had; both are JSON null on every row that names none, so a reader
+// of the book always finds the keys and never has to guess (S3, S8).
 type closingCashLedgerMovementDTO struct {
-	ID                 int64  `json:"id"`
-	Kind               string `json:"kind"`
-	EffectKind         string `json:"effect_kind"`
-	Amount             string `json:"amount"`
-	Effective          string `json:"effective"`
-	Description        string `json:"description"`
-	OccurredAt         string `json:"occurred_at"`
-	CreatedByAccountID int64  `json:"created_by_account_id"`
-	CorrectsID         *int64 `json:"corrects_id"`
+	ID                 int64   `json:"id"`
+	Kind               string  `json:"kind"`
+	EffectKind         string  `json:"effect_kind"`
+	Amount             string  `json:"amount"`
+	Effective          string  `json:"effective"`
+	Description        string  `json:"description"`
+	OccurredAt         string  `json:"occurred_at"`
+	CreatedByAccountID int64   `json:"created_by_account_id"`
+	CorrectsID         *int64  `json:"corrects_id"`
+	CategoryID         *int64  `json:"category_id"`
+	CategoryLabel      *string `json:"category_label"`
 }
 
 // closingCashLedgerDTO is the book of the branch's operational drawer over one window (S4, S8): the amount
@@ -1475,7 +1566,13 @@ func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
 	if !ok {
 		return unavailable()
 	}
-	description, ok := closings.CanonicalDescription(expense.Description)
+	// The text of a row of this list is the note of the expense, which is optional because its motive
+	// states what the money paid for (061, S3), and the mandatory description of the correction that
+	// answers it.
+	description, ok := closings.CanonicalNote(expense.Description)
+	if expense.Kind != "gasto" {
+		description, ok = closings.CanonicalDescription(expense.Description)
+	}
 	// A canonical amount of exactly "0.00" is the only non-positive amount canonical text can
 	// hold, and an expense is never zero.
 	if !ok || description != expense.Description || amount == "0.00" || expense.ID < 1 ||
@@ -1518,7 +1615,12 @@ func closingCashMovementRecord(movement closings.Expense) (closingCashMovementDT
 	if !ok {
 		return unavailable()
 	}
-	description, ok := closings.CanonicalDescription(movement.Description)
+	// The text of the row is the note of an expense, which is optional because its motive states what the
+	// money paid for, and the mandatory description of every other kind (061, S3).
+	description, ok := closings.CanonicalNote(movement.Description)
+	if movement.Kind != "gasto" {
+		description, ok = closings.CanonicalDescription(movement.Description)
+	}
 	// A canonical amount of exactly "0.00" is the only non-positive amount canonical text can hold, and a
 	// movement of the book always moves the drawer.
 	if !ok || description != movement.Description || amount == "0.00" || movement.ID < 1 ||
@@ -1547,6 +1649,29 @@ func closingCashMovementRecord(movement closings.Expense) (closingCashMovementDT
 	return closingCashMovementDTO{ID: movement.ID, BranchLocationID: movement.BranchID,
 		Kind: movement.Kind, Amount: amount, Description: description, OccurredAt: occurred,
 		CreatedByAccountID: movement.CreatedByAccountID, CorrectsID: movement.CorrectsID}, nil
+}
+
+// closingCashCategoriesRecord admits only a list this domain could have written: every option states a
+// positive identity and a label that is exactly the canonical text the catalogue stores, and no option is
+// stated twice. The list is the whole answer, so an empty catalogue is published as an empty list instead
+// of as a missing key (S2, S5).
+func closingCashCategoriesRecord(categories []closings.CashCategory) (closingCashCategoriesDTO, error) {
+	record := closingCashCategoriesDTO{Categories: make([]closingCashCategoryDTO, 0, len(categories))}
+	seenID := make(map[int64]bool, len(categories))
+	seenLabel := make(map[string]bool, len(categories))
+	for _, category := range categories {
+		label, ok := closings.CanonicalLabel(category.Label)
+		if !ok || label != category.Label || category.ID < 1 {
+			return closingCashCategoriesDTO{}, closings.ErrUnavailable
+		}
+		if seenID[category.ID] || seenLabel[category.Label] {
+			return closingCashCategoriesDTO{}, closings.ErrUnavailable
+		}
+		seenID[category.ID], seenLabel[category.Label] = true, true
+		record.Categories = append(record.Categories, closingCashCategoryDTO{ID: category.ID,
+			Label: category.Label})
+	}
+	return record, nil
 }
 
 // closingCashLedgerRecord admits only a complete book of one window: the two instants it describes, its
@@ -1628,7 +1753,12 @@ func closingCashLedgerMovementRecord(movement closings.CashMovement) (closingCas
 	if !ok {
 		return closingCashLedgerMovementDTO{}, false
 	}
-	description, ok := closings.CanonicalDescription(movement.Description)
+	// The text of a row is the note of an expense, optional because its motive states what the money paid
+	// for (061, S3), and the mandatory description of every other kind of the book.
+	description, ok := closings.CanonicalNote(movement.Description)
+	if movement.Kind != "gasto" {
+		description, ok = closings.CanonicalDescription(movement.Description)
+	}
 	if !ok || description != movement.Description || movement.ID < 1 ||
 		movement.CreatedByAccountID < 1 || !closingCashMovementKind(movement.Kind) ||
 		!metricsMovementKindValid(movement.EffectKind) {
@@ -1637,6 +1767,19 @@ func closingCashLedgerMovementRecord(movement closings.CashMovement) (closingCas
 	if (movement.Kind == "correccion") != (movement.CorrectsID != nil) ||
 		(movement.CorrectsID != nil && *movement.CorrectsID < 1) {
 		return closingCashLedgerMovementDTO{}, false
+	}
+	// The motive of the row is one pair that travels together, names an identity and is stated by an
+	// expense only, exactly as the ledger of 061 admits it (S3, S8): a row of any other shape is one this
+	// domain did not write, so it is never published as a book.
+	if (movement.CategoryID == nil) != (movement.CategoryLabel == nil) ||
+		(movement.CategoryID != nil && (*movement.CategoryID < 1 || movement.Kind != "gasto")) {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	if movement.CategoryLabel != nil {
+		if label, ok := closings.CanonicalLabel(*movement.CategoryLabel); !ok ||
+			label != *movement.CategoryLabel {
+			return closingCashLedgerMovementDTO{}, false
+		}
 	}
 	cents, ok := closings.Signed(effective).Cents()
 	if !ok || cents == 0 {
@@ -1653,7 +1796,8 @@ func closingCashLedgerMovementRecord(movement closings.CashMovement) (closingCas
 	return closingCashLedgerMovementDTO{ID: movement.ID, Kind: movement.Kind,
 		EffectKind: movement.EffectKind, Amount: amount, Effective: effective,
 		Description: description, OccurredAt: occurred,
-		CreatedByAccountID: movement.CreatedByAccountID, CorrectsID: movement.CorrectsID}, true
+		CreatedByAccountID: movement.CreatedByAccountID, CorrectsID: movement.CorrectsID,
+		CategoryID: movement.CategoryID, CategoryLabel: movement.CategoryLabel}, true
 }
 
 // closingCashMovementKind admits the four kinds of the branch's book: the three the branch records as
@@ -2694,12 +2838,13 @@ func (a *API) closingExpenses(store *closings.Store) http.HandlerFunc {
 		if !a.closingMutation(w, r) {
 			return
 		}
-		amount, description, err := decodeClosingExpense(r)
+		body, err := decodeClosingExpense(r)
 		if err != nil {
 			closingFailure(w, err)
 			return
 		}
-		expense, err := store.RecordExpense(r.Context(), actor, amount, description)
+		expense, err := store.RecordExpense(r.Context(), actor, body.Amount, body.Description,
+			body.CategoryID)
 		if err != nil {
 			closingFailure(w, err)
 			return
@@ -2729,12 +2874,13 @@ func (a *API) closingCashMovements(store *closings.Store) http.HandlerFunc {
 		if !a.closingMutation(w, r) {
 			return
 		}
-		kind, amount, description, err := decodeClosingCashMovement(r)
+		body, err := decodeClosingCashMovement(r)
 		if err != nil {
 			closingFailure(w, err)
 			return
 		}
-		movement, err := store.RecordCashMovement(r.Context(), actor, kind, amount, description)
+		movement, err := store.RecordCashMovement(r.Context(), actor, body.Kind, body.Amount,
+			body.Description, body.CategoryID)
 		if err != nil {
 			closingFailure(w, err)
 			return
@@ -2813,6 +2959,36 @@ func (a *API) closingCashLedger(store *closings.Store) http.HandlerFunc {
 			return
 		}
 		record, err := closingCashLedgerRecord(book)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 200, record)
+	}
+}
+
+// closingCashCategories reads the closed list of motives an expense is recorded with (S2, S5): the
+// options the screen offers, in the order the database states, global to every branch. It is a read of
+// the catalogue and never of the branch's money, so the branch that spends and the warehouse that
+// administers it read the same list, and an archived motive is not one of them (S8).
+func (a *API) closingCashCategories(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !closingQueryAbsent(w, r) {
+			return
+		}
+		categories, err := store.CashCategories(r.Context(), actor)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingCashCategoriesRecord(categories)
 		if err != nil {
 			closingFailure(w, err)
 			return
