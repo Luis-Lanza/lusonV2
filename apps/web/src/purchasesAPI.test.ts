@@ -328,6 +328,11 @@ describe('purchase error envelopes', () => {
     expect(parsePurchaseError('{"error":"not_found"}', 404)).toBe('not_found');
     expect(parsePurchaseError('{"error":"retry_conflict"}', 409)).toBe('retry_conflict');
     expect(parsePurchaseError('{"error":"already_reversed"}', 409)).toBe('already_reversed');
+    expect(parsePurchaseError('{"error":"branch_frozen"}', 409)).toBe('branch_frozen');
+    // The fund's refusal states what it holds and what the document asks (S4): it is admitted with
+    // exactly those two quantities, so the branch reads the gap instead of an unreadable response.
+    expect(parsePurchaseError('{"error":"fund_insufficient","balance":"50.00","requested":"1200.00"}',
+      409)).toBe('fund_insufficient');
     expect(parsePurchaseError('{"error":"service_unavailable"}', 503)).toBe('service_unavailable');
   });
 
@@ -336,6 +341,13 @@ describe('purchase error envelopes', () => {
     ['an unknown code', '{"error":"conflict"}', 409],
     ['an unlisted status', '{"error":"invalid_request"}', 500],
     ['an envelope with more than one key', '{"error":"forbidden","detail":"x"}', 403],
+    ['the fund refusal without its quantities', '{"error":"fund_insufficient"}', 409],
+    ['the fund refusal with one quantity',
+      '{"error":"fund_insufficient","balance":"50.00"}', 409],
+    ['the fund refusal with a non canonical amount',
+      '{"error":"fund_insufficient","balance":"50","requested":"1200.00"}', 409],
+    ['the fund refusal with an extra key',
+      '{"error":"fund_insufficient","balance":"50.00","requested":"1200.00","x":"y"}', 409],
     ['a non JSON body', '<html>proxy</html>', 503],
   ])('rejects %s', (_, raw, status) => {
     expect(() => parsePurchaseError(raw, status)).toThrow('Respuesta inválida del servidor.');
@@ -345,7 +357,8 @@ describe('purchase error envelopes', () => {
     for (const codes of purchaseAdmittedErrors.values()) {
       for (const code of codes) expect(purchaseErrorMessages[code]).toMatch(/[áéíóúñ]/i);
     }
-    for (const code of ['invalid_request', 'forbidden', 'not_found', 'retry_conflict', 'already_reversed'] as const) {
+    for (const code of ['invalid_request', 'forbidden', 'not_found', 'retry_conflict', 'already_reversed',
+      'fund_insufficient', 'branch_frozen'] as const) {
       expect(purchaseFailureIsDefinite(code)).toBe(true);
     }
     for (const code of ['service_unavailable', 'invalid_response', 'network', 'aborted'] as const) {
