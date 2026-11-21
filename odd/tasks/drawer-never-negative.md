@@ -76,15 +76,20 @@ spend money the drawer does not hold. Today nothing stops it — only `amount > 
 
 ## Slices
 
-- **S1 (commit `fea4058`)** — the rule and its contract, backend only: migration 060, the migrations
+- **S1 (commit `b6467d5`)** — the rule and its contract, backend only: migration 060, the migrations
   tests, the plan test, both writers, the published refusal, the funded fixtures, the docs and this
   document. ~1135 authored lines, above the usual review slice on purpose: it cannot be split without
   leaving a red intermediate commit. A migration that bounds the admission turns `internal/closings`
   and `internal/httpapi` red until the store maps `LC032` and the fixtures fund their till, so
   "migration" and "consumer" are one unit here. The two halves were reviewed by two independent
   verifiers instead of by slicing.
-- **S2** — the screen: `cashAPI.ts`, `cashAPI.test.ts`, `Cash.tsx`, `Cash.test.tsx`. Green on its own
-  because the web suite mocks the transport.
+- **S2 (commit `8fdbc08`)** — the screen: `cashAPI.ts`, `cashAPI.test.ts`, `Cash.tsx`, `Cash.test.tsx`.
+  Green on its own because the web suite mocks the transport.
+
+Delivery: the branch `feat/drawer-never-negative` holds both slices and is **not pushed**. Push, PR
+and merge are the human's decision. Final state of the suites at `8fdbc08`: `migrations` ok (105.9s),
+`closings` ok (71.0s), `httpapi` ok (267.1s), web 4484 passed / 1 skipped, `gofmt -l` and
+`tsc --noEmit` clean.
 
 ## Log
 
