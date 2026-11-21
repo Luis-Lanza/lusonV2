@@ -287,6 +287,23 @@ describe('refusals of the drawer', () => {
     expect(() => parseCashError(JSON.stringify({ error: 'settlement_live' }), 409)).toThrow();
     expect(() => parseCashError(JSON.stringify({ error: 'branch_frozen', excess: '1.00' }), 409)).toThrow();
     expect(() => parseCashError('{"error":"branch_frozen"}', 200)).toThrow();
+    // The bound of the till is the one refusal that states two quantities beside its code (S4): it is
+    // admitted with them, and refused whole when one of them is not the canonical money text.
+    expect(parseCashError('{"error":"drawer_insufficient","balance":"50.00","requested":"1200.00"}',
+      409)).toBe('drawer_insufficient');
+    expect(() => parseCashError('{"error":"drawer_insufficient","balance":"50.00"}', 409)).toThrow();
+    expect(() => parseCashError(
+      '{"error":"drawer_insufficient","balance":"50","requested":"1200.00"}', 409)).toThrow();
+    // A drawer that is already negative states its balance with a sign, and the refusal is read whole:
+    // the operator reads the number the rule saw instead of an unreadable envelope.
+    expect(parseCashError('{"error":"drawer_insufficient","balance":"-50.00","requested":"1200.00"}',
+      409)).toBe('drawer_insufficient');
+    // The sign is optional and never doubled or spaced, and the decimals are the canonical two.
+    for (const balance of ['- 50.00', '--50.00', '+50.00', '-50', '-.50']) {
+      expect(() => parseCashError(
+        `{"error":"drawer_insufficient","balance":"${balance}","requested":"1200.00"}`, 409))
+        .toThrow();
+    }
   });
 
   it('carries the refusal as the error of the call, with the status it answered', async () => {

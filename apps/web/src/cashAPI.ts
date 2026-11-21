@@ -31,6 +31,10 @@ export const cashLedgerMovements = 500;
 /** `numeric(12,2)` in cents: the largest amount the database can publish. */
 const cashMaxMoneyCents = 999_999_999_999n;
 const cashMaxID = Number.MAX_SAFE_INTEGER;
+/** The canonical two-decimal text an amount of money is stated with, both ways: what is written and what
+ * a refusal of the till answers back. A balance is a signed quantity, so its text may carry one leading
+ * minus -- a drawer that is already negative states it that way -- and nothing else is admitted. */
+const canonicalStatedMoney = /^-?\d{1,10}\.\d{2}$/;
 
 /** Whether a kind puts money into the drawer. A gasto and a recaudación take it out. */
 export function cashKindMovesIn(kind: CashWrittenKind): boolean {
@@ -38,14 +42,14 @@ export function cashKindMovesIn(kind: CashWrittenKind): boolean {
 }
 
 export type CashErrorCode = 'invalid_request' | 'correction_target_invalid' | 'forbidden'
-  | 'branch_frozen' | 'correction_exceeds' | 'service_unavailable'
+  | 'branch_frozen' | 'correction_exceeds' | 'drawer_insufficient' | 'service_unavailable'
   | 'invalid_response' | 'network' | 'aborted';
 
 /** One admitted refusal per HTTP status; nothing else may reach the UI. */
 export const cashAdmittedErrors: ReadonlyMap<number, readonly CashErrorCode[]> = new Map([
   [400, ['invalid_request', 'correction_target_invalid']],
   [403, ['forbidden']],
-  [409, ['branch_frozen', 'correction_exceeds']],
+  [409, ['branch_frozen', 'correction_exceeds', 'drawer_insufficient']],
   [503, ['service_unavailable']],
 ]);
 
@@ -56,6 +60,7 @@ export const cashErrorMessages: Record<CashErrorCode, string> = {
   forbidden: 'No podés mover la caja de esta sucursal desde esta cuenta. No se registró nada.',
   branch_frozen: 'La sucursal está congelada por una rendición en curso: el cajón no se mueve hasta que la rendición se cierre. No se registró nada.',
   correction_exceeds: 'La corrección supera lo que todavía falta corregir de ese movimiento. No se registró nada.',
+  drawer_insufficient: 'La caja no tiene ese dinero: el movimiento gasta más de lo que hay en el cajón. Gastá menos o registrá un aporte por el efectivo que tenés. No se registró nada.',
   service_unavailable: 'El servicio no está disponible. No pudimos confirmar el movimiento: no sabemos si se registró.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el movimiento.',
   network: 'No se pudo conectar con el servidor. No pudimos confirmar el movimiento.',
@@ -453,10 +458,33 @@ export function cashLedgerPath(from: string | null = null, to: string | null = n
 export function parseCashError(raw: string, status: number): CashErrorCode {
   const admitted = cashAdmittedErrors.get(status);
   if (!admitted) return invalidResponse();
-  const envelope = fields(decode(raw), ['error']);
+  const parsed = decode(raw);
+  // The bound of the till is the one refusal that states two quantities beside its code (S4). Its
+  // envelope is admitted with them, and only with them: a refusal a client cannot read whole is not a
+  // refusal this domain wrote. The balance is a signed quantity, because a drawer that is already
+  // negative states that negative instead of hiding it.
+  if (statedCode(parsed) === 'drawer_insufficient' && admitted.includes('drawer_insufficient')) {
+    const envelope = fields(parsed, ['error', 'balance', 'requested']);
+    if (typeof envelope.balance !== 'string' || !canonicalStatedMoney.test(envelope.balance)
+      || typeof envelope.requested !== 'string' || !canonicalStatedMoney.test(envelope.requested)) {
+      return invalidResponse();
+    }
+    return 'drawer_insufficient';
+  }
+  const envelope = fields(parsed, ['error']);
   const code = envelope.error;
   if (typeof code !== 'string' || !admitted.includes(code as CashErrorCode)) return invalidResponse();
   return code as CashErrorCode;
+}
+
+/** The code a refusal states, read before its envelope is judged whole: the till's refusal carries two
+ * quantities beside it, and the other refusals carry the code alone. */
+function statedCode(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof LosslessNumber) {
+    return null;
+  }
+  const code = (value as Record<string, unknown>).error;
+  return typeof code === 'string' ? code : null;
 }
 
 /** A definite rejection wrote nothing; every other failure leaves the outcome unknown. */
