@@ -698,7 +698,7 @@ func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount M
 		Scan(&expense.ID, &expense.BranchID, &expense.Kind, &stored, &expense.Description,
 			&expense.OccurredAt, &expense.CreatedByAccountID)
 	if err != nil {
-		return Expense{}, mapFailure(ctx, err)
+		return Expense{}, s.cashWriteRefusal(ctx, actor.Location.ID, canonicalAmount, err)
 	}
 	if expense.Amount, err = ParseAmount(stored); err != nil {
 		return Expense{}, ErrUnavailable
@@ -800,7 +800,7 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 		Scan(&movement.ID, &movement.BranchID, &movement.Kind, &stored, &movement.Description,
 			&movement.OccurredAt, &movement.CreatedByAccountID, &movement.CorrectsID)
 	if err != nil {
-		return Expense{}, mapCashCorrectionFailure(ctx, err)
+		return Expense{}, s.cashWriteRefusal(ctx, actor.Location.ID, canonicalAmount, err)
 	}
 	if movement.Amount, err = ParseAmount(stored); err != nil {
 		return Expense{}, ErrUnavailable
@@ -2840,6 +2840,67 @@ func (e *CorrectionExceeds) Error() string {
 
 // Unwrap keeps errors.Is(err, ErrStateConflict) true for the named refusal.
 func (e *CorrectionExceeds) Unwrap() error { return ErrStateConflict }
+
+// DrawerInsufficient is the refusal of a movement the branch's till does not hold (LC032, S1-S4): the
+// amount the movement states would leave the drawer below zero, so the branch states a smaller one or
+// records the cash it is spending. It carries both quantities the operator acts on -- what the till
+// holds and what the movement asked -- and unwraps to ErrStateConflict, so the class is a conflict and
+// never an outage. The balance is a signed quantity, because a till that is already negative publishes
+// that negative the way the database states it.
+type DrawerInsufficient struct {
+	Balance   Signed
+	Requested Money
+}
+
+func (e *DrawerInsufficient) Error() string {
+	return "the branch drawer holds " + string(e.Balance) + " and the movement states " +
+		string(e.Requested)
+}
+
+// Unwrap keeps errors.Is(err, ErrStateConflict) true for the named refusal.
+func (e *DrawerInsufficient) Unwrap() error { return ErrStateConflict }
+
+// drawerRefusal reports the SQLSTATE of the bound 060 places on the branch's till: the movement would
+// spend more than the drawer holds.
+func drawerRefusal(err error) bool {
+	var pg *pgconn.PgError
+	return errors.As(err, &pg) && pg.Code == "LC032"
+}
+
+// drawerBalanceOf reads what the branch's till holds through the one expression the admission reads it
+// with, so the refusal states the number the rule saw instead of a second arithmetic of the window. The
+// number is signed: a drawer that is already below zero -- the one of every instance upgraded from 059,
+// whose movements 060 rewrites in no part -- reads as the negative the database states ("-50.00"), so it
+// is read with the one rule of a signed amount instead of the one a movement is written with.
+func (s *Store) drawerBalanceOf(ctx context.Context, branchID int) (Signed, error) {
+	var stored string
+	if err := s.pool.QueryRow(ctx, `SELECT branch_drawer_expected($1)::text`,
+		int16(branchID)).Scan(&stored); err != nil {
+		return "", mapFailure(ctx, err)
+	}
+	balance := Signed(stored)
+	if _, ok := balance.Cents(); !ok {
+		return "", ErrUnavailable
+	}
+	return balance, nil
+}
+
+// cashWriteRefusal publishes the refusal of one write to the branch's book (S4), and it is the ONE mapping
+// of that refusal: both writers of the book call it, so the two routes cannot drift into publishing the
+// same fact differently. The bound of the till answers with its own refusal, stated with the two
+// quantities the branch acts on -- what the drawer holds, read through the expression the admission read,
+// and what the movement asked -- and every other refusal keeps the mapping of the book's own codes
+// (LC001, LC011, LC030, LC031) with its precedence unchanged.
+func (s *Store) cashWriteRefusal(ctx context.Context, branchID int, requested Money, err error) error {
+	if drawerRefusal(err) {
+		balance, readErr := s.drawerBalanceOf(ctx, branchID)
+		if readErr != nil {
+			return readErr
+		}
+		return &DrawerInsufficient{Balance: balance, Requested: requested}
+	}
+	return mapCashCorrectionFailure(ctx, err)
+}
 
 // mapCashCorrectionFailure publishes the refusal of a movement of the branch's book. The two corrections of
 // this domain are named for the route that acts on them -- a target the book may not answer (LC030) and

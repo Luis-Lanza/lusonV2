@@ -562,6 +562,34 @@ POST /api/closings/cash-movements
   the same till. A refusal writes nothing at all.
 * A movement of the period belongs to no settlement: the settlement that covers it is the one whose
   window `[period_start, cut_at)` contains its instant.
+* The drawer is **never spent below zero**. What it holds is the expectation the screen states — what
+  the last closed settlement left, plus the cash its sales collected since that cut, plus the signed
+  effect of the movements of the window — and a movement whose signed effect would leave that amount
+  negative is refused with its own code and both quantities, so the operator reads the gap instead of
+  a rule (migration 060, `LC032`):
+
+```json
+{"error":"drawer_insufficient","balance":"50.00","requested":"1200.00"}
+```
+
+  The `balance` is a **signed** quantity, published exactly as the database states it, because a drawer
+  can already be below zero — an instance upgraded from 059 keeps the movements it recorded before the
+  bound existed, and 060 rewrites no data — and that drawer states `"-50.00"` instead of refusing the
+  read:
+
+```json
+{"error":"drawer_insufficient","balance":"-50.00","requested":"10.00"}
+```
+
+  Both writers of the book publish it: an expense (`POST /api/closings/expenses`) and a movement of the
+  period (`POST /api/closings/cash-movements`) map the same refusal through one function, so neither
+  route can answer the bound as the `503 service_unavailable` an unmapped code would produce.
+
+  An `aporte` is never refused by this rule: money coming in is what reconciles a till the system has
+  not recorded yet. The transfers a settlement states (`closing_id` not null) are outside it as well —
+  the acta states them and its own checks govern them — so a counted cash below the expected cash is
+  still a shortage the closing admits, not a refused movement. Correcting an `aporte` obeys the same
+  bound, because a correction answers the direction it corrects.
 
 ### Corrections of the drawer's book
 

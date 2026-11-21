@@ -193,6 +193,15 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
     return cashErrorMessages.invalid_response;
   }
 
+  /** The refusal of the till states both quantities -- what the drawer holds and what the movement asked
+   * -- so the operator reads the gap instead of a rule (S4). `null` when the refusal is another one. */
+  function drawerRefusal(problem: unknown, requested: bigint): string | null {
+    if (!(problem instanceof CashAPIError) || problem.code !== 'drawer_insufficient') return null;
+    if (book === null) return cashErrorMessages.drawer_insufficient;
+    return `${cashErrorMessages.drawer_insufficient} El cajón tiene ${closingMoneyText(
+      book.expected_cents)} y el movimiento pide ${closingMoneyText(requested)}.`;
+  }
+
   async function submitMovement(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -209,7 +218,7 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
       // The book is read again, so the band and the list describe the movement that was just written.
       setRevision(value => value + 1);
     } catch (error) {
-      setFormProblem(refuse(error));
+      setFormProblem(drawerRefusal(error, typed.cents) ?? refuse(error));
     } finally {
       setBusy(false);
     }
@@ -231,7 +240,7 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
       setNotice(`Corrección registrada para el movimiento #${correcting.id}.`);
       setRevision(value => value + 1);
     } catch (error) {
-      setCorrectionProblem(refuse(error));
+      setCorrectionProblem(drawerRefusal(error, typed.cents) ?? refuse(error));
     } finally {
       setBusy(false);
     }

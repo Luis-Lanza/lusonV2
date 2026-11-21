@@ -187,6 +187,54 @@ describe('el libro de la caja operativa', () => {
     expect(screen.queryByLabelText('Monto en bolivianos')).not.toBeInTheDocument();
   });
 
+  it('cancels the submit of the movement form instead of letting the browser navigate', async () => {
+    const { posts } = setup();
+    await screen.findByText('Quedó al cerrar');
+    const form = document.querySelector('form.cash-form') as HTMLFormElement;
+    expect(form).not.toBeNull();
+    // A real submit would reload the page and lose the draft the operator typed; the handler states that
+    // it answered the event, so the form is cancelled before anything is written.
+    const submit = new Event('submit', { bubbles: true, cancelable: true });
+    form.dispatchEvent(submit);
+    expect(submit.defaultPrevented).toBe(true);
+    // The handler ran (the amount it cannot read is refused on the screen) and the server was asked nothing.
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('Escribí un monto válido, con hasta dos decimales.');
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('states both quantities when the till does not hold the movement', async () => {
+    setup({
+      write: () => json({ error: 'drawer_insufficient', balance: '50.00', requested: '85.00' }, 409),
+    });
+    await screen.findByText('Quedó al cerrar');
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Detergente' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    // The refusal is the till's own (S1, S4): the screen names the gap instead of a generic conflict,
+    // and it is definite, so the form stays as the operator left it to state a smaller amount.
+    expect(await screen.findByRole('alert')).toHaveTextContent('La caja no tiene ese dinero');
+    expect(screen.getByRole('alert')).toHaveTextContent('El cajón tiene Bs');
+    expect(screen.getByRole('alert')).toHaveTextContent('el movimiento pide Bs 85,00');
+    expect(screen.getByLabelText('Monto en bolivianos')).toHaveValue('85,00');
+  });
+
+  it('states the till the screen read, never the numbers of the envelope', async () => {
+    setup({ write: () => json({ error: 'drawer_insufficient', balance: '-50.00', requested: '-85.00' }, 409) });
+    await screen.findByText('Quedó al cerrar');
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Detergente' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('el movimiento pide');
+    expect(alert).toHaveTextContent('85,00');
+    expect(alert).not.toHaveTextContent('-85');
+    // The drawer the screen states is its own read (6865.00), never the --50.00 the envelope carried.
+    expect(alert).toHaveTextContent('El cajón tiene Bs 6.865,00');
+    expect(alert).not.toHaveTextContent('50,00');
+    expect(alert).not.toHaveTextContent('\u221250');
+  });
+
   it('states an empty book with the first action of the screen', async () => {
     setup({ ledger: () => json(book({ movements: [], effective: '0.00', expected: '8270.00' })) });
     expect(await screen.findByText('Todavía no hay movimientos desde el corte')).toBeInTheDocument();
