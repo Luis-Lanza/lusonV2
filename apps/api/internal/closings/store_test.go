@@ -197,6 +197,19 @@ func (e *env) expense(t *testing.T, branch int, amount, description string) clos
 	return expense
 }
 
+// contribute funds the till of one branch through the branch's own path: an aporte is a movement of
+// its book like any other, and it is the one direction the drawer never refuses, so it is what makes a
+// pay-out reachable on a till that inherited nothing (S1, S3).
+func (e *env) contribute(t *testing.T, branch int, amount, description string) closings.Expense {
+	t.Helper()
+	contribution, err := e.store.RecordCashMovement(e.ctx, identity(branch), "aporte",
+		closings.Money(amount), description)
+	if err != nil {
+		t.Fatalf("the branch contribution %q could not be recorded: %v", description, err)
+	}
+	return contribution
+}
+
 // balance reads the stock of one branch straight from the database.
 func (e *env) balance(t *testing.T, location, variant int64) (int64, int64) {
 	t.Helper()
@@ -1312,6 +1325,9 @@ func TestFirstSettlementRecordsTheDeclaredFund(t *testing.T) {
 // helper, so the offered period and the closed one can never differ.
 func TestProposeReadsTheCashExpensesOfThePeriodLedger(t *testing.T) {
 	e := fixture(t)
+	// The till spends nothing it does not hold, so the branch funds it before it pays anything out: the
+	// aporte is a movement of the first period like the expense it makes reachable (S1, S3).
+	e.contribute(t, 2, "30.00", "Fondo de la caja de la semana")
 	// An expense recorded before the first settlement belongs to that first period: the first
 	// period starts where the branch started, so the money it already paid out is part of the
 	// drawer identity of the settlement that covers it (S8) -- leaving it out would overstate
@@ -1325,10 +1341,10 @@ func TestProposeReadsTheCashExpensesOfThePeriodLedger(t *testing.T) {
 	if err != nil || settled.CashExpenses != "30.00" || settled.CashSales != "0.00" {
 		t.Fatalf("the first period must state the expense it covers: %+v %v", settled, err)
 	}
-	// The reason is S8's identity and not a changed number: expected = 0.00 inherited + 0.00
-	// collected - 30.00 already spent, and the difference is the counted drawer against it.
-	if settled.ExpectedCash != "-30.00" || settled.CashDifference == nil ||
-		string(*settled.CashDifference) != "30.00" {
+	// The reason is S8's identity and not a changed number: expected = 30.00 put into the till +
+	// 0.00 collected - 30.00 already spent, and the difference is the counted drawer against it.
+	if settled.ExpectedCash != "0.00" || settled.CashDifference == nil ||
+		string(*settled.CashDifference) != "0.00" {
 		t.Fatalf("the first period must derive its drawer from the expense it covers: %+v", settled)
 	}
 	// Two expenses inside the period the next settlement covers.
@@ -1792,6 +1808,9 @@ func TestListIsTheBranchOwnHistory(t *testing.T) {
 func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
 	e := fixture(t)
 
+	// Each till is funded before it pays anything out, because the drawer spends only what it holds (S1).
+	e.contribute(t, 2, "45.50", "Fondo de la caja")
+	e.contribute(t, 3, "5.00", "Fondo de la otra sucursal")
 	// The branch records its own expense and reads it back with its own identity: the branch of
 	// the movement is the account's own location, never a value the caller promises.
 	expense := e.expense(t, 2, "45.5", "  Flete de la semana  ")
@@ -1806,7 +1825,7 @@ func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
 	}
 	if ledger := e.text(t, `SELECT string_agg(branch_location_id||':'||kind||':'||amount::text||':'
  ||created_by_account_id::text,',' ORDER BY id) FROM branch_cash_movements`); ledger !=
-		"2:gasto:45.50:2,3:gasto:5.00:3" {
+		"2:aporte:45.50:2,3:aporte:5.00:3,2:gasto:45.50:2,3:gasto:5.00:3" {
 		t.Fatalf("the ledger is not what the branches recorded: %q", ledger)
 	}
 
@@ -1843,7 +1862,8 @@ func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
 			t.Fatalf("%s must be refused with ErrInvalid, got %v", name, err)
 		}
 	}
-	if ledger := e.scalar(t, "SELECT count(*) FROM branch_cash_movements"); ledger != 2 {
+	// The four rows of the fixture are the two contributions that fund the tills and the two expenses.
+	if ledger := e.scalar(t, "SELECT count(*) FROM branch_cash_movements"); ledger != 4 {
 		t.Fatalf("a refused expense must write nothing: %d movements", ledger)
 	}
 
@@ -1992,6 +2012,8 @@ func TestReadPublishesTheExpensesOfItsWindow(t *testing.T) {
 	// one settlement of one branch.
 	flete := e.expense(t, 2, "45.50", "Flete")
 	insumos := e.expense(t, 2, "10.00", "Insumos")
+	// The other branch funds its own till first, so its expense lands in its own book and never here (S1).
+	e.contribute(t, 3, "99.00", "Fondo de la otra sucursal")
 	e.expense(t, 3, "99.00", "Flete de la otra sucursal")
 	opened, err := e.store.Open(e.ctx, warehouse(), 2)
 	if err != nil {
@@ -4180,6 +4202,10 @@ func TestCashLedgerIsTheBranchOwn(t *testing.T) {
 // is not.
 func TestCashLedgerTotalCoversTheWholeWindow(t *testing.T) {
 	e := fixture(t)
+	// The till inherits the fund the bootstrap settlement left, because the drawer spends only what it
+	// holds (S1): 600.00 pays the 100.00 row and the 500 rows of 1.00 below. The inheritance is not a
+	// movement of the window, so it enters the expectation as the opening and never as an effect.
+	e.closeFirstSettlement(t, "600.00")
 	// The oldest row of the window is the one the bound drops and the only amount that differs, so a
 	// total summed over the published rows is off by exactly this amount.
 	oldest := e.book(t, 2, "gasto", "100.00", "Compra de la tienda", nil)
@@ -4207,8 +4233,9 @@ func TestCashLedgerTotalCoversTheWholeWindow(t *testing.T) {
 			t.Fatalf("the dropped row must not be published: %+v", movement)
 		}
 	}
-	// The total is the whole window: -100.00 dropped from the list and 500 x 1.00 published.
-	if book.Effective != "-600.00" || book.Expected != "-600.00" {
+	// The total is the whole window: -100.00 dropped from the list and 500 x 1.00 published, and the
+	// expectation is the 600.00 the till inherited plus that whole effect.
+	if book.Effective != "-600.00" || book.Expected != "0.00" {
 		t.Fatalf("the total must cover every row of the window: %q %q", book.Effective, book.Expected)
 	}
 
@@ -4229,6 +4256,9 @@ func TestCashLedgerTotalCoversTheWholeWindow(t *testing.T) {
 // writes only its own, and a malformed shape or a frozen branch writes nothing at all.
 func TestRecordCashMovementIsTheBranchOwn(t *testing.T) {
 	e := fixture(t)
+	// The till holds the 12.50 the gasto below spends, and the aporte of the loop puts it back, so every
+	// kind of the loop is reachable on a drawer that never goes negative (S1, S3).
+	e.contribute(t, 2, "12.50", "Fondo de la caja operativa")
 	for _, kind := range []string{"gasto", "aporte", "recaudacion"} {
 		movement, err := e.store.RecordCashMovement(e.ctx, identity(2), kind,
 			closings.Money("12.50"), "Movimiento de la caja operativa")
@@ -4291,6 +4321,8 @@ func TestRecordCashMovementIsTheBranchOwn(t *testing.T) {
 // and neither is ever the 503 an unmapped SQLSTATE would produce.
 func TestCashCorrectionRefusalsAreNotOutages(t *testing.T) {
 	e := fixture(t)
+	// Each till is funded before it pays anything out, because the drawer spends only what it holds (S1).
+	e.contribute(t, 2, "50.00", "Fondo de la caja")
 	flete := e.expense(t, 2, "50.00", "Flete")
 	first, err := e.store.CorrectCashMovement(e.ctx, identity(2), flete.ID,
 		closings.Money("30.00"), "Flete mal cargado")
@@ -4334,6 +4366,7 @@ func TestCashCorrectionRefusalsAreNotOutages(t *testing.T) {
 	if !errors.As(err, &target) {
 		t.Fatalf("the invalid target must be named for the route that acts on it: %v", err)
 	}
+	e.contribute(t, 3, "10.00", "Fondo de la otra sucursal")
 	other := e.expense(t, 3, "10.00", "Flete de la otra sucursal")
 	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), other.ID,
 		closings.Money("5.00"), "No es un movimiento mío")
@@ -4403,5 +4436,100 @@ func TestDrawerExpectedIsTheOneRule(t *testing.T) {
 	if got, err := closings.ExpectedCash(amount("100.00"), amount("20.00"), amount("45.50")); err != nil ||
 		got != "74.50" {
 		t.Fatalf("the pay-out-only window must be the same rule: %s %v", got, err)
+	}
+}
+
+// TestDrawerRefusalIsNamedOnEveryRoute pins S4 on the two writes of the book: the bound of the till is the
+// same refusal whichever route records the movement. The expense route inserted on its own and mapped the
+// database's code through the plain mapping, so the same fact answered the 503 of an unmapped code; both
+// writers now share one mapping, and the refusal carries both quantities the operator acts on.
+func TestDrawerRefusalIsNamedOnEveryRoute(t *testing.T) {
+	e := fixture(t)
+	// The till holds the 5.00 the two refusals below do not reach (S3).
+	e.contribute(t, 2, "5.00", "Fondo de la caja operativa")
+	before := e.scalar(t, `SELECT count(*) FROM branch_cash_movements`)
+
+	for name, record := range map[string]func() error{
+		"expense": func() error {
+			_, err := e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Flete de la semana")
+			return err
+		},
+		"movement": func() error {
+			_, err := e.store.RecordCashMovement(e.ctx, identity(2), "gasto", money("10.00"),
+				"Flete de la semana")
+			return err
+		},
+	} {
+		err := record()
+		if errors.Is(err, closings.ErrUnavailable) {
+			t.Fatalf("the %s route published the bound of the till as an outage: %v", name, err)
+		}
+		refused(t, err, closings.ErrStateConflict)
+		var insufficient *closings.DrawerInsufficient
+		if !errors.As(err, &insufficient) {
+			t.Fatalf("the %s route must name the bound of the till: %v", name, err)
+		}
+		if insufficient.Balance != "5.00" || insufficient.Requested != "10.00" {
+			t.Fatalf("the %s route must state the drawer and the request: %+v", name, insufficient)
+		}
+	}
+	// A refused movement writes nothing at all, whichever route stated it.
+	if after := e.scalar(t, `SELECT count(*) FROM branch_cash_movements`); after != before {
+		t.Fatalf("a refused movement must write nothing: %d rows after %d", after, before)
+	}
+}
+
+// TestDrawerRefusalOnAPreRuleNegativeDrawer pins S4 on a drawer the bound inherited already below zero: the
+// movements an instance upgraded from 059 recorded before the rule existed are still there -- 060 rewrites
+// no data -- so the balance the refusal states is a signed quantity. Read as a written amount it would fail,
+// and the operator would read the bound as an invalid request with no numbers at all.
+func TestDrawerRefusalOnAPreRuleNegativeDrawer(t *testing.T) {
+	e := fixture(t)
+	// The row of the pre-rule period, written the way 059 admitted it: the guard is disabled for the one
+	// statement, so the drawer inherits -50.00 and no sale or settlement of the fixture feeds it.
+	if _, err := e.pool.Exec(e.ctx,
+		"ALTER TABLE branch_cash_movements DISABLE TRIGGER admit_branch_cash_movement"); err != nil {
+		t.Fatalf("the guard could not be disabled for the pre-rule row: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,amount,
+ description,created_by_account_id) VALUES(2,'gasto',50.00,'Gasto anterior a la regla',2)`); err != nil {
+		t.Fatalf("the pre-rule expense could not be recorded: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx,
+		"ALTER TABLE branch_cash_movements ENABLE TRIGGER admit_branch_cash_movement"); err != nil {
+		t.Fatalf("the guard could not be enabled again: %v", err)
+	}
+	if expected := e.text(t, "SELECT branch_drawer_expected(2::smallint)::text"); expected != "-50.00" {
+		t.Fatalf("the pre-rule drawer must read the negative it holds, got %q", expected)
+	}
+
+	// The next pay-out is the bound's own refusal, named with the negative it found: an unreadable balance
+	// would publish it as an invalid request instead (S4).
+	_, err := e.store.RecordCashMovement(e.ctx, identity(2), "gasto", money("10.00"),
+		"Detergente y escobas")
+	if errors.Is(err, closings.ErrInvalid) || errors.Is(err, closings.ErrUnavailable) {
+		t.Fatalf("a negative drawer is the bound's own refusal, never an invalid request: %v", err)
+	}
+	refused(t, err, closings.ErrStateConflict)
+	var insufficient *closings.DrawerInsufficient
+	if !errors.As(err, &insufficient) {
+		t.Fatalf("the refusal must be named with the drawer it found: %v", err)
+	}
+	if insufficient.Balance != "-50.00" || insufficient.Requested != "10.00" {
+		t.Fatalf("the refusal must state the signed balance and the request: %+v", insufficient)
+	}
+	// And the expense route states the same drawer the same way.
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Detergente y escobas")
+	if !errors.As(err, &insufficient) || insufficient.Balance != "-50.00" {
+		t.Fatalf("the expense route must name the same signed drawer: %v", err)
+	}
+
+	// Money in is never refused by this rule (S3): an aporte reconciles the drawer it inherited.
+	if _, err := e.store.RecordCashMovement(e.ctx, identity(2), "aporte", money("30.00"),
+		"Aporte para cubrir el faltante"); err != nil {
+		t.Fatalf("an aporte on a negative drawer must be admitted (S3): %v", err)
+	}
+	if expected := e.text(t, "SELECT branch_drawer_expected(2::smallint)::text"); expected != "-20.00" {
+		t.Fatalf("the aporte must reconcile the drawer to -20.00, got %q", expected)
 	}
 }

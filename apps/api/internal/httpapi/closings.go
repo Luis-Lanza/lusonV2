@@ -200,6 +200,7 @@ func closingFailure(w http.ResponseWriter, err error) {
 	var notClosed *closings.CorrectionNotClosed
 	var target *closings.CorrectionTargetInvalid
 	var exceeds *closings.CorrectionExceeds
+	var drawer *closings.DrawerInsufficient
 	switch {
 	case errors.As(err, &pending):
 		// The sheet of a live settlement never lacks a counted quantity: the opener seeds it with
@@ -240,6 +241,13 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// The corrections of one movement never exceed the amount that movement stated (LC031, S6): the
 		// branch states less, and the book stays the sum of what it states.
 		failure(w, 409, "correction_exceeds")
+	case errors.As(err, &drawer):
+		// The movement spends more than the branch's till holds (LC032, S1). The refusal states both
+		// quantities -- what the drawer holds and what the movement asked -- so the operator states a
+		// smaller amount or records the cash it is spending, instead of discovering a negative drawer at
+		// the settlement (S4). It answers before the state conflict it unwraps to.
+		respond(w, 409, map[string]any{"error": "drawer_insufficient",
+			"balance": string(drawer.Balance), "requested": string(drawer.Requested)})
 	case errors.Is(err, closings.ErrNoCommissionRate):
 		// The missing fact is the rate itself, which is what the code names: without it no
 		// branch can be proposed (S6).

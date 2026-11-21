@@ -872,6 +872,11 @@ func TestClosingFailureMapping(t *testing.T) {
 		{"correction_target_invalid", &closings.CorrectionTargetInvalid{}, 400,
 			`{"error":"correction_target_invalid"}`},
 		{"correction_exceeds", &closings.CorrectionExceeds{}, 409, `{"error":"correction_exceeds"}`},
+		// The bound of the branch's till answers its own code and states both quantities -- what the
+		// drawer holds and what the movement asked -- so the operator acts on the smaller amount instead
+		// of reading a generic conflict (LC032, S1, S4).
+		{"drawer_insufficient", &closings.DrawerInsufficient{Balance: "50.00", Requested: "1200.00"},
+			409, `{"balance":"50.00","error":"drawer_insufficient","requested":"1200.00"}`},
 		{"branch_frozen", closings.ErrBranchFrozen, 409, `{"error":"branch_frozen"}`},
 		{"not_branch_expense", closings.ErrNotBranchExpense, 403, `{"error":"forbidden"}`},
 		{"invalid", closings.ErrInvalid, 400, `{"error":"invalid_request"}`},
@@ -2080,6 +2085,8 @@ func TestClosingsExpenses(t *testing.T) {
 	f.refused(t, f.request(1, "POST", "/api/closings/expenses",
 		`{"amount":"10.00","description":"Flete del almacén"}`), 403, `{"error":"forbidden"}`)
 	// The other branch records its own, which never reads as an expense of this branch.
+	// The other branch funds its own till first, so its expense lands in its own book and never here (S1).
+	f.contribute(t, 3, "99.00", "Cambio de la otra sucursal")
 	other := closingExpenseWire(t, f.serve(t, f.request(3, "POST", "/api/closings/expenses",
 		`{"amount":"99.00","description":"Flete de la otra sucursal"}`)), 201)
 	if other.BranchLocationID != 3 || other.CreatedByAccountID != 3 {
@@ -2401,6 +2408,17 @@ func (f *closingHTTPFixture) closeSettlement(t *testing.T, branch int64, drawer 
 		t.Fatalf("the settlement must close: %+v", closed)
 	}
 	return closed
+}
+
+// contribute funds the till of one branch through the branch's own route: the aporte is the direction
+// the drawer never refuses, so it is what makes a pay-out reachable on a till that inherited nothing
+// (S1, S3).
+func (f *closingHTTPFixture) contribute(t *testing.T, branch int64, amount, description string) {
+	t.Helper()
+	if w := f.serve(t, f.request(int(branch), "POST", "/api/closings/cash-movements",
+		fmt.Sprintf(`{"kind":"aporte","amount":%q,"description":%q}`, amount, description))); w.Code != 201 {
+		t.Fatalf("the till of branch %d could not be funded: %d %s", branch, w.Code, w.Body.String())
+	}
 }
 
 // TestClosingsCorrectionOfAClosedSettlement pins S16 over HTTP end to end: only a closed settlement
@@ -3616,6 +3634,8 @@ func TestClosingsCashCorrectionsOfAMovement(t *testing.T) {
 	f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
 		`{"corrects_id":%d,"amount":"1.00","description":"Corrijo la corrección"}`, correction.ID)), 400,
 		`{"error":"correction_target_invalid"}`)
+	// The other branch funds its own till first, so its movement is admitted on a drawer that holds it (S1).
+	f.contribute(t, 3, "10.00", "Cambio de la otra sucursal")
 	foreign := closingCashMovementReply(t, f.serve(t, f.request(3, "POST", "/api/closings/cash-movements",
 		`{"kind":"gasto","amount":"10.00","description":"Flete de la otra sucursal"}`)), 201,
 		closingCashMovementKeys)
