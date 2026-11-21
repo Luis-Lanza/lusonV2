@@ -26,10 +26,12 @@ const productLine = (overrides: Record<string, unknown> = {}) => ({
 });
 
 // One row of the branch's own ledger as the document publishes it: the expense the branch paid out of
-// its till, with the kind it stated and the movement a correction answers (S6, S13).
+// its till, with the kind it stated, the motive it was recorded with — the reference and the copy of the
+// label it had, null when the row names none — and the movement a correction answers (S6, S8, S13).
 const expense = (overrides: Record<string, unknown> = {}) => ({
   id: 7, branch_location_id: 2, kind: 'gasto', amount: '100.00', description: 'Flete',
-  occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null, ...overrides,
+  occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null,
+  category_id: null, category_label: null, ...overrides,
 });
 
 // The closed settlement of the chosen artboard: Bs 7.015,00 expected, Bs 6.980,00 counted,
@@ -163,14 +165,29 @@ describe('the settlement document', () => {
         period_start: '2026-09-12T18:30:00Z' })] }))).toThrow();
   });
 
-  it('reads the expense list of the window with its kind and the movement each row answers (S13)', () => {
+  it('reads the expense list of the window with its kind, its motive and the movement each row answers (S8, S13)', () => {
     const closing = parseClosing(JSON.stringify(document({ expenses: [
-      expense(),
+      expense({ category_id: 1, category_label: 'Alquiler' }),
       expense({ id: 9, kind: 'correccion', amount: '40.00', description: 'Flete mal cargado',
         occurred_at: '2026-09-12T10:05:00Z', corrects_id: 7 }),
     ] })));
     // The list is the ledger the total was computed from: the gasto and the correction that answers it.
     expect(closing.cash_expenses_cents).toBe(21500n);
+    // The motive of the expense travels to the acta, and the correction that answers it names none of
+    // its own (S8, S10). The note is the optional text beside the motive, empty when there is none.
+    expect(closing.expenses).toEqual([
+      { id: 7, kind: 'gasto', amount_cents: 10000n, motive: 'Alquiler', note: 'Flete',
+        corrects_id: null },
+      { id: 9, kind: 'correccion', amount_cents: 4000n, motive: null, note: 'Flete mal cargado',
+        corrects_id: 7 },
+    ]);
+  });
+
+  it('reads an expense with a motive and no note, which is the row the book also publishes (S3, S8)', () => {
+    const closing = parseClosing(JSON.stringify(document({ expenses: [
+      expense({ category_id: 5, category_label: 'Limpieza', description: '' }),
+    ] })));
+    expect(closing.expenses[0]).toMatchObject({ motive: 'Limpieza', note: '' });
   });
 
   it('refuses an expense list that is not the ledger this contract publishes (S13)', () => {
@@ -185,6 +202,20 @@ describe('the settlement document', () => {
     // A key outside the contract, a padded description and a list that does not advance in id.
     refused([expense({ signed_amount: '100.00' })]);
     refused([expense({ description: ' Flete' })]);
+    // The motive is the pair the book publishes: both keys or neither, an identity and a canonical
+    // label, and stated by an expense only (S8, S10).
+    refused([expense({ category_id: 1 })]);
+    refused([expense({ category_label: 'Alquiler' })]);
+    refused([expense({ category_id: 0, category_label: 'Alquiler' })]);
+    refused([expense({ category_id: 1, category_label: ' Alquiler' })]);
+    refused([expense({ category_id: 1, category_label: '' })]);
+    refused([expense({ kind: 'correccion', corrects_id: 7, category_id: 1,
+      category_label: 'Alquiler' })]);
+    // The acta's list holds the pay-outs of the period and their corrections, never the money of the
+    // drawer that is not an expense of the period (S13).
+    refused([expense({ kind: 'aporte' })]);
+    // Only the note of an expense may be empty: a correction still says what it is for.
+    refused([expense({ kind: 'correccion', corrects_id: 7, description: '' })]);
     refused([expense({ id: 9 }), expense({ id: 7 })]);
     refused({ id: 7 });
   });

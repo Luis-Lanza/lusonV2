@@ -24,6 +24,7 @@ import {
   closingRemoveLine, closingSearchMessage, closingSheetRows, closingSheetVariantIDs,
   closingSignedText, closingStatusLabels, closingOutsideSystemHelp, closingOutsideSystemTag,
   closingChangedTag, closingCountDifferenceText, closingCountMatchTag, closingCountReading,
+  closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
   closingSeedQuantity, closingTabAfter, closingTabLabels, closingTabMarker, closingTabOrder,
   closingTabsLabel,
   correctionDraftFrom, drawerDraftFrom,
@@ -748,6 +749,25 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                   <dd>{rail.cash_expenses_cents === 0n ? closingMoneyText(0n) : `− ${closingMoneyText(rail.cash_expenses_cents)}`}</dd></div>
                 <div className="total"><dt>Caja esperada</dt><dd>{closingMoneyText(view.expected_cents)}</dd></div>
               </dl>
+              {/* The expenses the total above is made of, each one with the motive it was recorded with
+                  and the note beside it: the warehouse reads what it is subtracting, exactly as the
+                  branch reads what it is being charged for (S8, S13). */}
+              {closing.expenses.length > 0 && <div className="closing-expenses" role="group"
+                aria-label="Gastos del período">
+                <h3>Gastos del período</h3>
+                <ul>
+                  {closing.expenses.map(expense => <li key={expense.id} data-expense-id={expense.id}>
+                    <span className="closing-expense-motive">{closingExpenseMotive(expense)}</span>
+                    {closingExpenseNote(expense) !== null &&
+                      <small className="closing-expense-note closing-muted">
+                        {closingExpenseNote(expense)}</small>}
+                    {expense.corrects_id !== null && <span className="closing-expense-ref">
+                      {`Corrige el gasto #${expense.corrects_id}`}</span>}
+                    <strong className={`num ${expense.kind === 'gasto' ? 'neg' : 'pos'}`}>
+                      {closingSignedText(closingExpenseEffect(expense))}</strong>
+                  </li>)}
+                </ul>
+              </div>}
               <div className="closing-field">
                 <label htmlFor="closing-counted">Caja contada (Bs)</label>
                 {editable
