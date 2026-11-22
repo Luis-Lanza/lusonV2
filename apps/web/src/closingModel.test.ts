@@ -9,6 +9,7 @@ import {
   closingPeriod, closingPeriodLabel, closingQuantityText,
   closingRail, closingMoneyText, closingRoundStateLabel, closingSheetChanges, closingSignedCents,
   closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
+  closingEvidencePath, closingEvidenceSizeText, closingEvidenceText,
   closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
   canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
   closingCorrectedCommission, closingCorrectedCounts, closingCorrectionPreview,
@@ -1334,7 +1335,7 @@ describe('S4, S5 a battery the system did not have', () => {
 describe('S8, S13 the expense row of the acta tells the same story as the book', () => {
   const expense = (overrides: Partial<model.ClosingExpense> = {}): model.ClosingExpense =>
     Object.freeze({ id: 7, kind: 'gasto', amount_cents: 4550n, motive: 'Alquiler', note: '',
-      corrects_id: null, ...overrides });
+      corrects_id: null, evidence: null, ...overrides });
 
   it('names the motive of the expense even when the row states no note', () => {
     expect(closingExpenseMotive(expense())).toBe('Alquiler');
@@ -1360,5 +1361,34 @@ describe('S8, S13 the expense row of the acta tells the same story as the book',
     expect(closingSignedText(closingExpenseEffect(expense()))).toBe('− Bs 45,50');
     expect(closingExpenseEffect(expense({ kind: 'correccion', amount_cents: 1000n,
       corrects_id: 7, motive: null, note: 'Flete mal cargado' }))).toBe(1000n);
+  });
+});
+
+// The receipt of a pay-out is metadata the book and the acta publish, and the photo itself is served by
+// its own route (S1, S7, S8): the screen needs the words of one row and the path of the image.
+describe('S1, S7 the receipt of a pay-out', () => {
+  const receipt = Object.freeze({ type: 'image/jpeg' as const, size: 482_913,
+    sha256: 'a'.repeat(64) });
+
+  it('states the type and the size of the photo in the words of the screen', () => {
+    expect(model.closingEvidenceTypeText('image/jpeg')).toBe('JPEG');
+    expect(model.closingEvidenceTypeText('image/png')).toBe('PNG');
+    expect(closingEvidenceSizeText(0)).toBe('0 B');
+    expect(closingEvidenceSizeText(1023)).toBe('1023 B');
+    expect(closingEvidenceSizeText(2048)).toBe('2 KB');
+    expect(closingEvidenceSizeText(85_000)).toBe('83 KB');
+    expect(closingEvidenceSizeText(482_913)).toBe('472 KB');
+    expect(closingEvidenceSizeText(1_500_000)).toBe('1,4 MB');
+    expect(closingEvidenceSizeText(8_388_608)).toBe('8 MB');
+    // One row states its photo in one line: the format and the size, never a raw byte count.
+    expect(closingEvidenceText(receipt)).toBe('Comprobante JPEG · 472 KB');
+    expect(closingEvidenceText({ ...receipt, type: 'image/png' })).toBe('Comprobante PNG · 472 KB');
+  });
+
+  it('serves the photo of one movement by its own route, and only of a movement that exists', () => {
+    expect(closingEvidencePath(21)).toBe('/api/closings/cash-movements/21/evidence');
+    for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      expect(() => closingEvidencePath(id)).toThrow();
+    }
   });
 });

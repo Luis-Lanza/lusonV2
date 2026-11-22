@@ -642,13 +642,15 @@ describe('the numbers rail (S8, S9, S13)', () => {
     const h = server({ status: 'proposed', expenses: [
       { id: 7, branch_location_id: 2, kind: 'gasto', amount: '100.00', description: 'Detergente',
         occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null,
-        category_id: 5, category_label: 'Limpieza' },
+        category_id: 5, category_label: 'Limpieza',
+        evidence: { type: 'image/png', size: 1_500_000, sha256: 'b'.repeat(64) } },
       { id: 8, branch_location_id: 2, kind: 'gasto', amount: '20.00', description: '',
         occurred_at: '2026-09-12T10:05:00Z', created_by_account_id: 2, corrects_id: null,
-        category_id: 1, category_label: 'Alquiler' },
+        category_id: 1, category_label: 'Alquiler', evidence: null },
       { id: 9, branch_location_id: 2, kind: 'correccion', amount: '40.00',
         description: 'Detergente mal cargado', occurred_at: '2026-09-12T10:06:00Z',
-        created_by_account_id: 2, corrects_id: 7, category_id: null, category_label: null },
+        created_by_account_id: 2, corrects_id: 7, category_id: null, category_label: null,
+        evidence: null },
     ] });
     await ready(h);
     await screen.findByRole('heading', { name: 'Rendición de cuentas · Sopocachi' });
@@ -663,6 +665,20 @@ describe('the numbers rail (S8, S9, S13)', () => {
     expect(within(list).getByText('Detergente mal cargado')).toBeInTheDocument();
     expect(within(list).getByText('− Bs 100,00')).toBeInTheDocument();
     expect(within(list).getByText('+ Bs 40,00')).toBeInTheDocument();
+    // The ticket of the pay-out opens from the row that carries it, served by the movement's own route,
+    // and the acta publishes its metadata alone (S7).
+    const row = list.querySelector('[data-expense-id="7"]') as HTMLElement;
+    const open = within(row).getByRole('link', { name: 'Ver el comprobante del gasto #7' });
+    expect(open).toHaveAttribute('href', '/api/closings/cash-movements/7/evidence');
+    expect(open).toHaveAttribute('target', '_blank');
+    expect(open).toHaveAttribute('title', 'Comprobante PNG · 1,4 MB');
+    expect(row.textContent).not.toContain('sha256');
+    // A pay-out with no photo, and the correction that answers one, show nothing extra at all.
+    for (const id of [8, 9]) {
+      const without = list.querySelector(`[data-expense-id="${id}"]`) as HTMLElement;
+      expect(within(without).queryByRole('link')).not.toBeInTheDocument();
+      expect(without.textContent).not.toContain('comprobante');
+    }
   });
 
   it('derives the expected drawer from the facts and never from the commission', async () => {

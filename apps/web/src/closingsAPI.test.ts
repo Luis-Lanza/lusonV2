@@ -27,11 +27,12 @@ const productLine = (overrides: Record<string, unknown> = {}) => ({
 
 // One row of the branch's own ledger as the document publishes it: the expense the branch paid out of
 // its till, with the kind it stated, the motive it was recorded with — the reference and the copy of the
-// label it had, null when the row names none — and the movement a correction answers (S6, S8, S13).
+// label it had, null when the row names none —, the movement a correction answers and the receipt of the
+// pay-out, which is null on every row that carries none (S6, S7, S8, S13).
 const expense = (overrides: Record<string, unknown> = {}) => ({
   id: 7, branch_location_id: 2, kind: 'gasto', amount: '100.00', description: 'Flete',
   occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null,
-  category_id: null, category_label: null, ...overrides,
+  category_id: null, category_label: null, evidence: null, ...overrides,
 });
 
 // The closed settlement of the chosen artboard: Bs 7.015,00 expected, Bs 6.980,00 counted,
@@ -175,11 +176,13 @@ describe('the settlement document', () => {
     expect(closing.cash_expenses_cents).toBe(21500n);
     // The motive of the expense travels to the acta, and the correction that answers it names none of
     // its own (S8, S10). The note is the optional text beside the motive, empty when there is none.
+    // The receipt is the last fact of the row and it is always published: null when the pay-out carries
+    // no photo, which is the fact both of these rows state (S1, S7).
     expect(closing.expenses).toEqual([
       { id: 7, kind: 'gasto', amount_cents: 10000n, motive: 'Alquiler', note: 'Flete',
-        corrects_id: null },
+        corrects_id: null, evidence: null },
       { id: 9, kind: 'correccion', amount_cents: 4000n, motive: null, note: 'Flete mal cargado',
-        corrects_id: 7 },
+        corrects_id: 7, evidence: null },
     ]);
   });
 
@@ -218,6 +221,43 @@ describe('the settlement document', () => {
     refused([expense({ kind: 'correccion', corrects_id: 7, description: '' })]);
     refused([expense({ id: 9 }), expense({ id: 7 })]);
     refused({ id: 7 });
+  });
+
+  it('reads the receipt of a pay-out as metadata alone (S1, S7)', () => {
+    const receipt = { type: 'image/jpeg', size: 482_913, sha256: 'b'.repeat(64) };
+    const closing = parseClosing(JSON.stringify(document({ expenses: [
+      expense({ category_id: 1, category_label: 'Alquiler', evidence: receipt }),
+      expense({ id: 9, amount: '15.00', description: 'Flete de la tarde',
+        occurred_at: '2026-09-12T10:05:00Z' }),
+    ] })));
+    // The receipt is the three keys the book publishes beside it: never the bytes, never a URL.
+    expect(closing.expenses[0].evidence).toEqual(receipt);
+    expect(Object.isFrozen(closing.expenses[0].evidence)).toBe(true);
+    // A pay-out recorded without a photo states null, which is a fact of its own (S1).
+    expect(closing.expenses[1].evidence).toBeNull();
+  });
+
+  it('refuses a receipt the acta cannot have published', () => {
+    const receipt = { type: 'image/png', size: 1_024, sha256: 'c'.repeat(64) };
+    const refused = (expenseRow: Record<string, unknown>) => expect(() =>
+      parseClosing(JSON.stringify(document({ expenses: [expenseRow] })))).toThrow();
+    const withoutReceipt = (row: Record<string, unknown>) => {
+      const { evidence: _dropped, ...rest } = row;
+      return rest;
+    };
+    // The key is always published: a row that omits it is not a row of this document (S7).
+    refused(withoutReceipt(expense()));
+    // The three keys, all of them and nothing beside them.
+    refused(expense({ evidence: { type: 'image/png', size: 1_024 } }));
+    refused(expense({ evidence: { ...receipt, url: '/api/closings/cash-movements/7/evidence' } }));
+    // Only the two formats the server decodes, a positive size inside the 8 MB cap and a lowercase digest.
+    refused(expense({ evidence: { ...receipt, type: 'image/gif' } }));
+    refused(expense({ evidence: { ...receipt, size: 0 } }));
+    refused(expense({ evidence: { ...receipt, size: 8_388_609 } }));
+    refused(expense({ evidence: { ...receipt, sha256: 'C'.repeat(64) } }));
+    // Only a pay-out carries a receipt, and the acta lists the correction beside it (S2).
+    refused(expense({ kind: 'correccion', corrects_id: 7, description: 'Flete mal cargado',
+      evidence: receipt }));
   });
 
   it('reads the material sheet the document publishes (S7, S8, S9)', () => {

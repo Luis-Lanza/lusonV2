@@ -1,15 +1,44 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  CashAPIError, canonicalCashCorrection, canonicalCashInput, cashErrorMessages, cashFailureIsDefinite,
-  cashKindMovesIn, cashLedgerPath, createCashAPI, matchesCashCorrection, matchesCashInput,
+  CashAPIError, canonicalCashCorrection, canonicalCashInput, cashErrorMessages, cashEvidenceRefusal,
+  cashFailureIsDefinite, cashKindMovesIn, cashLedgerPath, cashMaxEvidenceBytes, createCashAPI,
+  matchesCashCorrection, matchesCashInput,
   parseCashCategories, parseCashCorrection, parseCashError, parseCashLedger, parseCashMovement,
-  type CashCorrectionInput, type CashMovementInput,
+  type CashCorrectionInput, type CashErrorCode, type CashMovementInput,
 } from './cashAPI';
 
 const csrf = 'c'.repeat(43);
 const json = (body: string, status = 200) =>
   new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
+
+/** The magic bytes and the header of a PNG of the stated size: what the screen measures before sending. */
+function pngFile(width: number, height: number): Blob {
+  const bytes = new Uint8Array(33);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const view = new DataView(bytes.buffer);
+  // The IHDR chunk: its length, its type and the two sides of the image.
+  view.setUint32(8, 13);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return new Blob([bytes]);
+}
+
+/** The magic bytes and the frame header of a JPEG of the stated size, behind a JFIF segment. */
+function jpegFile(width: number, height: number): Blob {
+  const bytes = new Uint8Array([
+    0xff, 0xd8,
+    // APP0 · JFIF, the segment every camera writes before the frame.
+    0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x01, 0x00, 0x00,
+    // SOF0: the precision, the two sides and the three components of the frame.
+    0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff,
+    0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+    0xff, 0xd9,
+  ]);
+  return new Blob([bytes]);
+}
 
 // One row of the book as the ledger publishes it: the positive amount the branch wrote, the kind that
 // states its direction, the signed effect the drawer actually moved by, and — on an expense — the
@@ -19,7 +48,7 @@ const entry = (patch: Record<string, unknown> = {}) => {
     id: 21, kind: 'gasto', effect_kind: 'gasto', amount: '85.00', effective: '-85.00',
     description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
     created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza',
-    ...patch,
+    evidence: null, ...patch,
   };
   // A motive is a fact of an expense alone: every other kind states both keys as null (S4).
   if (row.kind !== 'gasto' && patch.category_id === undefined && patch.category_label === undefined) {
@@ -84,6 +113,7 @@ describe('the operational drawer is read as it was written', () => {
       id: 21, kind: 'gasto', effect_kind: 'gasto', amount_cents: 8_500n, effective_cents: -8_500n,
       description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
       created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza',
+      evidence: null,
     });
     // The correction carries the direction it answers, inverted: money that a gasto took out comes back.
     expect(book.movements[5]).toMatchObject({
@@ -481,5 +511,166 @@ describe('refusals of the drawer', () => {
     expect(cashFailureIsDefinite('service_unavailable')).toBe(false);
     expect(cashFailureIsDefinite('invalid_response')).toBe(false);
     expect(cashFailureIsDefinite('network')).toBe(false);
+  });
+});
+
+// The receipt of a pay-out is one optional photo of the ticket (S1): it travels as a file the customer
+// chose, it is judged before anything leaves the screen, and the book publishes its metadata alone (S7).
+describe('the receipt of an expense', () => {
+  const receipt = Object.freeze({ type: 'image/jpeg', size: 482_913, sha256: 'a'.repeat(64) });
+
+  const withoutReceipt = (row: Record<string, unknown>): Record<string, unknown> => {
+    const { evidence: _dropped, ...rest } = row;
+    return rest;
+  };
+
+  it('reads the metadata of the receipt of one row and nothing of its bytes (S7)', () => {
+    const book = parseCashLedger(ledgerBody({
+      movements: movements().map(row => row.id === 21 ? { ...row, evidence: receipt } : row),
+    }));
+    // The receipt is the three keys the contract publishes: type, size and digest, never the image.
+    expect(book.movements[0].evidence).toEqual(receipt);
+    expect(Object.isFrozen(book.movements[0].evidence)).toBe(true);
+    // A row recorded without a photo states null, which is not the same fact as a missing key.
+    expect(book.movements[1].evidence).toBeNull();
+  });
+
+  it('refuses a receipt that is not the shape this contract publishes', () => {
+    const broken = (evidence: unknown) => () => parseCashLedger(ledgerBody({
+      movements: movements().map(row => row.id === 21 ? { ...row, evidence } : row),
+    }));
+    // The key is always published: a row that omits it is not a row of this book (S7).
+    expect(() => parseCashLedger(ledgerBody({
+      movements: movements().map(row => row.id === 21 ? withoutReceipt(row) : row),
+    }))).toThrow();
+    // The three keys, all of them and nothing beside them.
+    expect(broken({ type: 'image/jpeg', size: 482_913 })).toThrow();
+    expect(broken({ ...receipt, bytes: 'x' })).toThrow();
+    expect(broken({ ...receipt, name: 'comprobante.jpg' })).toThrow();
+    // Only the two formats the server decodes, a positive size inside the 8 MB cap and a lowercase digest.
+    expect(broken({ ...receipt, type: 'image/gif' })).toThrow();
+    expect(broken({ ...receipt, type: 'image/svg+xml' })).toThrow();
+    expect(broken({ ...receipt, size: 0 })).toThrow();
+    expect(broken({ ...receipt, size: cashMaxEvidenceBytes + 1 })).toThrow();
+    expect(broken({ ...receipt, size: '482913' })).toThrow();
+    expect(broken({ ...receipt, sha256: 'A'.repeat(64) })).toThrow();
+    expect(broken({ ...receipt, sha256: 'a'.repeat(63) })).toThrow();
+    expect(broken({ ...receipt, sha256: 42 })).toThrow();
+  });
+
+  it('refuses a receipt on a kind that never carries one (S2)', () => {
+    for (const id of [23, 24, 26]) {
+      expect(() => parseCashLedger(ledgerBody({
+        movements: movements().map(row => row.id === id ? { ...row, evidence: receipt } : row),
+      }))).toThrow();
+    }
+  });
+
+  it('sends an expense with a photo as multipart, with the movement and exactly one file', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(movementBody({ kind: 'gasto',
+      amount: '85.00', description: 'Detergente' }), 201));
+    // A real photo of the drawer: a JPEG whose own header states its two sides.
+    const file = new File([await jpegFile(2, 2).arrayBuffer()], 'comprobante.jpg',
+      { type: 'image/jpeg' });
+    await createCashAPI(fetch).record(
+      { kind: 'gasto', amount: '85.00', category_id: 5, description: ' Detergente ' }, csrf,
+      undefined, file);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [path, init] = fetch.mock.calls[0];
+    expect(path).toBe('/api/closings/cash-movements');
+    expect(init).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+    expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe(csrf);
+    // The browser states the boundary of the body: this client never writes that header itself.
+    expect(new Headers(init?.headers).get('Content-Type')).toBeNull();
+    const form = init?.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    // Two parts, in this order: the JSON object of the route and the one photo (S1).
+    expect([...form.keys()]).toEqual(['movement', 'evidence']);
+    expect(form.getAll('evidence')).toHaveLength(1);
+    // The `movement` part is the same JSON the plain route sends, canonical text and all (S9).
+    expect(await (form.get('movement') as Blob).text())
+      .toBe('{"kind":"gasto","amount":"85.00","category_id":5,"description":"Detergente"}');
+    const part = form.get('evidence') as File;
+    expect(part.name).toBe('comprobante.jpg');
+    // The bytes travel exactly as the operator chose them: nothing is re-encoded on the way out.
+    expect([...new Uint8Array(await part.arrayBuffer())])
+      .toEqual([...new Uint8Array(await file.arrayBuffer())]);
+  });
+
+  it('sends the same expense as plain JSON when no photo was chosen (S9)', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(movementBody({ kind: 'gasto',
+      amount: '85.00', description: 'Detergente' }), 201));
+    await createCashAPI(fetch).record(
+      { kind: 'gasto', amount: '85.00', category_id: 5, description: 'Detergente' }, csrf, undefined,
+      null);
+    const [, init] = fetch.mock.calls[0];
+    // The form of the route is the JSON one, byte for byte the body it always sent.
+    expect(new Headers(init?.headers).get('Content-Type')).toBe('application/json');
+    expect(init?.body).toBe('{"kind":"gasto","amount":"85.00","category_id":5,"description":"Detergente"}');
+  });
+
+  it('refuses to attach a photo to anything that is not an expense, before asking the server (S2)', async () => {
+    const fetch = mockFetch();
+    const file = new File([new Uint8Array([0xff, 0xd8])], 'comprobante.jpg', { type: 'image/jpeg' });
+    for (const kind of ['aporte', 'recaudacion'] as const) {
+      await expect(createCashAPI(fetch).record(
+        { kind, amount: '100.00', description: 'Cambio para el cajón' }, csrf, undefined, file))
+        .rejects.toMatchObject({ code: 'evidence_not_applicable' });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    expect(cashErrorMessages.evidence_not_applicable).toContain('Sólo un gasto lleva comprobante');
+  });
+
+  it('judges a chosen file by its own bytes and its size before anything leaves the screen', async () => {
+    // The two formats the server decodes are admitted by their header, which is what the screen reads.
+    expect(await cashEvidenceRefusal(pngFile(1, 1))).toBeNull();
+    expect(await cashEvidenceRefusal(jpegFile(2, 2))).toBeNull();
+    expect(await cashEvidenceRefusal(jpegFile(10_000, 10_000))).toBeNull();
+    // A file that states no bytes is the first refusal of the contract.
+    expect(await cashEvidenceRefusal(new Blob([]))).toBe('evidence_empty');
+    // The cap of 8 MB is the contract's own, and it is judged before the bytes are even read.
+    expect(await cashEvidenceRefusal(new Blob([new Uint8Array(cashMaxEvidenceBytes + 1)])))
+      .toBe('evidence_too_large');
+    expect(await cashEvidenceRefusal(new Blob([new Uint8Array(cashMaxEvidenceBytes)])))
+      .toBe('evidence_unsupported');
+    // SVG and every other file that is not a JPEG or a PNG: the format is read from the bytes, never
+    // from the name the file carries (S6).
+    expect(await cashEvidenceRefusal(new Blob(['<svg xmlns="http://www.w3.org/2000/svg"/>'])))
+      .toBe('evidence_unsupported');
+    const disguised = new File(['<?php echo 1; ?>'], 'comprobante.png', { type: 'image/png' });
+    expect(await cashEvidenceRefusal(disguised)).toBe('evidence_unsupported');
+    // The cap of 10000×10000 pixels is read from the header of the image, on both formats.
+    expect(await cashEvidenceRefusal(pngFile(10_001, 1))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(pngFile(1, 10_001))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(jpegFile(10_001, 10))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(jpegFile(10, 10_001))).toBe('evidence_dimensions');
+    // A PNG whose header does not state the two sides is not a file this screen can judge.
+    expect(await cashEvidenceRefusal(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])])))
+      .toBe('evidence_unsupported');
+    expect(await cashEvidenceRefusal(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])])))
+      .toBe('evidence_unsupported');
+    // The screen and the server refuse with the same words, because it is one message.
+    for (const code of ['evidence_empty', 'evidence_too_large', 'evidence_unsupported',
+      'evidence_dimensions', 'evidence_not_applicable'] as const) {
+      expect(cashErrorMessages[code]).toBeTruthy();
+      expect(parseCashError(JSON.stringify({ error: code }), 400)).toBe(code);
+    }
+  });
+
+  it('answers a refused upload with the words of the screen, never with the raw code', async () => {
+    for (const code of ['evidence_empty', 'evidence_too_large', 'evidence_unsupported',
+      'evidence_dimensions', 'evidence_not_applicable'] as const) {
+      const fetch = mockFetch().mockResolvedValue(json(JSON.stringify({ error: code }), 400));
+      // The file itself is one the screen admits: the refusal read back is the server's own.
+      const file = new File([await jpegFile(2, 2).arrayBuffer()], 'comprobante.jpg');
+      const refusal = await createCashAPI(fetch).record(
+        { kind: 'gasto', amount: '85.00', category_id: 5, description: '' }, csrf, undefined, file)
+        .catch(error => error);
+      expect(refusal).toBeInstanceOf(CashAPIError);
+      expect(refusal).toMatchObject({ code: code as CashErrorCode, status: 400 });
+      expect(cashErrorMessages[code as CashErrorCode]).not.toContain(code);
+    }
+    // A code this contract does not publish is never read as one of them.
+    expect(() => parseCashError(JSON.stringify({ error: 'evidence_corrupt' }), 400)).toThrow();
   });
 });

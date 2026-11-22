@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { closingMoneyText, closingSignedText } from './closingModel';
+import {
+  closingEvidencePath, closingEvidenceSizeText, closingEvidenceText, closingMoneyText,
+  closingSignedText,
+} from './closingModel';
 import { centsToMoney, parseTypedMoney } from './pointOfSaleModel';
 import TransferDate from './shared/TransferDate';
 import { createMetricsAPI, metricsPeriodToken, MetricsAPIError, type MetricsPeriod } from './metricsAPI';
 import {
-  CashAPIError, cashCatalogueUnavailable, cashErrorMessages, cashKindLabels, cashLedgerUnavailable,
-  cashWrittenKinds, createCashAPI, type CashCategory, type CashLedger, type CashLedgerEntry,
-  type CashMovementInput, type CashWrittenKind,
+  CashAPIError, cashCatalogueUnavailable, cashErrorMessages, cashEvidenceRefusal, cashKindLabels,
+  cashLedgerUnavailable, cashWrittenKinds, createCashAPI, type CashCategory, type CashLedger,
+  type CashLedgerEntry, type CashMovementInput, type CashWrittenKind,
 } from './cashAPI';
 
 export interface CashProps {
@@ -49,6 +52,13 @@ interface CatalogueState {
 const initialCatalogueState: CatalogueState = Object.freeze({
   phase: 'loading', options: [], problem: '',
 });
+
+/** One chosen photo of an expense: the file, the preview the browser shows of it and, while it has not
+ * been judged yet, no preview at all (S1). */
+interface Evidence {
+  readonly file: File;
+  readonly preview: string | null;
+}
 
 const money = (cents: bigint): string => closingMoneyText(cents);
 const signed = (cents: bigint): string => closingSignedText(cents);
@@ -100,6 +110,18 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
   const [catalogue, setCatalogue] = useState<CatalogueState>(initialCatalogueState);
   /** The attempts of the read of the catalogue: one when the screen loads, and one per retry. */
   const [catalogueAttempt, setCatalogueAttempt] = useState(0);
+
+  /** The photo of the expense being written: at most one, always optional (S1). */
+  const [evidence, setEvidence] = useState<Evidence | null>(null);
+  /** Why the chosen photo cannot be sent, in the words of the operator; empty when it can. */
+  const [evidenceProblem, setEvidenceProblem] = useState('');
+  /** Whether the chosen photo is still being judged, so no submit leaves before there is an answer. */
+  const [checkingEvidence, setCheckingEvidence] = useState(false);
+  const evidenceInput = useRef<HTMLInputElement>(null);
+  /** The object URL of the preview, given back as soon as it is replaced or let go. */
+  const previewURL = useRef<string | null>(null);
+  /** The attempt of the last chosen photo: a judgement still in flight never lands on a later choice. */
+  const evidenceAttempt = useRef(0);
 
   const [correcting, setCorrecting] = useState<CashLedgerEntry | null>(null);
   const [correctionAmount, setCorrectionAmount] = useState('');
@@ -247,6 +269,45 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
       book.expected_cents)} y el movimiento pide ${closingMoneyText(requested)}.`;
   }
 
+  /** The browser's own URL of the chosen file: the preview an <img> can show before anything is sent. */
+  function setPreview(file: File | null): string | null {
+    if (previewURL.current !== null) URL.revokeObjectURL(previewURL.current);
+    previewURL.current = file === null ? null : URL.createObjectURL(file);
+    return previewURL.current;
+  }
+
+  /** One photo is chosen at a time: a second choice replaces the first and is never added to it (S1). */
+  async function chooseEvidence(file: File) {
+    evidenceAttempt.current += 1;
+    const attempt = evidenceAttempt.current;
+    setEvidence({ file, preview: null });
+    setEvidenceProblem('');
+    setCheckingEvidence(true);
+    const refusal = await cashEvidenceRefusal(file);
+    if (attempt !== evidenceAttempt.current) return;
+    setCheckingEvidence(false);
+    if (refusal !== null) {
+      // The file stays in the card with its name and its size, so the operator sees what was refused
+      // and how big it is, and the movement is not written without the photo they attached (S6).
+      setEvidenceProblem(cashErrorMessages[refusal]);
+      return;
+    }
+    setEvidence({ file, preview: setPreview(file) });
+  }
+
+  /** Lets the chosen photo go, with its preview and the field the operator picked it from. */
+  function removeEvidence() {
+    evidenceAttempt.current += 1;
+    setPreview(null);
+    setEvidence(null);
+    setEvidenceProblem('');
+    setCheckingEvidence(false);
+    if (evidenceInput.current !== null) evidenceInput.current.value = '';
+  }
+
+  // The preview belongs to the browser and is given back when the card goes away.
+  useEffect(() => () => { if (previewURL.current !== null) URL.revokeObjectURL(previewURL.current); }, []);
+
   async function submitMovement(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
@@ -254,13 +315,20 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
     const typed = typedCents(amount);
     if ('problem' in typed) { setFormProblem(typed.problem); return; }
     let input: CashMovementInput;
+    // Only an expense may carry a photo, and only when the operator chose one (S1, S2).
+    let photo: File | null = null;
     if (kind === 'gasto') {
       // Without the closed list there is nothing to pick, and the card already says why.
       if (!gastoReady) return;
       const option = catalogue.options.find(entry => String(entry.id) === category);
       // A gasto writes no motive of its own: it either names one of the list or it is not recorded (S1, S3).
       if (option === undefined) { setFormProblem(cashMotiveMessage); return; }
+      // The photo is judged on this side before anything leaves the screen: a movement is never written
+      // without the receipt the operator attached to it (S1, S6).
+      if (checkingEvidence) return;
+      if (evidenceProblem !== '') return;
       input = { kind, amount: centsToMoney(typed.cents), category_id: option.id, description: note };
+      photo = evidence === null ? null : evidence.file;
     } else {
       const motive = reason.trim();
       if (motive === '') { setFormProblem(cashDescriptionMessage); return; }
@@ -268,8 +336,9 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
     }
     setBusy(true);
     try {
-      await api.record(input, csrf);
+      await api.record(input, csrf, undefined, photo);
       setAmount(''); setCategory(''); setNote(''); setReason('');
+      removeEvidence();
       setNotice(`${cashKindLabels[kind]} registrado en el libro de la caja.`);
       // The book is read again, so the band and the list describe the movement that was just written.
       setRevision(value => value + 1);
@@ -451,6 +520,12 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                           {entry.corrects_id !== null && <span className="cash-ref">
                             {`Corrige el movimiento #${entry.corrects_id}`}
                           </span>}
+                          {/* The row that carries a receipt opens the image itself: the book publishes
+                              the metadata alone, and a row without a photo shows nothing extra (S7). */}
+                          {entry.evidence !== null && <a className="cash-evidence-link"
+                            href={closingEvidencePath(entry.id)} target="_blank" rel="noreferrer"
+                            aria-label={`Ver el comprobante del movimiento #${entry.id}`}
+                            title={closingEvidenceText(entry.evidence)}>Ver comprobante</a>}
                         </td>
                         <td className="cash-author cash-col-author">
                           {`Cuenta #${entry.created_by_account_id}`}
@@ -530,7 +605,11 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                   <div className="cash-kinds" role="group" aria-label="Tipo de movimiento">
                     {cashWrittenKinds.map(option => <button key={option} type="button"
                       aria-pressed={kind === option} disabled={busy}
-                      onClick={() => setKind(option)}>{cashKindLabels[option]}</button>)}
+                      onClick={() => {
+                        // Only a gasto carries a receipt: choosing another kind lets the photo go (S2).
+                        if (option !== 'gasto') removeEvidence();
+                        setKind(option);
+                      }}>{cashKindLabels[option]}</button>)}
                   </div>
                   <label htmlFor="cash-amount">Monto en bolivianos</label>
                   <input ref={amountInput} id="cash-amount" inputMode="decimal" value={amount}
@@ -561,6 +640,32 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                             <label htmlFor="cash-note">Nota (opcional)</label>
                             <textarea id="cash-note" value={note} disabled={busy}
                               onChange={event => setNote(event.target.value)} />
+                            {/* The one optional photo of the ticket (S1): offered by an expense only, with
+                                its preview and its size on the card, before anything is sent (S2, S7). */}
+                            <label htmlFor="cash-evidence">Comprobante (opcional)</label>
+                            <input ref={evidenceInput} id="cash-evidence" type="file" disabled={busy}
+                              accept="image/jpeg,image/png"
+                              onChange={event => {
+                                const file = event.target.files?.[0] ?? null;
+                                if (file !== null) void chooseEvidence(file);
+                              }} />
+                            <p className="cash-note">
+                              Una sola foto por gasto: si elegís otra, reemplaza la que está. Sólo un
+                              gasto lleva comprobante; es una foto JPEG o PNG de hasta 8 MB.
+                            </p>
+                            {evidence !== null && <div className="cash-evidence">
+                              {evidence.preview !== null && <img className="cash-evidence-preview"
+                                src={evidence.preview} alt="Vista previa del comprobante" />}
+                              <p className="cash-evidence-name">{evidence.file.name}</p>
+                              <p className="cash-evidence-size">
+                                {closingEvidenceSizeText(evidence.file.size)}</p>
+                              <button type="button" disabled={busy} onClick={removeEvidence}>
+                                Quitar el comprobante
+                              </button>
+                            </div>}
+                            {evidenceProblem !== '' && <p role="alert" className="cash-problem">
+                              {evidenceProblem}
+                            </p>}
                           </>
                     : <>
                       {/* Aporte y recaudación no cambian: siguen con su motivo de texto libre (S4). */}
@@ -573,7 +678,7 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                   </p>
                   {formProblem !== '' && <p role="alert" className="cash-problem">{formProblem}</p>}
                   <button type="submit" className="primary cash-submit"
-                    disabled={busy || (kind === 'gasto' && !gastoReady)}>
+                    disabled={busy || (kind === 'gasto' && (!gastoReady || checkingEvidence))}>
                     {`Registrar ${cashKindLabels[kind].toLowerCase()}`}
                   </button>
                 </form>}

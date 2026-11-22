@@ -1170,6 +1170,10 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .cash-kind-recaudacion { background: #fffbef; border-color: #e8cf86; color: #805400; }
 .cash-kind-correccion { background: var(--tint); border-color: #d9b3c1; color: var(--wine); }
 .cash-ref { display: block; color: var(--muted); font-size: 12px; }
+/* The discreet way to open the receipt of a row: the book publishes the metadata of the photo and the
+   image is served by its own route, so a row without one renders nothing extra (S1, S7). */
+.cash-evidence-link { display: block; margin-top: 2px; color: var(--wine); font-size: 11px;
+  font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 
 /* The per-row action: 44px of target, and the reason it cannot be used written beside it. */
 .cash-action { text-align: right; white-space: nowrap; }
@@ -1197,6 +1201,21 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .cash-kinds button[aria-pressed="true"] { background: white; border-color: var(--muted);
   color: #242124; }
 .cash-stamp { color: var(--muted); font-size: 12px; line-height: 18px; }
+
+/* The one optional photo of an expense: the field where it is chosen and, beside it, what was chosen —
+   its preview, its name and its size — with the way to let it go before the movement is written (S1). */
+.cash-form input[type="file"] { padding: 8px 0; font-size: 12px; }
+.cash-evidence { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 2px 10px;
+  align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--page); }
+.cash-evidence-preview { grid-column: 1; grid-row: 1 / span 3; width: 72px; height: 72px;
+  object-fit: cover; border: 1px solid var(--border); border-radius: 4px; background: white; }
+.cash-evidence-name { grid-column: 2; grid-row: 1; font-size: 12px; font-weight: 600;
+  overflow-wrap: anywhere; }
+.cash-evidence-size { grid-column: 2; grid-row: 2; color: var(--muted); font-size: 12px; }
+.cash-evidence button { grid-column: 2; grid-row: 3; justify-self: start; min-height: 44px;
+  padding: 4px 0; background: none; border-color: transparent; color: var(--wine); font-size: 12px;
+  font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .cash-submit { min-height: 44px; }
 .cash-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .cash-actions button { min-height: 44px; }

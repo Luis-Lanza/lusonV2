@@ -11,7 +11,8 @@ import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import { parseInventory, queryURL, validSearch } from './model';
 import {
   canonicalCorrectionBody, closingCataloguePageSize, closingCents, closingDecisionPayload,
-  closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaxCountLines, closingMaxCounted,
+  closingEvidenceTypes, closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaxCountLines,
+  closingMaxCounted, closingMaxEvidenceBytes,
   closingMaxID, closingMaxMaterialID, closingMaxMaterialLines, closingMaxPage, closingPageSizes,
   closingRail, closingSignedCents, closingStatuses,
   closingFirstBranch, closingMaxBranch,
@@ -19,7 +20,7 @@ import {
   type ClosingCorrectionEffect, type ClosingCorrectionKind,
   type ClosingCorrectionPayload, type ClosingCorrectionQuantity, type ClosingCorrectionStatus,
   type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload, type CorrectionBody,
-  type ClosingExpense,
+  type ClosingEvidence, type ClosingEvidenceType, type ClosingExpense,
   type ClosingMaterialKind, type ClosingMaterialLine, type ClosingMaterialUnit,
   type ClosingOffer, type ClosingOfferLine,
   type ClosingPage, type ClosingPolarity, type ClosingPurchaseFund, type ClosingRail,
@@ -687,6 +688,30 @@ const expenseMaxDescription = 500;
 /** The bound of the label of one motive of the closed list an expense is recorded with (061, S2). */
 const expenseMaxLabel = 500;
 
+/** The digest the acta publishes for one photo: 32 bytes of lowercase hexadecimal. */
+const evidenceDigest = /^[0-9a-f]{64}$/;
+
+/**
+ * The receipt of one pay-out as the acta publishes it (S1, S7): the three keys of the contract — the
+ * content type the server validated by decoding the bytes, the size of those bytes and their SHA-256 —
+ * and JSON null on a row that carries no photo. The bytes are served by the image route and never travel
+ * inside the document. A receipt on a kind that never carries one is not a row this document wrote (S2).
+ */
+function evidenceOf(value: unknown, kind: string): ClosingEvidence | null {
+  if (value === null) return null;
+  const receipt = fields(value, ['type', 'size', 'sha256']);
+  if (typeof receipt.type !== 'string'
+    || !closingEvidenceTypes.includes(receipt.type as ClosingEvidenceType)) {
+    return invalidResponse();
+  }
+  const size = integer(receipt.size, 1, closingMaxEvidenceBytes);
+  if (typeof receipt.sha256 !== 'string' || !evidenceDigest.test(receipt.sha256)) {
+    return invalidResponse();
+  }
+  if (kind !== 'gasto') return invalidResponse();
+  return Object.freeze({ type: receipt.type as ClosingEvidenceType, size, sha256: receipt.sha256 });
+}
+
 /**
  * A motive of the closed list is the canonical text the catalogue stores (S2, S8): it says something and
  * it is published exactly as it is offered.
@@ -709,8 +734,9 @@ function motive(value: unknown): string {
  * correction that answers it —, the instant is the one the database stamped, and the reference is the
  * movement a correction answers and nothing else, exactly like the shape rule the database itself
  * enforces (S6). The motive is the pair the book publishes — the reference and the copy of the label it
- * had — stated by an expense only and never one without the other (S8). The rows are the order the
- * branch recorded them in, so a list that does not advance in id is refused.
+ * had — stated by an expense only and never one without the other (S8), and the receipt of the pay-out is
+ * the metadata the book publishes beside it, null on a correction and on a pay-out with no photo (S1, S7).
+ * The rows are the order the branch recorded them in, so a list that does not advance in id is refused.
  */
 function expensesOf(value: unknown): readonly ClosingExpense[] {
   if (!Array.isArray(value) || value.length > closingMaxCountLines) return invalidResponse();
@@ -718,7 +744,8 @@ function expensesOf(value: unknown): readonly ClosingExpense[] {
   let previous = 0;
   for (const entry of value) {
     const row = fields(entry, ['id', 'branch_location_id', 'kind', 'amount', 'description',
-      'occurred_at', 'created_by_account_id', 'corrects_id', 'category_id', 'category_label']);
+      'occurred_at', 'created_by_account_id', 'corrects_id', 'category_id', 'category_label',
+      'evidence']);
     const id = integer(row.id, 1, Number.MAX_SAFE_INTEGER);
     if (id <= previous) return invalidResponse();
     previous = id;
@@ -746,7 +773,7 @@ function expensesOf(value: unknown): readonly ClosingExpense[] {
     if (category_id !== null && kind !== 'gasto') return invalidResponse();
     expenses.push(Object.freeze({
       id, kind: kind as ClosingExpense['kind'], amount_cents, motive: category_label, note,
-      corrects_id,
+      corrects_id, evidence: evidenceOf(row.evidence, kind),
     }));
   }
   return Object.freeze(expenses);

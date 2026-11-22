@@ -529,14 +529,17 @@ describe('the expenses the branch is being charged for (S8, S13)', () => {
     // The row the verification read back with no visible reason: «Alquiler» and no note at all (S3).
     { id: 7, branch_location_id: 2, kind: 'gasto', amount: '100.00', description: '',
       occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null,
-      category_id: 1, category_label: 'Alquiler' },
+      category_id: 1, category_label: 'Alquiler', evidence: null },
+    // The pay-out whose ticket the branch photographed: the acta publishes its metadata (S1, S7).
     { id: 8, branch_location_id: 2, kind: 'gasto', amount: '75.00',
       description: 'Detergente y escobas', occurred_at: '2026-09-12T10:05:00Z',
-      created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza' },
+      created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza',
+      evidence: { type: 'image/jpeg', size: 482_913, sha256: 'a'.repeat(64) } },
     // A row recorded before the closed list existed: its own text is the reason it states (S7).
     { id: 9, branch_location_id: 2, kind: 'gasto', amount: '40.00',
       description: 'Flete de la semana pasada', occurred_at: '2026-09-12T10:06:00Z',
-      created_by_account_id: 2, corrects_id: null, category_id: null, category_label: null },
+      created_by_account_id: 2, corrects_id: null, category_id: null, category_label: null,
+      evidence: null },
   ];
 
   it('names the motive of every expense, with the note under it', async () => {
@@ -560,6 +563,27 @@ describe('the expenses the branch is being charged for (S8, S13)', () => {
     await ready(h);
     // A period with no expenses states no list at all, instead of an empty heading.
     expect(within(cash()).queryByRole('group', { name: 'Gastos del período' })).not.toBeInTheDocument();
+  });
+
+  it('opens the receipt of the pay-out that carries one and shows nothing on the row without it (S7)', async () => {
+    const h = server(proposed({ expenses }));
+    await ready(h);
+    const list = within(cash()).getByRole('group', { name: 'Gastos del período' });
+    const row = list.querySelector('[data-expense-id="8"]') as HTMLElement;
+    // The photo of the ticket opens from the row itself, served by the route of the movement.
+    const open = within(row).getByRole('link', { name: 'Ver el comprobante del gasto #8' });
+    expect(open).toHaveAttribute('href', '/api/closings/cash-movements/8/evidence');
+    expect(open).toHaveAttribute('target', '_blank');
+    expect(open).toHaveTextContent('Ver comprobante');
+    // The acta publishes the metadata alone: no bytes and no digest on the screen (S7).
+    expect(open).toHaveAttribute('title', 'Comprobante JPEG · 472 KB');
+    expect(row.textContent).not.toContain('sha256');
+    // A pay-out recorded without a photo shows nothing extra at all.
+    for (const id of [7, 9]) {
+      const without = list.querySelector(`[data-expense-id="${id}"]`) as HTMLElement;
+      expect(within(without).queryByRole('link')).not.toBeInTheDocument();
+      expect(without.textContent).not.toContain('comprobante');
+    }
   });
 });
 
