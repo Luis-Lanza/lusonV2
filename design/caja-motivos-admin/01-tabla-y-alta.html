@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motivos de caja · Catálogo · Luson</title>
+<style>
+:root{--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;--surface:#FFFFFF;--disabled-bg:#EFEDEF;--disabled-ink:#595459;--disabled-border:#AAA5AA;--soft-shadow:0 1px 2px #2421240D;--reject-ink:#991515;--reject-border:#CCAAAA;--received-ink:#047857;--received-bg:#ECFDF5;--received-border:#A7F3D0;--shortage-bg:#FFF0F0;--shortage-border:#FFDAD6;--warning-bg:#FFFBEF;--warning-border:#E8CF86;--warning-ink:#805400}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font:14px/1.4 Inter,sans-serif;color:var(--ink);background:var(--page)}
+button{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0 12px;min-height:44px;display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+button:hover{background:var(--tint)}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--muted);border-radius:4px;padding:8px 12px;min-height:44px}
+.shell{display:flex;min-height:900px}
+.sidebar{width:240px;flex:0 0 240px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:0 0 12px}
+.brand{display:flex;align-items:center;gap:10px;padding:16px 12px;border-bottom:1px solid var(--border)}
+.brand-mark{width:28px;height:28px;border-radius:6px;background:var(--wine);flex:0 0 auto}
+.brand strong{display:block;font-size:18px;font-weight:700;color:var(--wine);letter-spacing:-.015em}
+.brand small{display:block;font-size:11px;color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:4px;padding:12px}
+.nav button{justify-content:flex-start;border-color:transparent;background:none;min-height:40px;border-radius:0;padding:0 12px}
+.nav button:hover{background:var(--tint)}
+.nav button[aria-current="page"]{background:var(--tint);box-shadow:inset 2px 0 0 var(--wine);font-weight:600}
+.identity{margin-top:auto;padding:10px 12px;background:var(--page);border-radius:8px;color:var(--muted);font-size:12px}
+.main{flex:1 1 auto;min-width:0;padding:80px 24px 24px 40px;position:relative}
+.topbar{position:absolute;inset:0 0 auto 0;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.topbar strong{font-size:18px;font-weight:700}
+.topbar span{font-size:12px;color:var(--muted)}
+.topbar span b{color:var(--ink);font-weight:600}
+.crumbs{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+h1{margin:0 0 4px;font-size:22px;font-weight:700;letter-spacing:-.015em}
+.lede{margin:0;max-width:76ch;font-size:13px;line-height:18px;color:var(--muted)}
+.lede strong{color:var(--ink);font-weight:600}
+.tabs{display:flex;gap:4px;margin:16px 0 0;border-bottom:1px solid var(--border)}
+.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;min-height:40px;padding:0 14px;font-weight:600;color:var(--muted)}
+.tabs button[aria-selected="true"]{color:var(--wine);border-bottom-color:var(--wine)}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--soft-shadow);margin-top:16px}
+.panel-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:18px 24px 12px}
+.panel-head h2{margin:0;font-size:18px;font-weight:600}
+.panel-head p{margin:4px 0 0;font-size:12px;color:var(--muted)}
+.tag{display:inline-block;padding:4px 8px;border:1px solid var(--border);border-radius:3px;background:var(--page);color:var(--muted);font-size:11px;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+caption{padding:0 24px 8px;text-align:left;color:var(--muted);font-size:12px}
+th{padding:0 12px;height:40px;text-align:left;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);background:var(--page);border-bottom:1px solid var(--border)}
+td{padding:0 12px;height:44px;border-bottom:1px solid var(--border);vertical-align:middle}
+th:first-child,td:first-child{padding-left:24px}
+th:last-child,td:last-child{padding-right:24px;text-align:right}
+tbody tr:last-child td{border-bottom:0}
+.num{font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
+.label{font-weight:600}
+.state{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid}
+.state-active{background:var(--received-bg);border-color:var(--received-border);color:var(--received-ink)}
+.state-retired{background:var(--disabled-bg);border-color:var(--disabled-border);color:var(--disabled-ink)}
+.small{font-size:12px;color:var(--muted)}
+.actions{display:flex;gap:8px;justify-content:flex-end}
+.actions button{min-height:36px;padding:0 10px;font-size:13px;background:none;border-color:transparent;font-weight:600;color:var(--wine)}
+.actions button:hover{background:var(--tint)}
+.actions button[disabled]{color:var(--disabled-ink);background:var(--disabled-bg);border-color:var(--disabled-border);cursor:not-allowed;text-decoration:none}
+.foot{border-top:1px solid var(--border);padding:16px 24px;display:grid;gap:10px;background:var(--surface);border-radius:0 0 8px 8px}
+.field{display:grid;gap:6px;max-width:520px}
+.field label{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.inline{display:flex;gap:8px;align-items:flex-start}
+.inline input{flex:1 1 auto}
+.primary{background:var(--wine);border-color:var(--wine);color:var(--surface);font-weight:600}
+.primary:hover{background:var(--hover)}
+.error{margin:0;color:var(--reject-ink);font-size:12px;font-weight:600;display:flex;gap:6px;align-items:flex-start}
+.note{margin:0;color:var(--muted);font-size:12px;line-height:18px;max-width:80ch}
+.guard{border-top:1px solid var(--border);padding:12px 24px;background:var(--warning-bg);border-radius:0 0 8px 8px;color:var(--warning-ink);font-size:12px;line-height:18px;display:flex;gap:8px}
+.guard b{font-weight:600}
+details{border-top:1px solid var(--border)}
+summary{cursor:pointer;list-style:none;padding:14px 24px;font-size:13px;font-weight:600;color:var(--muted);display:flex;gap:8px;align-items:center;min-height:44px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--wine)}
+details[open] summary::before{content:"▾"}
+details summary:hover{background:var(--page)}
+.live{display:inline-flex;align-items:center;gap:8px;padding:4px 12px;border-radius:999px;background:var(--tint);color:var(--wine);font-size:12px;font-weight:600}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--received-ink);flex:0 0 auto}
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+@media (prefers-reduced-motion:no-preference){button,summary{transition:background-color .12s ease}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+    <nav class="nav" aria-label="Secciones">
+      <button type="button" aria-current="page">Inventario</button>
+      <button type="button">Transferencias <span class="tag" style="margin-left:auto">0</span></button>
+      <button type="button">Rendición de cuentas</button>
+      <button type="button">Punto de venta</button>
+      <button type="button">Historial de ventas</button>
+      <button type="button">Compras</button>
+      <button type="button">Caja</button>
+      <button type="button">Métricas</button>
+      <button type="button">Mi contraseña</button>
+    </nav>
+    <div class="identity">
+      <strong style="display:block;color:var(--ink);font-size:13px">dev_almacen</strong>
+      Almacén central
+      <button type="button" style="margin-top:8px;width:100%;min-height:36px;justify-content:flex-start;background:none;border-color:transparent;color:var(--muted);font-weight:600">Salir</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar"><strong>Catálogo</strong><span>Ubicación asignada: <b>Almacén central</b></span></div>
+
+    <p class="crumbs">Almacén · Catálogo</p>
+    <h1>Motivos de caja</h1>
+    <p class="lede">Las opciones que la sucursal elige cuando registra un gasto. Un motivo archivado deja de
+      ofrecerse y <strong>nunca se borra</strong>: los gastos que lo usaron siguen explicándose con su etiqueta.
+      La lista es la misma para todas las sucursales.</p>
+
+    <div class="tabs" role="tablist" aria-label="Catálogos">
+      <button type="button" role="tab" aria-selected="false">Baterías</button>
+      <button type="button" role="tab" aria-selected="false">Otros productos</button>
+      <button type="button" role="tab" aria-selected="true">Motivos de caja</button>
+    </div>
+
+    <section class="panel" aria-labelledby="activos">
+      <div class="panel-head">
+        <div>
+          <h2 id="activos">Motivos activos</h2>
+          <p>En el orden en que la sucursal los ve en el selector. El que se agrega va al final.</p>
+        </div>
+        <span class="live"><span class="dot" aria-hidden="true"></span> En vivo en las sucursales</span>
+      </div>
+      <table>
+        <caption>Un motivo nuevo tarda lo que tarda el aviso en llegar: la sucursal lo ve sin recargar la página.</caption>
+        <thead>
+          <tr><th scope="col">Nº</th><th scope="col">Motivo</th><th scope="col">Estado</th><th scope="col">Acciones</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="num">01</td><td class="label">Alquiler</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">02</td><td class="label">Internet</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">03</td><td class="label">Energía eléctrica</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">04</td><td class="label">Agua</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">05</td><td class="label">Limpieza</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">06</td><td class="label">Sueldos</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">07</td><td class="label">Transporte</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">08</td><td class="label">Insumos de tienda</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">09</td><td class="label">Mantenimiento</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">10</td><td class="label">Impuestos</td><td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button><button type="button">Archivar</button></div></td></tr>
+          <tr><td class="num">11</td><td class="label">Otros gastos<span class="small" style="display:block;font-weight:400">El cajón de sastre: todo lo que no encaja arriba.</span></td>
+            <td><span class="state state-active">Activo</span></td>
+            <td><div class="actions"><button type="button">Renombrar</button>
+              <button type="button" disabled aria-describedby="otros-why">Archivar</button></div></td></tr>
+        </tbody>
+      </table>
+      <div class="guard" id="otros-why">
+        <span aria-hidden="true">◆</span>
+        <p style="margin:0"><b>«Otros gastos» no se archiva.</b> Es el cajón de sastre; sin él un gasto que no
+          encaja en ningún motivo no tendría dónde ir. Tampoco se puede archivar el último motivo activo:
+          sin ninguno, la sucursal no podría registrar un gasto.</p>
+      </div>
+
+      <div class="foot">
+        <form class="field" novalidate>
+          <label for="nuevo">Agregar un motivo</label>
+          <div class="inline">
+            <input id="nuevo" name="nuevo" value="Limpieza" aria-invalid="true" aria-describedby="nuevo-error" autocomplete="off">
+            <button type="submit" class="primary">Agregar al final</button>
+          </div>
+          <p class="error" id="nuevo-error" role="alert"><span aria-hidden="true">▲</span> Ya existe un motivo llamado «Limpieza». Elegí otro nombre.</p>
+          <p class="note">Se agrega en la posición 12 y aparece al final del selector de las sucursales. Hasta 500 caracteres, sin espacios al principio ni al final.</p>
+        </form>
+      </div>
+
+      <details>
+        <summary>Archivados (1)</summary>
+        <table>
+          <caption>No se ofrecen en el selector. Los gastos que los usaron los siguen mostrando.</caption>
+          <thead><tr><th scope="col">Motivo</th><th scope="col">Estado</th><th scope="col">Acciones</th></tr></thead>
+          <tbody>
+            <tr>
+              <td class="label">Gas<span class="small" style="display:block;font-weight:400">Archivado el 12/11/2026 por dev_almacen</span></td>
+              <td><span class="state state-retired">Archivado</span></td>
+              <td><div class="actions"><button type="button">Reactivar</button></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </details>
+    </section>
+  </main>
+</div>
+</body>
+</html>

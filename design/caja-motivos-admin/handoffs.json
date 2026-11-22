@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "01-tabla-y-alta.html",
+  "handoffs": {
+    "01-tabla-y-alta.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-11-22T20:25:42.248Z",
+      "startedAt": "2026-11-22T20:25:53.806Z",
+      "implementedAt": null,
+      "feature": "odd/tasks/caja-motivos-admin.md",
+      "note": "Arrancando la vertical: schema (migración 063) y scope de realtime primero, después API admin y pantalla."
+    }
+  }
+}
