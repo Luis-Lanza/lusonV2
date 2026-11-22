@@ -171,3 +171,21 @@ L12 — Estrategia de entrega elegida por el humano ante el excedente de revisi�
 rebanadas (A, B, C1, C2+C3, D1, D2, E) son sus hijas, en ese orden; los PRs hijos apuntan a la tracker y
 cada uno lleva su diagrama de dependencia con la rebanada actual marcada. La elección no autoriza push,
 creación de PRs ni merge: eso queda a decisión del humano.
+
+L13 — Verificación independiente (T8), sobre `ec983ee`: **S3-S14 `met`**, con sondas propias del
+verificador y una regresión real encontrada. El defecto: tras registrar un gasto, `Cash.tsx` limpiaba el
+selector pero no la elección recordada, así que la primera relectura de la lista que ya no traía ese
+motivo anunciaba «se archivó mientras registrabas el gasto» a un operador que ya había terminado. Un
+mensaje que miente, peor que uno ausente: le pide reelegir en un formulario que no tiene nada elegido.
+Corregido en `052259a` con su prueba de regresión, que **falla sin el arreglo y pasa con él** (RED
+observado). El verificador también encontró que el whitelist de SSE no tenía prueba: adopté su sonda
+end-to-end como `TestCatalogueWriteReachesEveryStream` (`9fb3b9e`), que prueba el frame en los tres
+streams y que un write sin commit, la guarda y el store no publican nada; descarté sus otras sondas
+porque duplicaban pruebas ya presentes.
+Huecos que quedan declarados y sin cubrir, por decisión: la solapa nueva de `CatalogScreens` no tiene
+prueba a nivel `App` (su `aria-pressed` y «una pantalla con hash la cierra»), la concurrencia del alta
+contra el archivo bajo el lock asesor no tiene prueba, y ninguna prueba cubre que una sesión de sucursal
+monte la suscripción al scope por la vía del shell (sólo `Cash.test.tsx` llama al notificador).
+Evidencia final: `make test-pg` exit 0 (20 paquetes, fixture limpio dos veces); web `npm test` exit 0 con
+4.564 pruebas en 87 archivos; `tsc --noEmit` exit 0; `lint` exit 0. Servidor local en
+`http://127.0.0.1:8080` sobre la base en versión 63 con el bundle que incluye la solapa y el arreglo.
