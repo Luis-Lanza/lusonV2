@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,12 +11,15 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"luson/api/internal/auth"
 	"luson/api/internal/closings"
@@ -406,6 +410,124 @@ func TestClosingsCashMovementEvidencePixelBound(t *testing.T) {
 	if len(book.Movements) != 1 || book.Expected != "90.00" {
 		t.Fatalf("a refused boundary writes nothing and moves no drawer (S4): %+v", book)
 	}
+}
+
+// TestClosingsCashMovementTruncatedUploadIsInvalidRequest pins the one rule for a body that did not
+// arrive complete (S4, S6): an upload cut in the middle is a malformed request, whatever its
+// Content-Length states, and it is never an empty success. The two shapes are the connection that dies
+// before the bytes it declared and the one that dies inside a body that declared exactly what it sent.
+// Both leave the book exactly as it was.
+func TestClosingsCashMovementTruncatedUploadIsInvalidRequest(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	body, contentType := closingUploadBody(t,
+		movementPart(`{"kind":"gasto","amount":"10.00","description":"Detergente","category_id":1}`),
+		evidencePart(evidenceJPEG(t, 8, 8)))
+	// The body stops inside the second part: the photo never finishes and the closing boundary of the
+	// multipart body never arrives.
+	cut := len(body) - 40
+
+	for _, shape := range []struct {
+		name     string
+		declared int
+	}{
+		{"declares more bytes than it sends", len(body)},
+		{"declares exactly what it sends", cut},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			before := f.drawerState(t)
+			status, answer := f.cutUpload(t, body[:cut], shape.declared, contentType)
+			if status != 400 || strings.TrimSpace(answer) != `{"error":"invalid_request"}` {
+				t.Fatalf("the upload that %s answers 400 invalid_request, got %d %q", shape.name,
+					status, answer)
+			}
+			if after := f.drawerState(t); after != before {
+				t.Fatalf("the upload that %s wrote nothing (S4): %q before, %q after", shape.name,
+					before, after)
+			}
+		})
+	}
+}
+
+// closingUploadBody is the multipart body of one upload as one buffer, so a test can cut it in the
+// middle instead of sending it whole.
+func closingUploadBody(t *testing.T, parts ...multipartPart) ([]byte, string) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, part := range parts {
+		field, err := writer.CreateFormFile(part.name, part.filename)
+		if err != nil {
+			t.Fatal("the multipart fixture could not be built")
+		}
+		if _, err := field.Write(part.body); err != nil {
+			t.Fatal("the multipart part could not be written")
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal("the multipart fixture could not be closed")
+	}
+	return body.Bytes(), writer.FormDataContentType()
+}
+
+// cutUpload sends one upload through a real connection, stops writing at the bytes it holds, shuts
+// its own side of the connection and reads the answer: the shape of a client that dies mid-upload
+// while the server still has to answer.
+func (f *closingHTTPFixture) cutUpload(t *testing.T, body []byte, declared int, contentType string) (int, string) {
+	t.Helper()
+	server := httptest.NewServer(f.handler)
+	t.Cleanup(server.Close)
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("the upload connection could not be opened: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		t.Fatalf("the upload connection could not be bounded: %v", err)
+	}
+	token := f.tokens[1]
+	head := fmt.Sprintf("POST /api/closings/cash-movements HTTP/1.1\r\nHost: %s\r\n"+
+		"Content-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n"+
+		"Cookie: %s=%s\r\nX-CSRF-Token: %s\r\nOrigin: %s\r\nSec-Fetch-Site: same-origin\r\n\r\n",
+		server.Listener.Addr().String(), contentType, declared, sessionCookie, token, auth.CSRF(token),
+		f.cfg.Origin)
+	if _, err := conn.Write([]byte(head)); err != nil {
+		t.Fatalf("the upload header could not be written: %v", err)
+	}
+	if _, err := conn.Write(body); err != nil {
+		t.Fatalf("the upload body could not be written: %v", err)
+	}
+	closed, ok := conn.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("the upload connection is not a TCP connection: %T", conn)
+	}
+	// The client goes on to read the answer, but nothing more of the body will ever arrive.
+	if err := closed.CloseWrite(); err != nil {
+		t.Fatalf("the upload connection could not be half closed: %v", err)
+	}
+	answer, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("the cut upload answered nothing: %v", err)
+	}
+	defer answer.Body.Close()
+	read, err := io.ReadAll(answer.Body)
+	if err != nil {
+		t.Fatalf("the answer of the cut upload could not be read: %v", err)
+	}
+	return answer.StatusCode, string(read)
+}
+
+// drawerState is the two facts a cut upload must leave untouched: how many movements the branch wrote
+// and what its drawer expects.
+func (f *closingHTTPFixture) drawerState(t *testing.T) string {
+	t.Helper()
+	var state string
+	if err := f.p.QueryRow(f.ctx, `SELECT count(*)::text||':'||
+ branch_drawer_expected(2::smallint)::text FROM branch_cash_movements`).Scan(&state); err != nil {
+		t.Fatalf("the state of the drawer could not be read: %v", err)
+	}
+	return state
 }
 
 // TestClosingsCashMovementEvidenceImage pins S8 over HTTP: the bytes are served by an authenticated

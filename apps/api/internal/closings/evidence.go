@@ -87,7 +87,9 @@ type EvidenceImage struct {
 // magic bytes select the only two formats this product accepts, and a full decode of the image is the
 // proof that the bytes are really one -- a renamed script, an SVG and a polyglot all fail it. An empty
 // file, a file above the cap, a file that does not decode and an image above the pixel cap are refused
-// with their own class, and nothing of what the caller says about the file is read.
+// with their own class, and nothing of what the caller says about the file is read. A body that stops
+// in the middle is not one of those classes: it never arrived complete, so it is the malformed request
+// ErrInvalid names.
 //
 // The read stops at the cap instead of buffering the body: one byte above the largest admitted receipt
 // is enough to refuse it.
@@ -97,13 +99,22 @@ func ReadEvidence(source io.Reader) (EvidenceUpload, error) {
 
 // ReadEvidenceContext is ReadEvidence for one request: it waits for a slot of the validator under the
 // request's own context, so an upload that is cancelled while it queues is answered by that context
-// instead of waiting for the uploads ahead of it, and the slot it never owned is never leaked.
+// instead of waiting for the uploads ahead of it, and the slot it never owned is never leaked. A body
+// that stops after the slot is granted is the incomplete upload ErrInvalid names, never a format
+// refusal.
 func ReadEvidenceContext(ctx context.Context, source io.Reader) (EvidenceUpload, error) {
 	if source == nil {
 		return EvidenceUpload{}, ErrEvidenceEmpty
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// A request that is already cancelled never enters the validator, even when a slot is free: taking
+	// one only to drop it on the first read would hold it for nothing.
+	select {
+	case <-ctx.Done():
+		return EvidenceUpload{}, ctx.Err()
+	default:
 	}
 	select {
 	case evidenceSlots <- struct{}{}:
@@ -113,14 +124,11 @@ func ReadEvidenceContext(ctx context.Context, source io.Reader) (EvidenceUpload,
 	defer func() { <-evidenceSlots }()
 	body, err := io.ReadAll(io.LimitReader(contextSource{ctx: ctx, source: source}, MaxEvidenceBytes+1))
 	if err != nil {
-		// A read that stops because the request is gone answers the context, not a refusal: there is
-		// nobody left to answer. Any other stop is the truncated file this contract refuses.
-		if contextErr := ctx.Err(); contextErr != nil {
-			return EvidenceUpload{}, contextErr
-		}
-		// An upload that stops in the middle is a file that does not decode to its end, which is the
-		// refusal this contract states for a truncated receipt.
-		return EvidenceUpload{}, ErrEvidenceUnsupported
+		// A body that stops in the middle never arrived complete, so the receipt was never judged: the
+		// request is malformed and not a file of a format this contract refuses (S4, S6). One answer
+		// covers both shapes of a cut upload -- a connection that dies before the bytes its
+		// Content-Length declared and one that declared exactly what it sent.
+		return EvidenceUpload{}, ErrInvalid
 	}
 	if len(body) == 0 {
 		return EvidenceUpload{}, ErrEvidenceEmpty

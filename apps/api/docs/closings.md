@@ -711,12 +711,16 @@ applies to it unchanged, and the `evidence` part is judged by the bytes it conta
 * Only **JPEG** and **PNG** are accepted, and the format is decided by the **content**, never by the
   declared `Content-Type`, the extension or the file name: the magic bytes select the decoder and a
   **full decode** of the image is the proof that the file really is one, so an SVG, a renamed script
-  and a truncated image are all refused (S6).
-* The whole upload must be the image: the decode has to reach the end of the file, and not only the
-  end of the image. Both decoders stop at their own end marker and would otherwise accept anything
-  glued behind it, so a **polyglot** — a real PNG or JPEG followed by a zip header, a script or any
-  other payload — is refused with `evidence_unsupported` and never stored. A single trailing byte is
-  already a refusal.
+  and a corrupt image are all refused (S6).
+* The whole **complete** body must be the image: the decode has to consume the file to its end, and not
+  only the image to its end marker. Both decoders stop at their own end marker and would otherwise
+  accept anything glued behind it, so a **polyglot** — a real PNG or JPEG followed by a zip header, a
+  script or any other payload — is refused with `evidence_unsupported` and never stored. A single
+  trailing byte is already a refusal.
+* A body that **does not arrive complete** — the connection is cut in the middle, whether the request
+  declared more bytes than it sent or exactly what it sent — is never judged at all: it is
+  `400 {"error":"invalid_request"}`. It is never an empty success, and it is never reported as a
+  refused format, because the receipt never reached the decoder.
 * The caps are **8 MB** of bytes and **6000×6000** pixels. The upload is read through the byte cap
   and no further, the size is judged before anything is decoded, and the image is measured from its
   own header before it is decoded whole, so an image above the pixel cap is refused without being
@@ -743,9 +747,10 @@ Refusals of the upload, in the creation:
 |---|---|
 | The file states no bytes | `400 {"error":"evidence_empty"}` |
 | The file is above the 8 MB cap | `400 {"error":"evidence_too_large"}` |
-| The bytes are not a JPEG or a PNG, or the decode does not reach the end of the file | `400 {"error":"evidence_unsupported"}` |
+| The bytes are not a JPEG or a PNG, or the image does not decode whole | `400 {"error":"evidence_unsupported"}` |
 | The image is above the 6000×6000 pixel cap | `400 {"error":"evidence_dimensions"}` |
 | A receipt on a kind that is not a `gasto` | `400 {"error":"evidence_not_applicable"}` |
+| The body did not arrive complete: the connection was cut before the declared bytes or before the end of the multipart body | `400 {"error":"invalid_request"}` |
 | A repeated `evidence` part, a missing or repeated `movement` part, or an unknown part | `400 {"error":"invalid_request"}` |
 
 Every one of them writes nothing: no movement, no receipt, and no change to the drawer (S4).
@@ -1173,14 +1178,14 @@ about instead of a generic code.
 
 | Status | Code | Companion key | Meaning |
 |---|---|---|---|
-| 400 | `invalid_request` | — | Malformed body or framing, an unknown or duplicate key, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
+| 400 | `invalid_request` | — | Malformed body or framing, a body that did not arrive complete, an unknown or duplicate key, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
 | 400 | `correction_target_invalid` | — | A correction of the drawer names a movement it may not answer: an unknown one, one of another branch, another correction, the transfer of a settlement or a movement of a period a closure already signed (LC030) |
 | 400 | `category_required` | — | An expense states no motive, and the motive is mandatory (LC033) |
 | 400 | `category_unknown` | — | The motive of an expense is not one the closed list offers, or it is archived (LC033) |
 | 400 | `category_not_applicable` | — | A motive was stated on a kind that names none: only an expense is recorded with one (LC033) |
 | 400 | `evidence_empty` | — | The uploaded receipt states no bytes |
 | 400 | `evidence_too_large` | — | The uploaded receipt is above the 8 MB cap |
-| 400 | `evidence_unsupported` | — | The uploaded bytes are not a JPEG nor a PNG, or the decode does not reach the end of the file: a truncated image and one with a payload behind it answer the same |
+| 400 | `evidence_unsupported` | — | The uploaded bytes are not a JPEG nor a PNG, or the image does not decode whole: a corrupt image and one with a payload behind its end answer the same. A body that stopped arriving is `invalid_request` instead, because it was never decoded |
 | 400 | `evidence_dimensions` | — | The uploaded image is above 6000×6000 pixels |
 | 400 | `evidence_not_applicable` | — | A receipt was uploaded on a kind that carries none: only a `gasto` carries one |
 | 401 | `unauthenticated` | — | No session |

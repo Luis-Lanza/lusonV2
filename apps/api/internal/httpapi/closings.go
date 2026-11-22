@@ -3050,10 +3050,13 @@ func (a *API) closingCashMovements(store *closings.Store) http.HandlerFunc {
 		}
 		body, receipt, err := decodeClosingCashMovementUpload(r)
 		if err != nil {
-			// An upload abandoned before it owned a slot of the validator answers its own context and
-			// not one of the refusals of this contract: there is nobody left to read it (S6).
+			// The refusal is always written, even when the request is already gone: writing to a
+			// connection nobody reads fails harmlessly, while returning without a status makes net/http
+			// answer 200 to an upload this route never processed (S4, S6). An upload that was cut --
+			// including one whose request was cancelled while it waited for the validator -- never
+			// arrived complete, so it was never judged and is the malformed request it is.
 			if r.Context().Err() != nil {
-				return
+				err = closings.ErrInvalid
 			}
 			closingFailure(w, err)
 			return
