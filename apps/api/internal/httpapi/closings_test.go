@@ -4192,7 +4192,7 @@ func TestClosingsCashCategoriesRead(t *testing.T) {
 	}
 	// An archived motive stops being offered (S8), and the expenses that already name it keep their own
 	// copy of the label it had.
-	if _, err := f.p.Exec(f.ctx, `UPDATE branch_cash_categories SET retired_at=now()
+	if _, err := f.p.Exec(f.ctx, `UPDATE branch_cash_categories SET retired_at=now(), retired_by='dev_almacen'
  WHERE label='Agua'`); err != nil {
 		t.Fatalf("a motive must be archivable: %v", err)
 	}

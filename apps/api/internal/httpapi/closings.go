@@ -146,7 +146,8 @@ func NewWithClosings(base http.Handler, service *auth.Service, cfg config.Auth, 
 
 // closingRoute reports whether this path belongs to the settlement contract.
 func closingRoute(path string) bool {
-	return path == closingsCollectionPath || strings.HasPrefix(path, closingsCollectionPath+"/")
+	return path == closingsCollectionPath || strings.HasPrefix(path, closingsCollectionPath+"/") ||
+		cashCategoryAdminRoute(path)
 }
 
 // closingPath refuses ambiguous settlement paths: a doubled slash, a dot segment, a
@@ -183,6 +184,13 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux.HandleFunc(closingsCashCorrectionsPath, a.closingCashCorrections(store))
 	mux.HandleFunc(closingsCashLedgerPath, a.closingCashLedger(store))
 	mux.HandleFunc(closingsCashCategoriesPath, a.closingCashCategories(store))
+	mux.HandleFunc(closingCashCategoryAdminPath, a.adminCashCategories(store))
+	mux.HandleFunc(closingCashCategoryAdminRenamePath, a.adminCashCategoryRename(store))
+	mux.HandleFunc(closingCashCategoryAdminRetirePath, a.adminCashCategoryRetire(store))
+	mux.HandleFunc(closingCashCategoryAdminReactivatePath, a.adminCashCategoryReactivate(store))
+	mux.HandleFunc(closingCashCategoryAdminPath+"/", func(w http.ResponseWriter, r *http.Request) {
+		failure(w, 404, "not_found")
+	})
 	mux.HandleFunc(closingsCorrectionsPath, a.closingCorrections(store))
 	mux.HandleFunc(closingsCorrectionDecisionPath, a.closingCorrectionDecision(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/count", a.closingCount(store))
@@ -338,6 +346,18 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// A motive on a kind that states none (LC033, S3, S4): only an expense is recorded with one, so the
 		// contribution and the collection are answered with their own code.
 		failure(w, 400, "category_not_applicable")
+	case errors.Is(err, closings.ErrCategoryMissing):
+		// The administration named a motive the catalogue does not hold (S13).
+		failure(w, 404, "category_unknown")
+	case errors.Is(err, closings.ErrCategoryDuplicate):
+		// The label is already a row of the catalogue (S13).
+		failure(w, 409, "duplicate_label")
+	case errors.Is(err, closings.ErrCategoryPinned):
+		// The catch-all is never archived (LC035, S10).
+		failure(w, 409, "category_pinned")
+	case errors.Is(err, closings.ErrCategoryLastActive):
+		// The last offered motive is never archived (LC036, S10).
+		failure(w, 409, "last_category")
 	case errors.Is(err, closings.ErrInvalid):
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, closings.ErrForbidden):
