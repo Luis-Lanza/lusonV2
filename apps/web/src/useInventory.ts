@@ -99,6 +99,18 @@ export function notifyClosingInvalidation(): void {
     try { listener(); } catch { /* No subscriber payload or error is logged. */ }
   }
 }
+// The list of motives is global, so its scope carries no location and the frame reaches every
+// session: whoever has the cash screen or the catalogue open re-reads the list it is showing.
+const catalogueListeners = new Set<() => void>();
+export function subscribeCatalogueInvalidation(listener: () => void): () => void {
+  catalogueListeners.add(listener);
+  return () => { catalogueListeners.delete(listener); };
+}
+export function notifyCatalogueInvalidation(): void {
+  for (const listener of [...catalogueListeners]) {
+    try { listener(); } catch { /* No subscriber payload or error is logged. */ }
+  }
+}
 // The kind selection belongs to the caller's own listing, which now holds both
 // kinds of stock. Consulting another location stays the read-only consultation it
 // already is, so that listing keeps the battery-only read it has today.
@@ -424,9 +436,10 @@ export function useInventory() {
   const confirmTransferDispatchReconciliation = useCallback((owner: DecisionOwner, operation: DispatchReconciliationOperation) => reconciliationEffects.current(owner, operation), []);
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && session.identity.must_change_password === false && !authBusy, epoch: realtimeEpoch,
-    resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
+    resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); notifyCatalogueInvalidation(); },
     inventory: () => { invalidate(false); notifySourceInventory(realtimeEpoch); },
-    transfers: () => notifyTransfers(realtimeEpoch), error: validate });
+    transfers: () => notifyTransfers(realtimeEpoch), error: validate,
+    catalogue: () => notifyCatalogueInvalidation() });
 
   useEffect(() => {
     mounted.current = true; void restore();
