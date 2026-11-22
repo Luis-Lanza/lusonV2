@@ -891,6 +891,246 @@ func (s *Store) CashCategories(ctx context.Context, actor auth.Identity) ([]Cash
 	return categories, nil
 }
 
+// CashCategoryCatalogue reads every row of the motive catalogue for the administration (S3, S13):
+// active and archived alike, ordered by the place of the motive and then by its label. The list is
+// global to every branch and only the warehouse administrator reads it.
+func (s *Store) CashCategoryCatalogue(ctx context.Context, actor auth.Identity) ([]CatalogueCategory, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return nil, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return nil, ErrForbidden
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,label,sort_order,retired_at,retired_by
+ FROM branch_cash_categories ORDER BY sort_order,label`)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	categories := make([]CatalogueCategory, 0, 16)
+	var previousOrder int16
+	previousLabel := ""
+	for rows.Next() {
+		var category CatalogueCategory
+		if rows.Scan(&category.ID, &category.Label, &category.SortOrder,
+			&category.RetiredAt, &category.RetiredBy) != nil {
+			return nil, fail(ctx)
+		}
+		// Every row is revalidated instead of trusted, and the order the answer promises is judged
+		// here so a catalogue that came back in another order is never published.
+		if !validCatalogueCategory(category) ||
+			(len(categories) > 0 && (category.SortOrder < previousOrder ||
+				(category.SortOrder == previousOrder && category.Label <= previousLabel))) {
+			return nil, ErrUnavailable
+		}
+		previousOrder, previousLabel = category.SortOrder, category.Label
+		categories = append(categories, category)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return categories, nil
+}
+
+// CreateCashCategory adds one motive at the end of the catalogue (S5): the next place is the
+// greatest one plus one, so the new option is always the last of the list. Only the warehouse
+// administrator writes the catalogue, and a label the catalogue already holds is mapped from its
+// unique constraint (23505) as the duplicate it is (S13).
+func (s *Store) CreateCashCategory(ctx context.Context, actor auth.Identity, label string) (CatalogueCategory, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return CatalogueCategory{}, ErrForbidden
+	}
+	canonical, ok := CanonicalLabel(label)
+	if !ok || canonical != label {
+		return CatalogueCategory{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return CatalogueCategory{}, err
+	}
+	// The place of a new motive is `max(sort_order)+1`, and the archive guard counts the same rows under
+	// the same key: taking it here means two administrators adding at once cannot compute the same place
+	// and collide on its unique index, which would be reported as a duplicate label that is not one.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(340253, 1)`); err != nil {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	category, err := writeCatalogueCategory(ctx, tx, `INSERT INTO branch_cash_categories(label,sort_order)
+ SELECT $1, coalesce(max(sort_order),0)+1 FROM branch_cash_categories
+ RETURNING id,label,sort_order,retired_at,retired_by`, canonical)
+	if err != nil {
+		return CatalogueCategory{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	return category, nil
+}
+
+// RenameCashCategory changes the label of one motive (S4). The stored labels of the movements that
+// already named it are copies and are never rewritten here, so the history keeps the label it had.
+func (s *Store) RenameCashCategory(ctx context.Context, actor auth.Identity, id int64, label string) (CatalogueCategory, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return CatalogueCategory{}, ErrForbidden
+	}
+	if id < 1 {
+		return CatalogueCategory{}, ErrCategoryMissing
+	}
+	canonical, ok := CanonicalLabel(label)
+	if !ok || canonical != label {
+		return CatalogueCategory{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return CatalogueCategory{}, err
+	}
+	return writeCatalogueCategory(ctx, s.pool, `UPDATE branch_cash_categories SET label=$2
+ WHERE id=$1 RETURNING id,label,sort_order,retired_at,retired_by`, id, canonical)
+}
+
+// RetireCashCategory archives one motive (S3): it stops being offered and the database refuses a new
+// expense with it. The database also refuses the archive of the pinned catch-all (LC035) and of the
+// last offered motive (LC036); both are mapped as the conflicts they are.
+func (s *Store) RetireCashCategory(ctx context.Context, actor auth.Identity, id int64) (CatalogueCategory, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return CatalogueCategory{}, ErrForbidden
+	}
+	if id < 1 {
+		return CatalogueCategory{}, ErrCategoryMissing
+	}
+	retiredBy, ok := catalogueRetiredBy(actor)
+	if !ok {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return CatalogueCategory{}, err
+	}
+	return writeCatalogueCategory(ctx, s.pool, `UPDATE branch_cash_categories
+ SET retired_at=now(),retired_by=$2 WHERE id=$1
+ RETURNING id,label,sort_order,retired_at,retired_by`, id, retiredBy)
+}
+
+// ReactivateCashCategory offers one archived motive again (S3): both retirement facts are cleared, so
+// the motive is active and offered exactly as it was before it was archived.
+func (s *Store) ReactivateCashCategory(ctx context.Context, actor auth.Identity, id int64) (CatalogueCategory, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return CatalogueCategory{}, ErrForbidden
+	}
+	if id < 1 {
+		return CatalogueCategory{}, ErrCategoryMissing
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return CatalogueCategory{}, err
+	}
+	return writeCatalogueCategory(ctx, s.pool, `UPDATE branch_cash_categories
+ SET retired_at=NULL,retired_by=NULL WHERE id=$1
+ RETURNING id,label,sort_order,retired_at,retired_by`, id)
+}
+
+// writeCatalogueCategory runs one write of the catalogue and reads back exactly the row it wrote, so
+// a refusal and a stored shape are judged once for every administration operation.
+func writeCatalogueCategory(ctx context.Context, q querier, statement string, args ...any) (CatalogueCategory, error) {
+	var category CatalogueCategory
+	err := q.QueryRow(ctx, statement, args...).Scan(&category.ID, &category.Label,
+		&category.SortOrder, &category.RetiredAt, &category.RetiredBy)
+	if err != nil {
+		return CatalogueCategory{}, catalogueRefusal(ctx, err)
+	}
+	if !validCatalogueCategory(category) {
+		return CatalogueCategory{}, ErrUnavailable
+	}
+	return category, nil
+}
+
+// catalogueRefusal publishes the database's own refusal of a write to the catalogue (S13): the
+// unique label, the pinned motive and the last offered motive keep their own domain errors, and the
+// identity/place guard of 063 is a stored shape this vertical never writes, so it fails closed.
+func catalogueRefusal(ctx context.Context, err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrCategoryMissing
+	}
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		switch pg.Code {
+		case "23505":
+			return ErrCategoryDuplicate
+		case "LC035":
+			return ErrCategoryPinned
+		case "LC036":
+			return ErrCategoryLastActive
+		case "LC034":
+			return ErrUnavailable
+		}
+	}
+	return mapFailure(ctx, err)
+}
+
+// validCatalogueCategory admits one row of the administration's catalogue: an identity and a place
+// the schema states, a label this domain could have written, and a retirement whose two facts are
+// present exactly together with a canonical author name.
+func validCatalogueCategory(category CatalogueCategory) bool {
+	if category.ID < 1 || category.SortOrder < 1 {
+		return false
+	}
+	if canonical, ok := CanonicalLabel(category.Label); !ok || canonical != category.Label {
+		return false
+	}
+	if (category.RetiredAt == nil) != (category.RetiredBy == nil) {
+		return false
+	}
+	if category.RetiredAt != nil && category.RetiredAt.IsZero() {
+		return false
+	}
+	if category.RetiredBy != nil {
+		if !validText(*category.RetiredBy, 200) ||
+			strings.TrimSpace(*category.RetiredBy) != *category.RetiredBy || *category.RetiredBy == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// catalogueRetiredBy is the account name the retirement records (S3): the session's display name,
+// or its username when the account states no display name. It is always trimmed and non-empty,
+// because the column states that shape.
+func catalogueRetiredBy(actor auth.Identity) (string, bool) {
+	name := strings.TrimSpace(actor.DisplayName)
+	if name == "" {
+		name = strings.TrimSpace(actor.Username)
+	}
+	if name == "" || !validText(name, 200) {
+		return "", false
+	}
+	return name, true
+}
+
 const (
 	// cashMovementCorrection is the kind that answers another movement instead of stating a direction
 	// of its own: its effect is the opposite of the one it corrects, which the ledger view states for
