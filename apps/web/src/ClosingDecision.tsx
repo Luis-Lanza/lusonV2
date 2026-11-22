@@ -7,6 +7,7 @@ import {
   closingCorrectionQuantityDeltaText, closingCorrectionStatusLabels, closingDecisionPayload,
   closingDecisionReadiness, closingDifferenceName, closingEnvelope, closingEnvelopeAcceptanceHelp,
   closingEnvelopeApartHelp, closingIsLive, closingMaterialDeliveryHelp, closingMaterialEmptySheet,
+  closingEvidencePath, closingEvidenceText,
   closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
   closingMaterialLines, closingMaterialQuantityLabel, closingMaterialQuantityText,
   closingMaterialReading, closingMaterialShelfHelp, closingMaterialSignedText,
@@ -563,6 +564,12 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
                         {closingExpenseNote(expense)}</small>}
                     {expense.corrects_id !== null && <span className="closing-expense-ref">
                       {`Corrige el gasto #${expense.corrects_id}`}</span>}
+                    {/* The pay-out that carries a receipt opens the photo itself; a row without one shows
+                        nothing extra, and the acta publishes the metadata alone (S1, S7). */}
+                    {expense.evidence !== null && <a className="closing-expense-evidence"
+                      href={closingEvidencePath(expense.id)} target="_blank" rel="noreferrer"
+                      aria-label={`Ver el comprobante del gasto #${expense.id}`}
+                      title={closingEvidenceText(expense.evidence)}>Ver comprobante</a>}
                     <strong className={`num ${expense.kind === 'gasto' ? 'neg' : 'pos'}`}>
                       {closingSignedText(closingExpenseEffect(expense))}</strong>
                   </li>)}

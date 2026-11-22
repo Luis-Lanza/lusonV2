@@ -76,6 +76,11 @@ const (
 	// operational till reads (S4, S8). It is the second read of this contract that accepts a query of
 	// its own: the two instants of the window it asks for.
 	closingsCashLedgerPath = closingsCollectionPath + "/cash-ledger"
+	// closingsCashEvidencePath is the receipt of one movement of that drawer (S8): the photograph the
+	// branch uploaded with its pay-out, served with the content type that was validated when it was
+	// stored. The `{id}` is a movement of the book and never a settlement, and it is a literal path
+	// beside `{id}` exactly like `cash-movements`, so it is never read as a settlement id.
+	closingsCashEvidencePath = closingsCollectionPath + "/cash-movements/{id}/evidence"
 	// closingsCashCategoriesPath is the closed list of motives an expense is recorded with (S2, S5): the
 	// options the screen offers, global to every branch and seeded by the database. It is a literal path
 	// beside `{id}`, so it is never read as a settlement id.
@@ -174,6 +179,7 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux.HandleFunc(closingsCommissionsPath, a.closingCommissions(store))
 	mux.HandleFunc(closingsExpensesPath, a.closingExpenses(store))
 	mux.HandleFunc(closingsCashMovementsPath, a.closingCashMovements(store))
+	mux.HandleFunc(closingsCashEvidencePath, a.closingCashEvidence(store))
 	mux.HandleFunc(closingsCashCorrectionsPath, a.closingCashCorrections(store))
 	mux.HandleFunc(closingsCashLedgerPath, a.closingCashLedger(store))
 	mux.HandleFunc(closingsCashCategoriesPath, a.closingCashCategories(store))
@@ -309,6 +315,25 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// The motive is not one the list offers, or it is archived (LC033, S3, S8): neither is an option of
 		// the screen, so the request is answered with the fact the operator acts on.
 		failure(w, 400, "category_unknown")
+	case errors.Is(err, closings.ErrEvidenceEmpty):
+		// The part of the receipt states no bytes (S6): an empty file is not a photo, and the branch
+		// either uploads one or records the pay-out without it (S1).
+		failure(w, 400, "evidence_empty")
+	case errors.Is(err, closings.ErrEvidenceTooLarge):
+		// The receipt is above the cap of 8 MB (S6). The body was not read past it, so a large upload
+		// is refused without being buffered.
+		failure(w, 400, "evidence_too_large")
+	case errors.Is(err, closings.ErrEvidenceUnsupported):
+		// The bytes are not a JPEG nor a PNG, or they do not decode to the end (S6): the format is
+		// decided by the content, so an SVG, a renamed script and a truncated image answer the same.
+		failure(w, 400, "evidence_unsupported")
+	case errors.Is(err, closings.ErrEvidenceDimensions):
+		// The image is above the pixel cap of 6000 a side (S6).
+		failure(w, 400, "evidence_dimensions")
+	case errors.Is(err, closings.ErrEvidenceNotApplicable):
+		// Only a pay-out carries a receipt (S2): a contribution, a collection and a correction name
+		// none, whatever the request uploaded.
+		failure(w, 400, "evidence_not_applicable")
 	case errors.Is(err, closings.ErrCategoryNotApplicable):
 		// A motive on a kind that states none (LC033, S3, S4): only an expense is recorded with one, so the
 		// contribution and the collection are answered with their own code.
@@ -915,7 +940,101 @@ type closingCashMovementInput struct {
 // does not state one is refused by name instead of being ignored, so the screen can never offer it.
 func decodeClosingCashMovement(r *http.Request) (closingCashMovementInput, error) {
 	d, err := closingDecoder(r)
-	if err != nil || !closingDelimiter(d, '{') {
+	if err != nil {
+		return closingCashMovementInput{}, err
+	}
+	return closingCashMovementTokens(d)
+}
+
+// decodeClosingCashMovementUpload reads the two forms the drawer route accepts (S9): the JSON body of
+// always, which states no receipt, and the multipart body of a photo, whose `movement` part is exactly
+// that same JSON object and whose `evidence` part is the file. The JSON fields never become form
+// fields, so a client that records a pay-out without a photo keeps sending what it always sent.
+func decodeClosingCashMovementUpload(r *http.Request) (closingCashMovementInput, *closings.EvidenceUpload, error) {
+	if r == nil || len(r.Header.Values("Content-Type")) != 1 {
+		return closingCashMovementInput{}, nil, closings.ErrInvalid
+	}
+	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return closingCashMovementInput{}, nil, closings.ErrInvalid
+	}
+	if media != "multipart/form-data" {
+		movement, err := decodeClosingCashMovement(r)
+		return movement, nil, err
+	}
+	return decodeClosingCashMovementParts(r)
+}
+
+// decodeClosingCashMovementParts reads the two parts of one upload: the `movement` part, which is the
+// JSON object of the route, and the `evidence` part, which is the file. A part named anything else, a
+// second `evidence` and a body with no `movement` at all are framing errors of the request and not
+// receipts this contract can judge, so each is `400 invalid_request` before any file is stored (S1).
+func decodeClosingCashMovementParts(r *http.Request) (closingCashMovementInput, *closings.EvidenceUpload, error) {
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return closingCashMovementInput{}, nil, closings.ErrInvalid
+	}
+	var movement []byte
+	var receipt *closings.EvidenceUpload
+	var seenMovement, seenEvidence bool
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return closingCashMovementInput{}, nil, closings.ErrInvalid
+		}
+		switch part.FormName() {
+		case "movement":
+			if seenMovement {
+				_ = part.Close()
+				return closingCashMovementInput{}, nil, closings.ErrInvalid
+			}
+			seenMovement = true
+			body, err := io.ReadAll(io.LimitReader(part, closingsBodyLimit+1))
+			_ = part.Close()
+			if err != nil || len(body) > closingsBodyLimit || !utf8.Valid(body) {
+				return closingCashMovementInput{}, nil, closings.ErrInvalid
+			}
+			movement = body
+		case "evidence":
+			// One photo per movement (S1): a repeated part is the framing error the contract names, and
+			// it is refused before the second file is read at all.
+			if seenEvidence {
+				_ = part.Close()
+				return closingCashMovementInput{}, nil, closings.ErrInvalid
+			}
+			seenEvidence = true
+			upload, err := closings.ReadEvidenceContext(r.Context(), part)
+			_ = part.Close()
+			if err != nil {
+				return closingCashMovementInput{}, nil, err
+			}
+			receipt = &upload
+		default:
+			// Nothing else rides beside the movement and its receipt.
+			_ = part.Close()
+			return closingCashMovementInput{}, nil, closings.ErrInvalid
+		}
+	}
+	if !seenMovement {
+		return closingCashMovementInput{}, nil, closings.ErrInvalid
+	}
+	d := json.NewDecoder(bytes.NewReader(movement))
+	d.UseNumber()
+	tokens, err := closingCashMovementTokens(d)
+	if err != nil {
+		return closingCashMovementInput{}, nil, err
+	}
+	return tokens, receipt, nil
+}
+
+// closingCashMovementTokens reads the JSON object of one movement from an already framed body, which
+// is the same reading for the body of the route and for the `movement` part of an upload: one decoder,
+// so the two forms can never state two contracts.
+func closingCashMovementTokens(d *json.Decoder) (closingCashMovementInput, error) {
+	if !closingDelimiter(d, '{') {
 		return closingCashMovementInput{}, closings.ErrInvalid
 	}
 	input := closingCashMovementInput{}
@@ -1303,6 +1422,25 @@ type closingExpenseDTO struct {
 	CategoryLabel      *string `json:"category_label"`
 }
 
+// closingEvidenceDTO is the receipt of one movement as the book and the acta publish it (S7): the
+// content type the server validated by decoding the uploaded bytes, the size of the bytes the row
+// stores and their SHA-256. It states exactly these three keys, because the bytes never travel in an
+// answer: a book of a long period would otherwise drag megabytes of photographs.
+type closingEvidenceDTO struct {
+	Type   string `json:"type"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+// closingActaExpenseDTO is one row of the acta's expense list: the row of the branch's till this
+// contract always published -- it embeds that exact shape, so its keys are the keys of the row -- plus
+// the receipt of the pay-out (S7). The route of the expense states no receipt, so its own answer keeps
+// the ten keys of the row; the settlement is the document that publishes the photo's metadata.
+type closingActaExpenseDTO struct {
+	closingExpenseDTO
+	Evidence *closingEvidenceDTO `json:"evidence"`
+}
+
 // closingCashMovementDTO is one movement of the branch's operational drawer as the route that records it
 // publishes it: the kind the branch stated, the amount it stated, what for, the instant the database
 // stamped it and the account that wrote it. `corrects_id` is present on a correction only, which is the
@@ -1352,6 +1490,10 @@ type closingCashLedgerMovementDTO struct {
 	CorrectsID         *int64  `json:"corrects_id"`
 	CategoryID         *int64  `json:"category_id"`
 	CategoryLabel      *string `json:"category_label"`
+	// Evidence is the receipt of the pay-out: its validated content type, its size and its SHA-256, and
+	// JSON null on every row that carries none (S1, S7). The key is always published, so a screen reads
+	// one shape and tells a pay-out with a photo from one without it.
+	Evidence *closingEvidenceDTO `json:"evidence"`
 }
 
 // closingCashLedgerDTO is the book of the branch's operational drawer over one window (S4, S8): the amount
@@ -1551,8 +1693,8 @@ type closingDTO struct {
 	// Expenses are the small expenses of the window this settlement covers, in the order the branch
 	// recorded them (S12). They are the facts its cash_expenses total was computed from, so the
 	// warehouse sees what it subtracts and the branch what it is charged for.
-	Expenses []closingExpenseDTO `json:"expenses"`
-	Rounds   []closingRoundDTO   `json:"rounds"`
+	Expenses []closingActaExpenseDTO `json:"expenses"`
+	Rounds   []closingRoundDTO       `json:"rounds"`
 	// Corrections are the corrections of the closed settlement, oldest first: each one with the reason
 	// the warehouse stated, its status, the branch's answer, the payload it offered and -- once
 	// accepted -- the deltas it applied. The drawer above is the signed one plus those deltas, so the
@@ -1611,6 +1753,33 @@ func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
 		Kind: expense.Kind, Amount: amount, Description: description, OccurredAt: occurred,
 		CreatedByAccountID: expense.CreatedByAccountID, CorrectsID: expense.CorrectsID,
 		CategoryID: expense.CategoryID, CategoryLabel: expense.CategoryLabel}, nil
+}
+
+// closingActaExpenseRecord admits one row of the acta's expense list: the row the route of the expense
+// publishes, judged by the same rule, plus the receipt the ledger keeps for it (S7).
+func closingActaExpenseRecord(expense closings.Expense) (closingActaExpenseDTO, error) {
+	row, err := closingExpenseRecord(expense)
+	if err != nil {
+		return closingActaExpenseDTO{}, err
+	}
+	evidence, ok := closingEvidenceRecord(expense.Kind, expense.Evidence)
+	if !ok {
+		return closingActaExpenseDTO{}, closings.ErrUnavailable
+	}
+	return closingActaExpenseDTO{closingExpenseDTO: row, Evidence: evidence}, nil
+}
+
+// closingEvidenceRecord publishes the receipt of one row, or JSON null when the row carries none. A
+// receipt is published only when it is the shape this domain writes (S2, S6): an accepted format, a
+// positive size inside the cap and a lowercase SHA-256, stated by a pay-out and by no other kind.
+func closingEvidenceRecord(kind string, evidence *closings.Evidence) (*closingEvidenceDTO, bool) {
+	if !closings.ValidEvidence(kind, evidence) {
+		return nil, false
+	}
+	if evidence == nil {
+		return nil, true
+	}
+	return &closingEvidenceDTO{Type: evidence.Type, Size: evidence.Size, SHA256: evidence.SHA256}, true
 }
 
 // closingCashMovementRecord admits only a complete movement of the branch's book: a kind the branch
@@ -1790,11 +1959,19 @@ func closingCashLedgerMovementRecord(movement closings.CashMovement) (closingCas
 	if !ok {
 		return closingCashLedgerMovementDTO{}, false
 	}
+	// The receipt of the row is the optional fact of a pay-out (S1, S2): it is published as its three
+	// metadata keys and never as bytes, and a row that states one of a shape this domain does not write
+	// is refused instead of described (S7).
+	evidence, ok := closingEvidenceRecord(movement.Kind, movement.Evidence)
+	if !ok {
+		return closingCashLedgerMovementDTO{}, false
+	}
 	return closingCashLedgerMovementDTO{ID: movement.ID, Kind: movement.Kind,
 		EffectKind: movement.EffectKind, Amount: amount, Effective: effective,
 		Description: description, OccurredAt: occurred,
 		CreatedByAccountID: movement.CreatedByAccountID, CorrectsID: movement.CorrectsID,
-		CategoryID: movement.CategoryID, CategoryLabel: movement.CategoryLabel}, true
+		CategoryID: movement.CategoryID, CategoryLabel: movement.CategoryLabel,
+		Evidence: evidence}, true
 }
 
 // closingCashMovementKind admits the four kinds of the branch's book: the three the branch records as
@@ -2071,9 +2248,9 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 	}
 	// The expenses of the document are the ledger of its own branch, in the order the branch
 	// recorded them: another branch's expense is never published in this settlement.
-	expenses := make([]closingExpenseDTO, 0, len(closing.Expenses))
+	expenses := make([]closingActaExpenseDTO, 0, len(closing.Expenses))
 	for _, expense := range closing.Expenses {
-		record, err := closingExpenseRecord(expense)
+		record, err := closingActaExpenseRecord(expense)
 		if err != nil || expense.BranchID != closing.BranchID ||
 			(len(expenses) > 0 && expenses[len(expenses)-1].ID >= record.ID) {
 			return unavailable()
@@ -2871,13 +3048,21 @@ func (a *API) closingCashMovements(store *closings.Store) http.HandlerFunc {
 		if !a.closingMutation(w, r) {
 			return
 		}
-		body, err := decodeClosingCashMovement(r)
+		body, receipt, err := decodeClosingCashMovementUpload(r)
 		if err != nil {
+			// The refusal is always written, even when the request is already gone: writing to a
+			// connection nobody reads fails harmlessly, while returning without a status makes net/http
+			// answer 200 to an upload this route never processed (S4, S6). An upload that was cut --
+			// including one whose request was cancelled while it waited for the validator -- never
+			// arrived complete, so it was never judged and is the malformed request it is.
+			if r.Context().Err() != nil {
+				err = closings.ErrInvalid
+			}
 			closingFailure(w, err)
 			return
 		}
-		movement, err := store.RecordCashMovement(r.Context(), actor, body.Kind, body.Amount,
-			body.Description, body.CategoryID)
+		movement, err := store.RecordCashMovementEvidence(r.Context(), actor, body.Kind, body.Amount,
+			body.Description, body.CategoryID, receipt)
 		if err != nil {
 			closingFailure(w, err)
 			return
@@ -2889,6 +3074,62 @@ func (a *API) closingCashMovements(store *closings.Store) http.HandlerFunc {
 		}
 		respond(w, 201, record)
 	}
+}
+
+// closingCashEvidence serves the photo of one movement of the branch's drawer (S8). The authority is
+// the one of the book: a valid session of the branch that owns the movement, so another branch's
+// movement is not found and the warehouse reads no drawer at all. The route is a read and only a read:
+// GET answers the bytes with the content type that was validated when they were stored, HEAD answers
+// the same headers and no body, and every other method is refused with the `Allow` header of the two.
+//
+// A receipt is never cached and never sniffed: `no-store` and `nosniff` travel with the bytes, exactly
+// like the rest of this contract, and the disposition is inline because the screen shows the photo in
+// the page and does not download it as a file.
+func (a *API) closingCashEvidence(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			failure(w, 405, "method_not_allowed")
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !closingQueryAbsent(w, r) {
+			return
+		}
+		id, err := closingPathID(r.PathValue("id"), math.MaxInt64)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		served, err := store.CashMovementEvidence(r.Context(), actor, id)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", served.Type)
+		w.Header().Set("Content-Length", strconv.FormatInt(served.Size, 10))
+		w.Header().Set("Content-Disposition", `inline; filename="`+closingEvidenceName(id, served.Type)+`"`)
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(200)
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write(served.Bytes)
+	}
+}
+
+// closingEvidenceName is the file name of one receipt: the movement's own identity and the extension
+// of the format that was validated, so a browser opens it inline with the right program.
+func closingEvidenceName(id int64, contentType string) string {
+	extension := ".png"
+	if contentType == "image/jpeg" {
+		extension = ".jpg"
+	}
+	return "comprobante-" + strconv.FormatInt(id, 10) + extension
 }
 
 // closingCashCorrections records the compensating movement of one row of the branch's book (S6): the book

@@ -150,12 +150,68 @@ export interface ClosingOffer {
 
 export type ClosingDecision = '' | 'accepted' | 'rejected';
 
+// ---------------------------------------------------------------------------------
+// The receipt of a pay-out
+// ---------------------------------------------------------------------------------
+
+/** The two formats the contract decodes, decided by the bytes of the file and never by the type its
+ * name declares (S6). */
+export type ClosingEvidenceType = 'image/jpeg' | 'image/png';
+export const closingEvidenceTypes: readonly ClosingEvidenceType[] = ['image/jpeg', 'image/png'];
+
+/** The two caps of one photo: 8 MB of bytes and 6000×6000 pixels (S6). The screen judges a chosen
+ * file by these and the server by its own, and a photo of a phone fits comfortably inside both. */
+export const closingMaxEvidenceBytes = 8 * 1024 * 1024;
+export const closingMaxEvidenceSide = 6_000;
+
+/**
+ * The receipt of one pay-out as the book and the acta publish it (S1, S7): the content type the server
+ * validated when it decoded the bytes, the size of the bytes the row stores and their SHA-256. The
+ * bytes never travel inside a document — the image is served by its own route — and a row that carries
+ * no photo states `null` instead of a missing key.
+ */
+export interface ClosingEvidence {
+  readonly type: ClosingEvidenceType;
+  readonly size: number;
+  readonly sha256: string;
+}
+
+/** The route that serves the photo of one movement, same-origin with the session cookie (S8). */
+export function closingEvidencePath(movement_id: number): string {
+  if (!Number.isSafeInteger(movement_id) || movement_id < 1) throw new Error('Movimiento inválido.');
+  return `/api/closings/cash-movements/${movement_id}/evidence`;
+}
+
+/** The format of one photo in the words the screen writes it with. */
+export function closingEvidenceTypeText(type: ClosingEvidenceType): string {
+  return type === 'image/jpeg' ? 'JPEG' : 'PNG';
+}
+
+/**
+ * The size of one photo in the words the operator reads: bytes below a kilobyte, whole kilobytes below a
+ * megabyte and one decimal — with the comma of the screen — above it. A byte count is not a size anybody
+ * reads, and the cap of 8 MB is the number the refusal names.
+ */
+export function closingEvidenceSizeText(size: number): string {
+  const kilobytes = 1024;
+  if (size < kilobytes) return `${size} B`;
+  if (size < kilobytes * kilobytes) return `${Math.round(size / kilobytes)} KB`;
+  const megabytes = Math.round((size / (kilobytes * kilobytes)) * 10) / 10;
+  return `${String(megabytes).replace('.', ',')} MB`;
+}
+
+/** What one row states about its own photo, on one line: its format and its size. */
+export function closingEvidenceText(evidence: ClosingEvidence): string {
+  return `Comprobante ${closingEvidenceTypeText(evidence.type)} · ${closingEvidenceSizeText(evidence.size)}`;
+}
+
 /**
  * One expense of the settled window as the acta publishes it (S8, S13): the amount the branch paid out,
  * the motive it was recorded with and the copy of the label that motive had, and the note beside it.
  * `motive` is `null` on a row that names none — the correction of an expense and every row recorded
  * before the closed list existed — and on those rows `note` is the text the row itself states, which is
- * the only reason it ever had (S7).
+ * the only reason it ever had (S7). The receipt of the pay-out is published beside it as its metadata,
+ * and it is `null` on a correction and on a pay-out recorded without a photo (S1, S7).
  */
 export interface ClosingExpense {
   readonly id: number;
@@ -164,6 +220,7 @@ export interface ClosingExpense {
   readonly motive: string | null;
   readonly note: string;
   readonly corrects_id: number | null;
+  readonly evidence: ClosingEvidence | null;
 }
 
 /**

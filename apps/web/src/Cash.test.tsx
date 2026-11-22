@@ -1,7 +1,47 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Cash from './Cash';
-import { cashErrorMessages } from './cashAPI';
+import { cashErrorMessages, cashMaxEvidenceBytes } from './cashAPI';
+
+// jsdom answers no image source of its own, so the preview is pinned on the URL the screen asks for: the
+// browser is the one that turns the chosen file into something an <img> can show.
+beforeEach(() => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:foto') });
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+});
+
+/** The header of a PNG of the stated size, and enough of it for the screen to read it. */
+function pngBytes(width: number, height: number): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(33);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(8, 13);
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+/** A JPEG of the stated size: the photo of a ticket, as the camera of a phone writes it. */
+function jpegBytes(width: number, height: number): Uint8Array<ArrayBuffer> {
+  return new Uint8Array([
+    0xff, 0xd8,
+    0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00,
+    0x01, 0x00, 0x00,
+    0xff, 0xc0, 0x00, 0x11, 0x08, height >> 8, height & 0xff, width >> 8, width & 0xff,
+    0x03, 0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01,
+    0xff, 0xd9,
+  ]);
+}
+
+/** The one photo the screen may attach to an expense (S1). */
+const photo = (bytes = jpegBytes(2, 2), name = 'factura.jpg') => new File([bytes], name,
+  { type: 'image/jpeg' });
+
+/** Picks one file with the picker of the card, as the operator does. */
+function chooseFile(file: File) {
+  fireEvent.change(screen.getByLabelText('Comprobante (opcional)'), { target: { files: [file] } });
+}
 
 const csrf = 'c'.repeat(43);
 const json = (body: unknown, status = 200) =>
@@ -33,7 +73,7 @@ const entry = (patch: Record<string, unknown> = {}) => {
     id: 21, kind: 'gasto', effect_kind: 'gasto', amount: '85.00', effective: '-85.00',
     description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
     created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza',
-    ...patch,
+    evidence: null, ...patch,
   };
   // A motive belongs to an expense alone: every other kind names none and states both keys as null (S4).
   if (row.kind !== 'gasto' && patch.category_id === undefined && patch.category_label === undefined) {
@@ -77,9 +117,17 @@ const recordedBody = (patch: Record<string, unknown> = {}) => ({
   occurred_at: '2026-11-16T10:00:00Z', created_by_account_id: 2, ...patch,
 });
 
+/** The JSON object of one write, read from the plain body or from the `movement` part of an upload. */
+async function sentBody(init: RequestInit): Promise<Record<string, unknown>> {
+  if (init.body instanceof FormData) {
+    return JSON.parse(await (init.body.get('movement') as Blob).text()) as Record<string, unknown>;
+  }
+  return JSON.parse(String(init.body)) as Record<string, unknown>;
+}
+
 /** The answer of a write repeats what was sent: the screen refuses a movement it did not write. */
-function echoWrite(init: RequestInit): Response {
-  const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+async function echoWrite(init: RequestInit): Promise<Response> {
+  const sent = await sentBody(init);
   return json(recordedBody({
     kind: sent.kind ?? 'correccion', amount: sent.amount, description: sent.description,
     ...(sent.corrects_id === undefined ? {} : { corrects_id: sent.corrects_id }),
@@ -90,7 +138,7 @@ type Handlers = {
   metrics?: () => Response;
   ledger?: (url: string) => Response;
   categories?: () => Response;
-  write?: (url: string, init: RequestInit) => Response;
+  write?: (url: string, init: RequestInit) => Response | Promise<Response>;
 };
 
 function setup(handlers: Handlers = {}) {
@@ -532,5 +580,200 @@ describe('el libro de la caja operativa', () => {
     await screen.findByText('Quedó al cerrar');
     expect(screen.getByText(/El fondo de compras/)).toHaveTextContent(
       'El fondo de compras se ve en Métricas y se repone en cada rendición. Es otra caja: las compras de chatarra y baterías usadas nunca salen de acá, y un gasto de tienda nunca descuenta del fondo.');
+  });
+});
+
+// The receipt of a pay-out: one optional photo of the ticket (S1), offered only by a gasto (S2), judged
+// on the screen before anything leaves it, and published in the book as metadata alone (S7).
+describe('el comprobante del gasto (S1, S2, S7)', () => {
+  /** Fills the amount and the motive of an expense, so a submit has something to write. */
+  async function fillGasto(amount = '85,00', motive = 'Limpieza') {
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: amount } });
+    await chooseMotive(motive);
+  }
+
+  it('offers the photo of an expense and no way to attach one to anything else (S1, S2)', async () => {
+    setup();
+    await screen.findByText('Quedó al cerrar');
+    const picker = await screen.findByLabelText('Comprobante (opcional)');
+    // The picker is a file input that offers the two formats the server decodes, and it says the photo
+    // is optional and single.
+    expect(picker).toHaveAttribute('type', 'file');
+    expect(picker).toHaveAttribute('accept', 'image/jpeg,image/png');
+    // The copy of the picker states the two limits of the contract, which are the server's own (S6).
+    const hint = screen.getByText(/Una sola foto por gasto/);
+    expect(hint).toHaveTextContent('8 MB');
+    expect(hint).toHaveTextContent('6000 × 6000');
+    expect(hint).not.toHaveTextContent('10000');
+    expect(screen.getByText(/Una sola foto por gasto/)).toBeInTheDocument();
+    expect(screen.getByText(/sólo un gasto lleva comprobante/i)).toBeInTheDocument();
+    // A contribution and a collection have no picker at all, not a disabled one.
+    for (const label of ['Aporte', 'Recaudación'] as const) {
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(screen.queryByLabelText('Comprobante (opcional)')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Quitar el comprobante' })).not.toBeInTheDocument();
+    }
+    // Going back to an expense offers the picker again, empty: nothing of the other kind was kept.
+    fireEvent.click(screen.getByRole('button', { name: 'Gasto' }));
+    expect(await screen.findByLabelText('Comprobante (opcional)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Corregir el movimiento #21' }));
+    const panel = await screen.findByRole('group', { name: 'Corrección del movimiento #21' });
+    // A correction answers a movement and offers no file either (S2).
+    expect(within(panel).queryByLabelText('Comprobante (opcional)')).not.toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Quitar el comprobante' })).not.toBeInTheDocument();
+  });
+
+  it('shows the chosen photo with its size, replaces it with a second one and lets it go (S1)', async () => {
+    setup();
+    await screen.findByText('Quedó al cerrar');
+    await screen.findByLabelText('Motivo');
+    const file = photo();
+    chooseFile(file);
+    // The photo is shown before it is sent, with the size it has and the way to take it back.
+    const preview = await screen.findByAltText('Vista previa del comprobante');
+    expect(preview).toHaveAttribute('src', 'blob:foto');
+    expect(screen.getByText('factura.jpg')).toBeInTheDocument();
+    expect(screen.getByText('41 B')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Quitar el comprobante' })).toBeInTheDocument();
+    // A second photo replaces the first: the card never holds two (S1).
+    chooseFile(new File([pngBytes(1, 1)], 'ticket.png', { type: 'image/png' }));
+    await waitFor(() => expect(screen.getByText('ticket.png')).toBeInTheDocument());
+    expect(screen.queryByText('factura.jpg')).not.toBeInTheDocument();
+    expect(screen.getAllByAltText('Vista previa del comprobante')).toHaveLength(1);
+    expect(screen.getByText('33 B')).toBeInTheDocument();
+    // Removing it leaves the card as it was before the choice: no photo and no size.
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar el comprobante' }));
+    await waitFor(() =>
+      expect(screen.queryByAltText('Vista previa del comprobante')).not.toBeInTheDocument());
+    expect(screen.queryByText('ticket.png')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Quitar el comprobante' })).not.toBeInTheDocument();
+  });
+
+  it('admits the photo of exactly the pixel cap and refuses one pixel more (S6)', async () => {
+    const { posts } = setup();
+    await screen.findByText('Quedó al cerrar');
+    // Exactly 6000 pixels a side is a receipt the screen offers with its preview, before sending it.
+    chooseFile(photo(pngBytes(6_000, 6_000), 'limite.png'));
+    await screen.findByAltText('Vista previa del comprobante');
+    expect(screen.getByText('limite.png')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // One pixel more is the refusal of the contract, in the operator's words and before any request.
+    chooseFile(photo(pngBytes(6_001, 6_001), 'pasado.png'));
+    const problem = await screen.findByRole('alert');
+    expect(problem).toHaveTextContent(cashErrorMessages.evidence_dimensions);
+    expect(problem).not.toHaveTextContent('evidence_dimensions');
+    expect(problem).toHaveTextContent('6000');
+    expect(problem).not.toHaveTextContent('10000');
+    expect(screen.queryByAltText('Vista previa del comprobante')).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each([
+    ['evidence_empty', () => photo(new Uint8Array(0), 'vacio.jpg')],
+    ['evidence_too_large', () => photo(new Uint8Array(cashMaxEvidenceBytes + 1), 'pesada.jpg')],
+    ['evidence_unsupported', () =>
+      new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'comprobante.svg',
+        { type: 'image/svg+xml' })],
+    ['evidence_dimensions', () => photo(pngBytes(6_001, 6_001), 'enorme.png')],
+  ] as const)('refuses %s on the screen, before any request leaves it (S1, S6)', async (code, make) => {
+    const { posts } = setup();
+    await screen.findByText('Quedó al cerrar');
+    chooseFile(make());
+    // The refusal is written in the operator's words, never as the code the contract names it with.
+    const problem = await screen.findByRole('alert');
+    expect(problem).toHaveTextContent(cashErrorMessages[code]);
+    expect(problem).not.toHaveTextContent(code);
+    expect(screen.queryByAltText('Vista previa del comprobante')).not.toBeInTheDocument();
+    // The movement is complete and the photo is not: nothing is sent at all.
+    await fillGasto();
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(cashErrorMessages[code]));
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('sends the photo as multipart and the same expense as plain JSON when there is none (S1, S9)', async () => {
+    const writes: RequestInit[] = [];
+    const { posts, ledgerCalls } = setup({
+      write: (_url, init) => { writes.push(init); return echoWrite(init); },
+    });
+    await screen.findByText('Quedó al cerrar');
+    await screen.findByLabelText('Motivo');
+    chooseFile(photo());
+    await screen.findByAltText('Vista previa del comprobante');
+    await fillGasto();
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    const upload = writes[0];
+    // The body is the two-part form of the contract, and the browser states its own boundary.
+    expect(upload.body).toBeInstanceOf(FormData);
+    expect(new Headers(upload.headers).get('Content-Type')).toBeNull();
+    const form = upload.body as FormData;
+    expect([...form.keys()]).toEqual(['movement', 'evidence']);
+    expect(form.getAll('evidence')).toHaveLength(1);
+    // The `movement` part is exactly the JSON the plain route receives, byte for byte.
+    expect(await (form.get('movement') as Blob).text())
+      .toBe('{"kind":"gasto","amount":"85.00","category_id":5,"description":""}');
+    const part = form.get('evidence') as File;
+    expect(part.name).toBe('factura.jpg');
+    expect([...new Uint8Array(await part.arrayBuffer())]).toEqual([...jpegBytes(2, 2)]);
+    expect(await screen.findByText('Gasto registrado en el libro de la caja.')).toBeInTheDocument();
+    // The book is read again: the receipt is published by the book, not by the answer of the write.
+    await waitFor(() => expect(ledgerCalls().length).toBeGreaterThan(1));
+    // The card is ready for the next movement: the photo was sent and the field is empty again.
+    expect(screen.queryByAltText('Vista previa del comprobante')).not.toBeInTheDocument();
+    // A gasto with no photo is the JSON body this route always took (S9).
+    await fillGasto('100,00', 'Alquiler');
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+    expect(writes[1].body).toBe('{"kind":"gasto","amount":"100.00","category_id":1,"description":""}');
+    expect(new Headers(writes[1].headers).get('Content-Type')).toBe('application/json');
+  });
+
+  it('reads the refusal of the server in the same words the screen refuses with (S1)', async () => {
+    const { posts } = setup({
+      write: () => json({ error: 'evidence_dimensions' }, 400),
+    });
+    await screen.findByText('Quedó al cerrar');
+    await screen.findByLabelText('Motivo');
+    chooseFile(photo());
+    await screen.findByAltText('Vista previa del comprobante');
+    await fillGasto();
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    // The server's code is read as the same sentence the screen writes, never as the code itself.
+    const problem = await screen.findByRole('alert');
+    expect(problem).toHaveTextContent(cashErrorMessages.evidence_dimensions);
+    expect(problem).not.toHaveTextContent('evidence_dimensions');
+    // The chosen photo is not thrown away: the operator can take it back and send the expense without it.
+    expect(screen.getByAltText('Vista previa del comprobante')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Quitar el comprobante' })).toBeInTheDocument();
+  });
+
+  it('offers the photo only on the rows that carry one (S7)', async () => {
+    setup({ ledger: () => json(book({
+      effective: '-95.00', expected: '8175.00',
+      movements: [
+        entry({ id: 41, evidence: { type: 'image/jpeg', size: 482_913, sha256: 'a'.repeat(64) } }),
+        entry({ id: 42, amount: '10.00', effective: '-10.00', category_id: null,
+          category_label: null, description: 'Flete del flete',
+          occurred_at: '2026-11-13T10:00:00Z' }),
+      ],
+    })) });
+    await screen.findByText('Quedó al cerrar');
+    // The row with a receipt opens the image itself, same-origin with the session of the screen.
+    const withPhoto = rowOf(41);
+    const open = within(withPhoto).getByRole('link', {
+      name: 'Ver el comprobante del movimiento #41',
+    });
+    expect(open).toHaveAttribute('href', '/api/closings/cash-movements/41/evidence');
+    expect(open).toHaveAttribute('target', '_blank');
+    expect(open).toHaveTextContent('Ver comprobante');
+    // The badge states what the row publishes — never the bytes, which travel nowhere (S7).
+    expect(open).toHaveAttribute('title', 'Comprobante JPEG · 472 KB');
+    expect(withPhoto.textContent).not.toContain('sha256');
+    // A row without a receipt shows nothing extra at all.
+    const withoutPhoto = rowOf(42);
+    expect(within(withoutPhoto).queryByRole('link')).not.toBeInTheDocument();
+    expect(withoutPhoto.textContent).not.toContain('comprobante');
   });
 });

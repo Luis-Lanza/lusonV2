@@ -11,6 +11,10 @@
  * so it is refused whole instead of being read as evidence.
  */
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
+import {
+  closingEvidenceTypes, closingMaxEvidenceBytes, closingMaxEvidenceSide,
+  type ClosingEvidence, type ClosingEvidenceType,
+} from './closingModel';
 import { centsToMoney, moneyCents } from './pointOfSaleModel';
 
 /** The four kinds of the book: the three directions the branch writes and the correction. */
@@ -47,12 +51,15 @@ export function cashKindMovesIn(kind: CashWrittenKind): boolean {
 export type CashErrorCode = 'invalid_request' | 'correction_target_invalid' | 'forbidden'
   | 'branch_frozen' | 'correction_exceeds' | 'drawer_insufficient' | 'service_unavailable'
   | 'category_required' | 'category_unknown' | 'category_not_applicable'
+  | 'evidence_empty' | 'evidence_too_large' | 'evidence_unsupported' | 'evidence_dimensions'
+  | 'evidence_not_applicable'
   | 'invalid_response' | 'network' | 'aborted';
 
 /** One admitted refusal per HTTP status; nothing else may reach the UI. */
 export const cashAdmittedErrors: ReadonlyMap<number, readonly CashErrorCode[]> = new Map([
   [400, ['invalid_request', 'correction_target_invalid', 'category_required', 'category_unknown',
-    'category_not_applicable']],
+    'category_not_applicable', 'evidence_empty', 'evidence_too_large', 'evidence_unsupported',
+    'evidence_dimensions', 'evidence_not_applicable']],
   [403, ['forbidden']],
   [409, ['branch_frozen', 'correction_exceeds', 'drawer_insufficient']],
   [503, ['service_unavailable']],
@@ -70,6 +77,13 @@ export const cashErrorMessages: Record<CashErrorCode, string> = {
   category_required: 'Elegí un motivo de la lista: un gasto sin motivo no se registra. No se registró nada.',
   category_unknown: 'Ese motivo ya no está en la lista. Elegí otro y volvé a intentar. No se registró nada.',
   category_not_applicable: 'Un aporte o una recaudación no llevan motivo de gasto. No se registró nada.',
+  // The refusals of the receipt are written once and read by both sides: the screen judges the chosen
+  // file with these words before it sends it, and the server's code is read with the same ones (S1, S6).
+  evidence_empty: 'El archivo del comprobante está vacío. Elegí otra foto o registrá el gasto sin comprobante.',
+  evidence_too_large: 'La foto del comprobante pesa más de 8 MB. Elegí una más liviana o registrá el gasto sin comprobante.',
+  evidence_unsupported: 'El comprobante tiene que ser una foto JPEG o PNG. Ese archivo no es una imagen de las que se aceptan.',
+  evidence_dimensions: 'La foto del comprobante mide más de 6000 × 6000 píxeles. Achicála o registrá el gasto sin comprobante.',
+  evidence_not_applicable: 'Sólo un gasto lleva comprobante: un aporte o una recaudación no llevan foto.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el movimiento.',
   network: 'No se pudo conectar con el servidor. No pudimos confirmar el movimiento.',
   aborted: 'La operación se interrumpió. Revisá la conexión e intentá de nuevo.',
@@ -107,7 +121,9 @@ export interface CashMovement {
  * One row of the book: the movement plus the direction it carries (`effect_kind`, which for a
  * correction is the kind of the movement it answers) and the signed effect the drawer moved by. An
  * expense states its motive beside it — the reference and the copy of the label it had when the row was
- * written — and every other row states both as null (S4, S7, S8).
+ * written — and every other row states both as null (S4, S7, S8). The receipt of a pay-out is published
+ * as its metadata — type, size and SHA-256 — and as null on every row that carries none (S1, S7): the
+ * bytes are served by the image route and never travel inside the book.
  */
 export interface CashLedgerEntry {
   readonly id: number;
@@ -121,6 +137,7 @@ export interface CashLedgerEntry {
   readonly corrects_id: number | null;
   readonly category_id: number | null;
   readonly category_label: string | null;
+  readonly evidence: ClosingEvidence | null;
 }
 
 /**
@@ -282,6 +299,43 @@ function anyKind(value: unknown): CashKind {
 }
 
 // ---------------------------------------------------------------------------------
+// The receipt of a pay-out
+// ---------------------------------------------------------------------------------
+
+/** The two caps of one photo, mirrored from the contract so a file it cannot take is refused before
+ * anything leaves the screen (S1, S6). */
+export const cashMaxEvidenceBytes = closingMaxEvidenceBytes;
+export const cashMaxEvidenceSide = closingMaxEvidenceSide;
+
+/** The four refusals one chosen file can be judged with on this side of the wire. */
+export type CashEvidenceRefusal = 'evidence_empty' | 'evidence_too_large' | 'evidence_unsupported'
+  | 'evidence_dimensions';
+
+/** The digest the contract publishes: 32 bytes of lowercase hexadecimal. */
+const evidenceDigest = /^[0-9a-f]{64}$/;
+
+/**
+ * A receipt as the book publishes it (S1, S7): the three keys of the contract — the type the server
+ * validated by decoding the bytes, the size of those bytes and their SHA-256 — and `null` on a row that
+ * carries no photo. Only a pay-out carries one, so a receipt on any other kind is not a row this book
+ * wrote (S2).
+ */
+function publishedEvidence(value: unknown, kind: CashKind): ClosingEvidence | null {
+  if (value === null) return null;
+  const record = fields(value, ['type', 'size', 'sha256']);
+  if (typeof record.type !== 'string'
+    || !closingEvidenceTypes.includes(record.type as ClosingEvidenceType)) {
+    return invalidResponse();
+  }
+  const size = integer(record.size, 1, cashMaxEvidenceBytes);
+  if (typeof record.sha256 !== 'string' || !evidenceDigest.test(record.sha256)) {
+    return invalidResponse();
+  }
+  if (kind !== 'gasto') return invalidResponse();
+  return Object.freeze({ type: record.type as ClosingEvidenceType, size, sha256: record.sha256 });
+}
+
+// ---------------------------------------------------------------------------------
 // The answers of the two write routes
 // ---------------------------------------------------------------------------------
 
@@ -329,7 +383,8 @@ export function parseCashCorrection(raw: string): CashMovement {
 /** One row of the book, judged as the money and the direction it states. */
 function ledgerEntry(value: unknown): CashLedgerEntry {
   const record = fields(value, ['id', 'kind', 'effect_kind', 'amount', 'effective', 'description',
-    'occurred_at', 'created_by_account_id', 'corrects_id', 'category_id', 'category_label']);
+    'occurred_at', 'created_by_account_id', 'corrects_id', 'category_id', 'category_label',
+    'evidence']);
   const id = integer(record.id, 1, cashMaxID);
   const kind = anyKind(record.kind);
   const effect_kind = writtenKind(record.effect_kind);
@@ -364,6 +419,7 @@ function ledgerEntry(value: unknown): CashLedgerEntry {
     occurred_at: timestamp(record.occurred_at),
     created_by_account_id: integer(record.created_by_account_id, 1, cashMaxID),
     corrects_id, category_id, category_label,
+    evidence: publishedEvidence(record.evidence, kind),
   });
 }
 
@@ -541,6 +597,96 @@ export function matchesCashCorrection(input: CashCorrectionInput, movement: Cash
 }
 
 // ---------------------------------------------------------------------------------
+// The photo of a pay-out, judged before it leaves the screen
+// ---------------------------------------------------------------------------------
+
+const jpegSignature: readonly number[] = [0xff, 0xd8];
+const pngSignature: readonly number[] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function startsWith(bytes: Uint8Array, signature: readonly number[]): boolean {
+  return bytes.length >= signature.length && signature.every((byte, at) => bytes[at] === byte);
+}
+
+/**
+ * The two sides of one PNG, read from its IHDR chunk, which is always the first chunk of the file: eight
+ * bytes of signature, the length of the chunk, its type and then the width and the height.
+ */
+function pngSides(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 24) return null;
+  if (String.fromCharCode(...bytes.slice(12, 16)) !== 'IHDR') return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+/**
+ * The two sides of one JPEG, read from its frame header (SOF), which is the only place the file states
+ * them: the segments before it — JFIF, EXIF — are skipped by their own stated length.
+ */
+function jpegSides(bytes: Uint8Array): { width: number; height: number } | null {
+  let at = 2;
+  while (at + 3 < bytes.length) {
+    if (bytes[at] !== 0xff) return null;
+    const marker = bytes[at + 1];
+    // A padding byte before a marker, and the markers that carry no segment of their own.
+    if (marker === 0xff) { at += 1; continue; }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd8)) { at += 2; continue; }
+    // The compressed data starts before any frame header: this file states no sides at all.
+    if (marker === 0xda || marker === 0xd9) return null;
+    const length = (bytes[at + 2] << 8) | bytes[at + 3];
+    if (length < 2) return null;
+    // SOF0–SOF15 carry the frame, except C4 (Huffman tables), C8 (a reserved marker) and CC (arithmetic).
+    if (marker >= 0xc0 && marker <= 0xcf
+      && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      if (at + 9 > bytes.length) return null;
+      return {
+        width: (bytes[at + 7] << 8) | bytes[at + 8],
+        height: (bytes[at + 5] << 8) | bytes[at + 6],
+      };
+    }
+    at += 2 + length;
+  }
+  return null;
+}
+
+/**
+ * Judges one chosen file before anything leaves the screen (S1, S6): a file that states no bytes, one
+ * above the 8 MB cap, one whose own bytes are not a JPEG or a PNG, and one above the 6000×6000 pixel
+ * cap, which is measured from the header of the image exactly as the server measures it. The answer is
+ * the refusal the contract names — the same words the screen shows for the server's own — or `null`.
+ */
+export async function cashEvidenceRefusal(file: Blob): Promise<CashEvidenceRefusal | null> {
+  if (file.size === 0) return 'evidence_empty';
+  if (file.size > cashMaxEvidenceBytes) return 'evidence_too_large';
+  let bytes: Uint8Array;
+  try { bytes = new Uint8Array(await file.arrayBuffer()); } catch { return 'evidence_unsupported'; }
+  const sides = startsWith(bytes, pngSignature) ? pngSides(bytes)
+    : startsWith(bytes, jpegSignature) ? jpegSides(bytes) : null;
+  if (sides === null || sides.width < 1 || sides.height < 1) return 'evidence_unsupported';
+  if (sides.width > cashMaxEvidenceSide || sides.height > cashMaxEvidenceSide) {
+    return 'evidence_dimensions';
+  }
+  return null;
+}
+
+/** The name one chosen photo travels with: its own when it has one, and a name of the route otherwise. */
+function evidenceFileName(evidence: Blob): string {
+  const name = typeof File !== 'undefined' && evidence instanceof File ? evidence.name : '';
+  return name === '' ? 'comprobante' : name;
+}
+
+/**
+ * The two-form body of the route (S9): the `movement` part is exactly the JSON object of the plain form
+ * — the fields never become form fields — and the `evidence` part is the one file the operator chose
+ * (S1). A pay-out with no photo never comes here: it is the JSON body this screen always sent.
+ */
+function uploadBody(body: string, evidence: Blob): FormData {
+  const form = new FormData();
+  form.append('movement', new Blob([body], { type: 'application/json' }), 'movement.json');
+  form.append('evidence', evidence, evidenceFileName(evidence));
+  return form;
+}
+
+// ---------------------------------------------------------------------------------
 // Paths, refusals and transport
 // ---------------------------------------------------------------------------------
 
@@ -646,13 +792,16 @@ export function createCashAPI(fetch: typeof globalThis.fetch = globalThis.fetch)
     try { return parse(raw); } catch { throw malformed(); }
   }
 
-  async function post<T>(path: string, body: string, csrf: string,
+  async function post<T>(path: string, body: string | FormData, csrf: string,
     parse: (raw: string) => T, signal?: AbortSignal): Promise<T> {
+    // The browser states the boundary of a multipart body; the JSON form keeps the header it always had.
+    const headers: Record<string, string> = { 'X-CSRF-Token': csrf };
+    if (typeof body === 'string') headers['Content-Type'] = 'application/json';
     let reply: Response;
     let raw: string;
     try {
       reply = await fetch(path, { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body });
+        headers, body });
       raw = await readText(reply, signal);
     } catch (error) {
       if (error instanceof CashAPIError) throw error;
@@ -674,8 +823,13 @@ export function createCashAPI(fetch: typeof globalThis.fetch = globalThis.fetch)
   }
 
   return {
-    /** Records a gasto, an aporte or a recaudación in the session's own drawer (S1, S2). */
-    async record(input: CashMovementInput, csrf: string, signal?: AbortSignal): Promise<CashMovement> {
+    /**
+     * Records a gasto, an aporte or a recaudación in the session's own drawer (S1, S2), with the one
+     * optional photo of a pay-out. The file is judged here as well as on the screen, so no request can
+     * carry one the contract refuses (S6); without a file the body is the JSON this route always took (S9).
+     */
+    async record(input: CashMovementInput, csrf: string, signal?: AbortSignal,
+      evidence: Blob | null = null): Promise<CashMovement> {
       let body: string;
       let sent: CashMovementInput;
       try {
@@ -683,7 +837,16 @@ export function createCashAPI(fetch: typeof globalThis.fetch = globalThis.fetch)
         sent = canonicalCashInput(input);
         body = JSON.stringify(sent);
       } catch { throw new CashAPIError('invalid_request', null); }
-      const movement = await post('/api/closings/cash-movements', body, csrf, parseCashMovement, signal);
+      let upload: FormData | null = null;
+      if (evidence !== null) {
+        // Only a pay-out carries a receipt: a contribution and a collection never do (S2).
+        if (sent.kind !== 'gasto') throw new CashAPIError('evidence_not_applicable', null);
+        const refusal = await cashEvidenceRefusal(evidence);
+        if (refusal !== null) throw new CashAPIError(refusal, null);
+        upload = uploadBody(body, evidence);
+      }
+      const movement = await post('/api/closings/cash-movements', upload ?? body, csrf,
+        parseCashMovement, signal);
       if (!matchesCashInput(sent, movement)) throw new CashAPIError('invalid_response', 201);
       return movement;
     },

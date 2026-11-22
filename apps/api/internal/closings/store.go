@@ -659,7 +659,7 @@ func (s *Store) SaveCash(ctx context.Context, actor auth.Identity, id int64, dra
 // deriving that branch from the session would make the ledger's own comparison always agree.
 func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount Money, description string,
 	categoryID *int64) (Expense, error) {
-	return s.recordMovement(ctx, actor, metricsMovementExpense, amount, description, categoryID, nil)
+	return s.recordMovement(ctx, actor, metricsMovementExpense, amount, description, categoryID, nil, nil)
 }
 
 // RecordCashMovement records one movement the branch writes in its own operational drawer (S1, S2): the
@@ -677,7 +677,20 @@ func (s *Store) RecordCashMovement(ctx context.Context, actor auth.Identity, kin
 	if !cashMovementPeriodKind(kind) {
 		return Expense{}, ErrInvalid
 	}
-	return s.recordMovement(ctx, actor, kind, amount, description, categoryID, nil)
+	return s.recordMovement(ctx, actor, kind, amount, description, categoryID, nil, nil)
+}
+
+// RecordCashMovementEvidence records the same movement of the branch's own drawer with the optional
+// receipt of the pay-out it states (S1, S2, S4): the photograph the branch took of the ticket, which is
+// written by the same statement as the movement and therefore exists exactly when the movement exists.
+// A receipt on a kind that carries none is refused by name (S2), and the file itself is judged by
+// ReadEvidence before this call, because nothing the caller says about it is trusted (S6).
+func (s *Store) RecordCashMovementEvidence(ctx context.Context, actor auth.Identity, kind string,
+	amount Money, description string, categoryID *int64, receipt *EvidenceUpload) (Expense, error) {
+	if !cashMovementPeriodKind(kind) {
+		return Expense{}, ErrInvalid
+	}
+	return s.recordMovement(ctx, actor, kind, amount, description, categoryID, nil, receipt)
 }
 
 // CorrectCashMovement records the compensating movement of one row of the branch's book (S6): the
@@ -691,7 +704,7 @@ func (s *Store) CorrectCashMovement(ctx context.Context, actor auth.Identity, co
 	if correctsID < 1 {
 		return Expense{}, ErrInvalid
 	}
-	return s.recordMovement(ctx, actor, cashMovementCorrection, amount, description, nil, &correctsID)
+	return s.recordMovement(ctx, actor, cashMovementCorrection, amount, description, nil, &correctsID, nil)
 }
 
 // recordMovement appends one row to the branch's own book, which is the one write every path above
@@ -701,7 +714,7 @@ func (s *Store) CorrectCashMovement(ctx context.Context, actor auth.Identity, co
 // S12), the motive only where the kind states one (S3), the database's instant and no settlement named,
 // because the closure that covers the row is the one whose window contains that instant.
 func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind string, amount Money,
-	description string, categoryID *int64, corrects *int64) (Expense, error) {
+	description string, categoryID *int64, corrects *int64, receipt *EvidenceUpload) (Expense, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Expense{}, ErrUnavailable
 	}
@@ -751,22 +764,40 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 	if err := checkAccount(ctx, s.pool, actor); err != nil {
 		return Expense{}, err
 	}
+	// The receipt of the row (S1, S2, S4): only a pay-out carries one, and it is written by the same
+	// statement as the movement, so a refused photo never leaves an expense waiting for it and a
+	// refused movement never leaves a photo behind. Everything about the file was decided by
+	// ReadEvidence; this only revalidates that the upload agrees with its own bytes (S6).
+	if receipt != nil && kind != metricsMovementExpense {
+		return Expense{}, ErrEvidenceNotApplicable
+	}
+	var evidenceBytes, evidenceType, evidenceSize, evidenceDigest any
+	if receipt != nil {
+		body, contentType, size, digest, ok := storedEvidence(receipt)
+		if !ok {
+			return Expense{}, ErrUnavailable
+		}
+		evidenceBytes, evidenceType, evidenceSize, evidenceDigest = body, contentType, size, digest
+	}
 	var movement Expense
 	var stored string
+	var storedType, storedDigest *string
+	var storedSize *int64
 	// The branch is the account's own location and never a caller value, the row belongs to no
 	// settlement -- `closing_id` stays null, which is what separates a movement of the period from the
 	// transfer of an acta (S5) -- and the copy of the label is written by the guard of 061 and never by
-	// this statement (S8).
+	// this statement (S8). The receipt travels in the same row and in the same statement (S4).
 	err = s.pool.QueryRow(ctx, `INSERT INTO branch_cash_movements(
-  branch_location_id,kind,amount,description,category_id,corrects_id,created_by_account_id)
- VALUES($1,$2,$3,$4,$5,$6,$7)
+  branch_location_id,kind,amount,description,category_id,corrects_id,created_by_account_id,
+  evidence_bytes,evidence_content_type,evidence_size,evidence_sha256)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
  RETURNING id,branch_location_id,kind,amount::text,description,occurred_at,created_by_account_id,
-  corrects_id,category_id,category_label`,
+  corrects_id,category_id,category_label,evidence_content_type,evidence_size,evidence_sha256`,
 		int16(actor.Location.ID), kind, string(canonicalAmount), canonicalText, categoryID, corrects,
-		int64(actor.AccountID)).
+		int64(actor.AccountID), evidenceBytes, evidenceType, evidenceSize, evidenceDigest).
 		Scan(&movement.ID, &movement.BranchID, &movement.Kind, &stored, &movement.Description,
 			&movement.OccurredAt, &movement.CreatedByAccountID, &movement.CorrectsID,
-			&movement.CategoryID, &movement.CategoryLabel)
+			&movement.CategoryID, &movement.CategoryLabel, &storedType, &storedSize, &storedDigest)
 	if err != nil {
 		return Expense{}, s.cashWriteRefusal(ctx, actor.Location.ID, canonicalAmount, err)
 	}
@@ -793,6 +824,14 @@ func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind st
 	if !ValidMotive(movement.Kind, movement.CategoryID, movement.CategoryLabel) {
 		return Expense{}, ErrUnavailable
 	}
+	// The receipt the database kept is the one this call stated, judged by the one rule of the
+	// contract (S2, S6), so a row can never be published with a receipt no reader can serve.
+	storedEvidenceRow, ok := storedEvidenceOf(storedType, storedSize, storedDigest)
+	if !ok || !ValidEvidence(movement.Kind, storedEvidenceRow) ||
+		!sameEvidence(storedEvidenceRow, evidenceOf(receipt)) {
+		return Expense{}, ErrUnavailable
+	}
+	movement.Evidence = storedEvidenceRow
 	if canonical, ok := CanonicalMovementText(movement.Kind, movement.Description); !ok ||
 		canonical != movement.Description {
 		return Expense{}, ErrUnavailable
@@ -886,6 +925,11 @@ type CashMovement struct {
 	// reading when the motive is renamed or archived.
 	CategoryID    *int64
 	CategoryLabel *string
+	// Evidence is the receipt of the pay-out the row states (S7): the content type the server validated,
+	// the size of the stored bytes and their SHA-256. It is nil on every kind that carries none -- the
+	// contribution, the collection and the correction -- and on a pay-out recorded without a photo, and
+	// it never carries the bytes.
+	Evidence *Evidence
 }
 
 // CashLedger is the branch's drawer over one window, which is what the screen of the operational till
@@ -1023,7 +1067,8 @@ func (s *Store) CashLedger(ctx context.Context, actor auth.Identity, from, to *t
 	}
 	rows, err := s.pool.Query(ctx, `SELECT id,branch_location_id,kind,effect_kind,amount::text,
   effective::text,description,occurred_at,created_by_account_id,corrects_id,category_id,
-  category_label,sum(effective) OVER ()::text,count(*) OVER ()
+  category_label,evidence_content_type,evidence_size,evidence_sha256,
+  sum(effective) OVER ()::text,count(*) OVER ()
  FROM branch_cash_ledger
  WHERE branch_location_id=$1 AND closing_id IS NULL
    AND ($2::timestamptz IS NULL OR occurred_at >= $2)
@@ -1042,12 +1087,19 @@ func (s *Store) CashLedger(ctx context.Context, actor auth.Identity, from, to *t
 	for rows.Next() {
 		var movement CashMovement
 		var amount, stored string
+		var contentType, digest *string
+		var size *int64
 		if rows.Scan(&movement.ID, &movement.BranchID, &movement.Kind, &movement.EffectKind,
 			&amount, &stored, &movement.Description, &movement.OccurredAt,
 			&movement.CreatedByAccountID, &movement.CorrectsID, &movement.CategoryID,
-			&movement.CategoryLabel, &total, &window) != nil {
+			&movement.CategoryLabel, &contentType, &size, &digest, &total, &window) != nil {
 			return CashLedger{}, fail(ctx)
 		}
+		evidence, ok := storedEvidenceOf(contentType, size, digest)
+		if !ok {
+			return CashLedger{}, ErrUnavailable
+		}
+		movement.Evidence = evidence
 		if _, ok := movement.stored(branch, amount, stored); !ok {
 			return CashLedger{}, ErrUnavailable
 		}
@@ -1089,6 +1141,59 @@ func (s *Store) CashLedger(ctx context.Context, actor auth.Identity, from, to *t
 	}
 	book.Expected = expected
 	return book, nil
+}
+
+// CashMovementEvidence reads the receipt of one movement of the session's branch (S8): the bytes the
+// row stores, the content type that was validated when they were written, their size and their digest.
+// It is the only read of this package that names the bytes of the ledger, and it names them explicitly:
+// every other read selects the three metadata columns and never the file, so no book and no acta drags
+// a photograph.
+//
+// The authority is the one of the book: a valid session of the branch that owns the movement. Another
+// branch's movement is not part of this branch's ledger, so it is not found -- exactly like the
+// settlement of another branch -- and neither is a movement that carries no receipt: both state
+// nothing this route can serve. The warehouse owns no drawer and is refused, exactly like the book.
+func (s *Store) CashMovementEvidence(ctx context.Context, actor auth.Identity, id int64) (EvidenceImage, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return EvidenceImage{}, ErrUnavailable
+	}
+	if id < 1 {
+		return EvidenceImage{}, ErrNotFound
+	}
+	if !branchAccount(actor) {
+		return EvidenceImage{}, ErrForbidden
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return EvidenceImage{}, err
+	}
+	var branch int16
+	var contentType, digest *string
+	var size *int64
+	var body []byte
+	err := s.pool.QueryRow(ctx, `SELECT branch_location_id,evidence_content_type,evidence_size,
+  evidence_sha256,evidence_bytes FROM branch_cash_movements WHERE id=$1`, id).
+		Scan(&branch, &contentType, &size, &digest, &body)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return EvidenceImage{}, ErrNotFound
+	}
+	if err != nil {
+		return EvidenceImage{}, fail(ctx)
+	}
+	// A movement of another branch and a movement without a receipt are the same absence for this
+	// session: neither is a document of this branch's drawer.
+	if int64(branch) != int64(actor.Location.ID) || contentType == nil || size == nil ||
+		digest == nil || body == nil {
+		return EvidenceImage{}, ErrNotFound
+	}
+	served := EvidenceImage{Type: *contentType, Size: *size, SHA256: *digest, Bytes: body}
+	// The row is revalidated against the bytes it stores before they are served, so a receipt that
+	// disagrees with itself is never answered as if it were one this domain wrote.
+	if !validEvidenceImage(served) {
+		return EvidenceImage{}, ErrUnavailable
+	}
+	return served, nil
 }
 
 // windowSignedEffect reads the signed effect of one window of the branch's own book (S4, S13): the sum of the
@@ -1153,6 +1258,11 @@ func (m *CashMovement) stored(branch int16, amount, effect string) (int64, bool)
 	// The motive of a row is one pair that always travels together, names an identity, is offered by the
 	// closed list and is stated by an expense only (S3, S8): the same rule the writer of the row applies.
 	if !ValidMotive(m.Kind, m.CategoryID, m.CategoryLabel) {
+		return 0, false
+	}
+	// The receipt of a row is one optional fact of a pay-out and nothing else (S1, S2, S7): a row that
+	// states one on any other kind, or one of a shape this domain does not write, is never published.
+	if !ValidEvidence(m.Kind, m.Evidence) {
 		return 0, false
 	}
 	// The text of the row is the per-kind rule of the book, and it is read back exactly as it is written:
@@ -2440,7 +2550,8 @@ func materialKeyAfter(previous, line MaterialLine) bool {
 func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 	rows, err := q.Query(ctx, `SELECT expense.id,expense.branch_location_id,expense.amount::text,
   expense.description,expense.occurred_at,expense.created_by_account_id,
-  expense.kind,expense.corrects_id,expense.category_id,expense.category_label
+  expense.kind,expense.corrects_id,expense.category_id,expense.category_label,
+  expense.evidence_content_type,expense.evidence_size,expense.evidence_sha256
  FROM branch_cash_ledger expense
  JOIN branch_closings closing ON closing.branch_location_id=expense.branch_location_id
  WHERE closing.id=$1 AND expense.effect_kind='gasto' AND expense.closing_id IS NULL
@@ -2454,11 +2565,19 @@ func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 	for rows.Next() {
 		var expense Expense
 		var stored string
+		var contentType, digest *string
+		var size *int64
 		if rows.Scan(&expense.ID, &expense.BranchID, &stored, &expense.Description,
 			&expense.OccurredAt, &expense.CreatedByAccountID, &expense.Kind,
-			&expense.CorrectsID, &expense.CategoryID, &expense.CategoryLabel) != nil {
+			&expense.CorrectsID, &expense.CategoryID, &expense.CategoryLabel,
+			&contentType, &size, &digest) != nil {
 			return nil, fail(ctx)
 		}
+		evidence, ok := storedEvidenceOf(contentType, size, digest)
+		if !ok {
+			return nil, ErrUnavailable
+		}
+		expense.Evidence = evidence
 		amount, err := ParseAmount(stored)
 		if err != nil {
 			return nil, ErrUnavailable
@@ -2483,6 +2602,11 @@ func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 		// The motive of the row is the pair the book publishes, judged by the one rule of this domain
 		// (S3, S8): the expense states it and the correction that answers one states none.
 		if !ValidMotive(expense.Kind, expense.CategoryID, expense.CategoryLabel) {
+			return nil, ErrUnavailable
+		}
+		// The receipt the acta publishes is the one the row states, and only an expense states one
+		// (S2, S7).
+		if !ValidEvidence(expense.Kind, expense.Evidence) {
 			return nil, ErrUnavailable
 		}
 		// The text of the row is the per-kind rule of the book, applied here exactly as the writer applies

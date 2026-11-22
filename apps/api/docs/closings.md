@@ -100,14 +100,16 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings/corrections/{correction}/decision` | POST | 200 with the correction and the branch's answer |
 | `/api/closings/expenses` | POST | 201 with the recorded expense |
 | `/api/closings/cash-categories` | GET | 200 with the closed list of motives an expense is recorded with |
-| `/api/closings/cash-movements` | POST | 201 with the recorded movement of the operational drawer |
+| `/api/closings/cash-movements` | POST | 201 with the recorded movement of the operational drawer (`application/json` or `multipart/form-data`) |
+| `/api/closings/cash-movements/{id}/evidence` | GET, HEAD | 200 with the photo of one pay-out, served with its validated content type |
 | `/api/closings/cash-corrections` | POST | 201 with the recorded correction of one movement |
 | `/api/closings/cash-ledger` | GET | 200 with the book of the drawer over one window |
 
 No other method and no other path is served by this contract: `405 method_not_allowed` with
 an explicit `Allow` header (`GET, POST` for the collection, `GET, POST` for the commission,
 `POST` for the expenses and for the two writes of the drawer, `GET` for the closed list of motives,
-for the book of the drawer and for one settlement, `POST` for each operation). Every mutation
+for the book of the drawer and for one settlement, `POST` for each operation, `GET, HEAD` for the photo
+of one pay-out). Every mutation
 requires the usual same-origin session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`;
 every read requires the session only. A query string is not part of any route here except the
 branch history (`GET /api/closings`) and the book of the drawer (`GET
@@ -584,6 +586,12 @@ closed list existed (S3, S7, S8). This is the pair the book publishes for the sa
 acta accounts for an expense for the same reason the book does: a row that states only one of the two,
 or a motive on the kind that names none, is refused instead of described.
 
+Each row also publishes `evidence`, the receipt of the pay-out as the book publishes it: its validated
+type, its size and its SHA-256, or JSON `null` on a correction and on a pay-out recorded without a
+photo (S1, S7). The bytes are not part of the document either; they are served by the image route
+above. The route of the expense keeps its own ten keys: a receipt is uploaded with the movement of the
+drawer, so it is the acta and the book that publish its metadata.
+
 ## The operational drawer: aportes, recaudaciones and corrections
 
 The branch's operational drawer is the counter's till, and it is a box of its own: it is not the
@@ -671,6 +679,109 @@ POST /api/closings/cash-movements
   contract, so a body that states no motive at all is `400 category_required` before the branch's
   state is read.
 
+### The receipt of a pay-out
+
+A `gasto` may carry **one** photo of the ticket it paid for, and never more than one (S1). The photo is
+optional: a pay-out without it is the row this contract always wrote, so a client that uploads no file
+keeps working exactly as before (S9). A contribution, a collection and a correction carry none (S2).
+
+The route accepts the two forms of the same movement. `application/json` is the body documented above,
+unchanged key by key. `multipart/form-data` states a `movement` part with **exactly that same JSON
+object** — the fields never become form fields — and an `evidence` part with the file:
+
+```
+POST /api/closings/cash-movements
+Content-Type: multipart/form-data; boundary=----caja
+
+------caja
+Content-Disposition: form-data; name="movement"; filename="movement.json"
+
+{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}
+------caja
+Content-Disposition: form-data; name="evidence"; filename="comprobante.jpg"
+
+<the bytes of the photo>
+------caja--
+```
+
+The answer is the answer of a movement — the same keys as the JSON form, with or without a photo. The
+`movement` part is judged by the same decoder as the JSON body, so every per-kind rule of the body
+applies to it unchanged, and the `evidence` part is judged by the bytes it contains and by nothing else.
+
+* Only **JPEG** and **PNG** are accepted, and the format is decided by the **content**, never by the
+  declared `Content-Type`, the extension or the file name: the magic bytes select the decoder and a
+  **full decode** of the image is the proof that the file really is one, so an SVG, a renamed script
+  and a corrupt image are all refused (S6).
+* The whole **complete** body must be the image: the decode has to consume the file to its end, and not
+  only the image to its end marker. Both decoders stop at their own end marker and would otherwise
+  accept anything glued behind it, so a **polyglot** — a real PNG or JPEG followed by a zip header, a
+  script or any other payload — is refused with `evidence_unsupported` and never stored. A single
+  trailing byte is already a refusal.
+* A body that **does not arrive complete** — the connection is cut in the middle, whether the request
+  declared more bytes than it sent or exactly what it sent — is never judged at all: it is
+  `400 {"error":"invalid_request"}`. It is never an empty success, and it is never reported as a
+  refused format, because the receipt never reached the decoder.
+* The caps are **8 MB** of bytes and **6000×6000** pixels. The upload is read through the byte cap
+  and no further, the size is judged before anything is decoded, and the image is measured from its
+  own header before it is decoded whole, so an image above the pixel cap is refused without being
+  decoded. A receipt photo from a phone fits comfortably inside 6000 pixels a side.
+* At most **two** receipts are read and decoded at the same time. Further uploads wait for a slot of
+  that bound under their own request context, so simultaneous uploads queue instead of multiplying
+  the memory their decoded images reserve; a request cancelled while it waits is answered by its
+  context and neither holds nor leaks a slot. Queueing is not a refusal: the refusals of this
+  contract are the ones below, unchanged.
+* The row stores the bytes **exactly as they arrived** — nothing is re-encoded, resized or rewritten —
+  beside the content type the decode proved, their real size and the SHA-256 of exactly those bytes.
+* The photo is written by the **same statement** as the movement, so the two exist together or not at
+  all: a refused photo leaves no movement behind and the drawer expectation does not move, and a
+  refused movement leaves no photo behind (S4).
+* The photo is **immutable by inheritance**: `branch_cash_movements` refuses every `UPDATE` and every
+  `DELETE`, so the receipt is never edited, never replaced and never removed (S5). A wrong photo is
+  corrected the way everything else in this book is — the expense is compensated with its opposite
+  movement and a new expense is recorded with the correct receipt — which is why the columns need no
+  trigger of their own.
+
+Refusals of the upload, in the creation:
+
+| Case | Status and body |
+|---|---|
+| The file states no bytes | `400 {"error":"evidence_empty"}` |
+| The file is above the 8 MB cap | `400 {"error":"evidence_too_large"}` |
+| The bytes are not a JPEG or a PNG, or the image does not decode whole | `400 {"error":"evidence_unsupported"}` |
+| The image is above the 6000×6000 pixel cap | `400 {"error":"evidence_dimensions"}` |
+| A receipt on a kind that is not a `gasto` | `400 {"error":"evidence_not_applicable"}` |
+| The body did not arrive complete: the connection was cut before the declared bytes or before the end of the multipart body | `400 {"error":"invalid_request"}` |
+| A repeated `evidence` part, a missing or repeated `movement` part, or an unknown part | `400 {"error":"invalid_request"}` |
+
+Every one of them writes nothing: no movement, no receipt, and no change to the drawer (S4).
+
+### The photo of one movement
+
+```
+GET /api/closings/cash-movements/21/evidence
+```
+
+The route serves the stored bytes with the content type that was validated when they were written:
+
+```
+200 OK
+Content-Type: image/jpeg
+Content-Length: 48291
+Content-Disposition: inline; filename="comprobante-21.jpg"
+Cache-Control: no-store
+X-Content-Type-Options: nosniff
+```
+
+* The authority is the one of the book: a valid session, and the branch of the session must own the
+  movement. Another branch's movement is `404 not_found` and never `403 forbidden` — it is not part of
+  this branch's ledger — and the warehouse is `403 forbidden`, exactly like the book (S8).
+* A movement with no receipt is `404 not_found` as well, because there is nothing to serve, and an
+  anonymous caller is `401 unauthenticated`.
+* `GET` answers the bytes and `HEAD` the same headers with no body; every other method is
+  `405 method_not_allowed` with `Allow: GET, HEAD`.
+* The bytes never appear in any JSON answer: the book and the acta publish the metadata of the photo
+  and nothing else (S7).
+
 ### Corrections of the drawer's book
 
 The book is immutable, so a wrong movement is answered by a compensating one of kind `correccion`
@@ -714,11 +825,11 @@ GET /api/closings/cash-ledger?from=2026-03-01T00:00:00Z&to=2026-03-23T18:30:00Z
   {"id":21,"kind":"gasto","effect_kind":"gasto","amount":"45.50","effective":"-45.50",
    "description":"Detergente","occurred_at":"2026-03-02T09:15:00Z",
    "created_by_account_id":2,"corrects_id":null,"category_id":5,
-   "category_label":"Limpieza"},
+   "category_label":"Limpieza","evidence":{"type":"image/jpeg","size":482913,"sha256":"…"}},
   {"id":22,"kind":"correccion","effect_kind":"gasto","amount":"10.00","effective":"10.00",
    "description":"Detergente mal cargado","occurred_at":"2026-03-02T09:22:00Z",
    "created_by_account_id":2,"corrects_id":21,"category_id":null,
-   "category_label":null}]}
+   "category_label":null,"evidence":null}]}
 ```
 
 * `from` and `to` are both optional and each appears at most once, as an RFC3339 instant. An absent
@@ -750,6 +861,11 @@ GET /api/closings/cash-ledger?from=2026-03-01T00:00:00Z&to=2026-03-23T18:30:00Z
   the book, the acta and the report keep counting the same story. A row that states only one of the
   two, or a motive on a kind that names none, is refused instead of described, exactly like every
   other shape this contract does not publish.
+* Every movement publishes `evidence`, the receipt of a pay-out: `{"type":"image/jpeg","size":482913,
+  "sha256":"…"}`, or JSON `null` when the row carries none — a contribution, a collection, a correction
+  and a pay-out recorded without a photo (S1, S7). The key is always stated, and the bytes are never
+  part of it: the photo is served by `GET /api/closings/cash-movements/{id}/evidence` and by nothing
+  else, so a book of a long period never drags a photograph.
 * `movements` is published **oldest first**, because a book is read in the order it happened.
 * `truncated` reports that the window holds more movements than the answer lists: the list is the newest
   500 rows and every number beside it counts the whole window, so a long period publishes a shorter list
@@ -1062,11 +1178,16 @@ about instead of a generic code.
 
 | Status | Code | Companion key | Meaning |
 |---|---|---|---|
-| 400 | `invalid_request` | — | Malformed body or framing, an unknown or duplicate key, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
+| 400 | `invalid_request` | — | Malformed body or framing, a body that did not arrive complete, an unknown or duplicate key, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
 | 400 | `correction_target_invalid` | — | A correction of the drawer names a movement it may not answer: an unknown one, one of another branch, another correction, the transfer of a settlement or a movement of a period a closure already signed (LC030) |
 | 400 | `category_required` | — | An expense states no motive, and the motive is mandatory (LC033) |
 | 400 | `category_unknown` | — | The motive of an expense is not one the closed list offers, or it is archived (LC033) |
 | 400 | `category_not_applicable` | — | A motive was stated on a kind that names none: only an expense is recorded with one (LC033) |
+| 400 | `evidence_empty` | — | The uploaded receipt states no bytes |
+| 400 | `evidence_too_large` | — | The uploaded receipt is above the 8 MB cap |
+| 400 | `evidence_unsupported` | — | The uploaded bytes are not a JPEG nor a PNG, or the image does not decode whole: a corrupt image and one with a payload behind its end answer the same. A body that stopped arriving is `invalid_request` instead, because it was never decoded |
+| 400 | `evidence_dimensions` | — | The uploaded image is above 6000×6000 pixels |
+| 400 | `evidence_not_applicable` | — | A receipt was uploaded on a kind that carries none: only a `gasto` carries one |
 | 401 | `unauthenticated` | — | No session |
 | 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, warehouse on an expense, warehouse or another branch on a decision) |
 | 404 | `not_found` | — | No such settlement for this caller, no setting for that branch, or an aliased path |
@@ -1141,6 +1262,14 @@ stable SQLSTATEs:
 | `LC024` | Location 1 is the warehouse: an expense belongs to a branch | `403 forbidden` from the expense route, 503 `service_unavailable` elsewhere |
 | `LC033` | The motive of an expense is one the closed list offers and is not archived, no other kind names one, and the note is optional only where a motive is stated | 400 `category_required`, `category_unknown` or `category_not_applicable`; 503 `service_unavailable` only for a row this layer could not have written |
 | — | The four `BEFORE INSERT` triggers of the ledger answer in name order, so the motive is the last word: `LC001` → `LC030` → `LC031` → `LC032` → `LC033` | The first refusal of an older rule is the one the caller reads |
+
+The receipt of a pay-out is four nullable columns of `branch_cash_movements` — `evidence_bytes`,
+`evidence_content_type`, `evidence_size` and `evidence_sha256` — and the database, not the application,
+refuses the shapes that are not one (migration 062): the four columns are all present or all absent, only
+a `gasto` carries them, the size is the `octet_length` of the bytes and stays between 1 and 8388608, the
+content type is `image/jpeg` or `image/png`, and the digest is 32 bytes of lowercase hexadecimal. No
+trigger of its own is added: the immutability of the receipt is the immutability of the row, which 034
+already refuses to update or to delete.
 
 One live settlement per branch is a unique index, reported as `409 settlement_live`; a
 reference to a settlement that does not exist is reported as `404 not_found`, and a second

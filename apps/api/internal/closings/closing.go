@@ -111,6 +111,22 @@ var (
 	// S3): only an expense is recorded with a motive, so a contribution, a collection and a
 	// correction name none.
 	ErrCategoryNotApplicable = errors.New("only an expense states a motive of the drawer")
+	// ErrEvidenceEmpty is the refusal of a receipt with no bytes (S6): an empty file is not a photo, and
+	// the branch either uploads one or records the pay-out without its receipt (S1).
+	ErrEvidenceEmpty = errors.New("the receipt is empty")
+	// ErrEvidenceTooLarge is the refusal of a receipt above the cap of S6, which is 8 MB. The upload is
+	// not read past it, so the size of the file is never the size of what the server buffers.
+	ErrEvidenceTooLarge = errors.New("the receipt is larger than the cap")
+	// ErrEvidenceUnsupported is the refusal of a receipt that is not a JPEG or a PNG (S6): the format is
+	// decided by decoding the content, so an SVG, a renamed script and a truncated image are all the
+	// same answer.
+	ErrEvidenceUnsupported = errors.New("the receipt is not an image this contract accepts")
+	// ErrEvidenceDimensions is the refusal of an image above the pixel cap of S6: 10000 pixels a side.
+	ErrEvidenceDimensions = errors.New("the receipt is larger than the pixel cap")
+	// ErrEvidenceNotApplicable is the refusal of a receipt on a kind that carries none (S2): only a
+	// gasto is paid out with a photo of its ticket, and the contribution, the collection and the
+	// correction name none.
+	ErrEvidenceNotApplicable = errors.New("only an expense carries a receipt of the drawer")
 )
 
 // RetiredBranch is the refusal of a settlement or a setting for a branch the warehouse
@@ -702,6 +718,10 @@ type Expense struct {
 	// what the book, the acta and the report keep reading when the motive is renamed or archived.
 	CategoryID    *int64  `json:"category_id"`
 	CategoryLabel *string `json:"category_label"`
+	// Evidence is the receipt of the pay-out as every read of this contract publishes it (S7): its
+	// validated content type, its size and its SHA-256, and nil on the correction that answers an
+	// expense and on a row recorded without a photo (S1). The bytes are never part of it.
+	Evidence *Evidence `json:"evidence"`
 }
 
 // CashCategory is one motive of the closed list an expense is recorded with (S2, S5): the identity the
