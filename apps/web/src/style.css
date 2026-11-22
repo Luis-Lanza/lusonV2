@@ -1288,3 +1288,39 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 @media (max-width: 600px) {
   .adjustment-capture-other td:nth-child(3) { text-align: left; }
 }
+
+/* Cash motives administration: the fifth tab of Almacén › Catálogo, mapped on the
+   existing panel, table, hint, action and notice shapes. Artboard:
+   design/caja-motivos-admin/01-tabla-y-alta.html. Every colour, radius and shadow
+   below is one this sheet already declares, so the screen adds no new token. */
+.cash-motives-place { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.cash-motives-state { display: inline-block; padding: 2px 8px; border: 1px solid; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; }
+.cash-motives-state.active { background: #ECFDF5; border-color: #A7F3D0; color: #047857; }
+.cash-motives-state.retired { background: #EFEDEF; border-color: #AAA5AA; color: #595459; }
+/* The reason of a disabled action is written beside it: a disabled control cannot be
+   focused to explain itself. */
+.cash-motives-reason { display: block; margin-top: 6px; color: var(--muted); font-size: 11px;
+  line-height: 16px; text-align: right; }
+.cash-motives-guard { display: flex; gap: 8px; padding: 12px; border: 1px solid #E8CF86;
+  border-radius: 4px; background: #FFFBEF; color: #805400; font-size: 12px; line-height: 18px; }
+.cash-motives-guard p { margin: 0; }
+.cash-motives-guard b { font-weight: 600; }
+.cash-motives-create form { display: grid; gap: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+.cash-motives-inline { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.cash-motives-inline label { display: grid; gap: 8px; flex: 1 1 320px; min-width: 0;
+  color: var(--muted); font-size: 12px; }
+.cash-motives-inline input { width: 100%; min-height: 44px; padding: 10px 12px;
+  border-color: var(--muted); color: #242124; font-size: 13px; }
+.cash-motives-archived { padding-top: 4px; border-top: 1px solid var(--border); }
+.cash-motives-archived summary { display: flex; align-items: center; gap: 8px; min-height: 44px;
+  color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; list-style: none; }
+.cash-motives-archived summary::-webkit-details-marker { display: none; }
+.cash-motives-archived summary::before { content: "▸"; color: var(--wine); }
+.cash-motives-archived[open] summary::before { content: "▾"; }
+.cash-motives-archived summary:hover { color: #242124; }
+.cash-motives-archived .catalog-table { margin-top: 8px; }
+@media (max-width: 600px) {
+  .cash-motives-inline { align-items: stretch; }
+  .cash-motives-reason { text-align: left; }
+}
