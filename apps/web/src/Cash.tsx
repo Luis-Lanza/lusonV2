@@ -364,6 +364,10 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
     try {
       await api.record(input, csrf, undefined, photo);
       setAmount(''); setCategory(''); setNote(''); setReason('');
+      // The form states no motive any more, so nothing can be announced as archived from under it: a later
+      // archival of the motive that was just written must not read as a choice that disappeared.
+      chosenMotive.current = { id: '', label: '' };
+      setMotiveNotice('');
       removeEvidence();
       setNotice(`${cashKindLabels[kind]} registrado en el libro de la caja.`);
       // The book is read again, so the band and the list describe the movement that was just written.

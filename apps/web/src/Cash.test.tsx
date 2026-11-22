@@ -805,4 +805,23 @@ describe('los motivos del catálogo en vivo', () => {
     expect(alert.textContent).toContain('Elegí otro de la lista');
     expect((screen.getByLabelText('Motivo') as HTMLSelectElement).value).toBe('');
   });
+  it('says nothing about a motive archived after the expense that used it was recorded', async () => {
+    let reads = 0;
+    setup({
+      categories: () => json(reads++ === 0
+        ? catalogueAnswer
+        : { categories: catalogueAnswer.categories.filter(category => category.label !== 'Limpieza') }),
+    });
+    await screen.findByText('Quedó al cerrar');
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
+    await chooseMotive('Limpieza');
+    fireEvent.change(screen.getByLabelText('Nota (opcional)'), { target: { value: 'Detergente' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    // The write clears the form, so no motive is chosen any more when the list comes back without it.
+    await waitFor(() => expect(screen.getByLabelText('Motivo')).toHaveValue(''));
+    act(() => notifyCatalogueInvalidation());
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    // Announcing a choice that disappeared would be a lie: the operator had already recorded the expense.
+    expect(screen.queryByText(/ya no está disponible/)).not.toBeInTheDocument();
+  });
 });
