@@ -8,6 +8,7 @@ import {
   closingCountReading, closingSeedQuantity,
   closingPeriod, closingPeriodLabel, closingQuantityText,
   closingRail, closingMoneyText, closingRoundStateLabel, closingSheetChanges, closingSignedCents,
+  closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
   closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
   canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
   closingCorrectedCommission, closingCorrectedCounts, closingCorrectionPreview,
@@ -70,6 +71,7 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   sales_total_cents: 3248000n, commission_amount_cents: 146160n,
   card_total_cents: 324000n, transfer_total_cents: 118000n, qr_total_cents: 276000n,
   observation: '', opened_by_account_id: 1, count_lines: lines, rounds: [], corrections: [],
+  expenses: [],
   material_lines: null,
   purchase_fund: purchaseFund(),
   ...overrides,
@@ -1326,5 +1328,37 @@ describe('S4, S5 a battery the system did not have', () => {
     expect(closingLineDifference(added)).toBe(3);
     // The reloaded sheet carries the added row like any other line of the count.
     expect(closingSheetRows(reloaded)).toHaveLength(lines.length + 1);
+  });
+});
+
+describe('S8, S13 the expense row of the acta tells the same story as the book', () => {
+  const expense = (overrides: Partial<model.ClosingExpense> = {}): model.ClosingExpense =>
+    Object.freeze({ id: 7, kind: 'gasto', amount_cents: 4550n, motive: 'Alquiler', note: '',
+      corrects_id: null, ...overrides });
+
+  it('names the motive of the expense even when the row states no note', () => {
+    expect(closingExpenseMotive(expense())).toBe('Alquiler');
+    expect(closingExpenseNote(expense())).toBeNull();
+  });
+
+  it('reads the note under the motive when the row states one', () => {
+    const withNote = expense({ motive: 'Limpieza', note: 'Detergente y escobas' });
+    expect(closingExpenseMotive(withNote)).toBe('Limpieza');
+    expect(closingExpenseNote(withNote)).toBe('Detergente y escobas');
+  });
+
+  it('keeps a row recorded before the closed list readable, with its own text as the reason', () => {
+    // A gasto of a period settled before 061: no motive and its free text, which is the only reason it
+    // ever had, so it is never read twice and never as an expense with no reason (S7).
+    const historical = expense({ motive: null, note: 'Flete de la semana pasada' });
+    expect(closingExpenseMotive(historical)).toBe('Flete de la semana pasada');
+    expect(closingExpenseNote(historical)).toBeNull();
+  });
+
+  it('reads what the row does to the drawer from its kind, never from a stored sign', () => {
+    expect(closingExpenseEffect(expense())).toBe(-4550n);
+    expect(closingSignedText(closingExpenseEffect(expense()))).toBe('− Bs 45,50');
+    expect(closingExpenseEffect(expense({ kind: 'correccion', amount_cents: 1000n,
+      corrects_id: 7, motive: null, note: 'Flete mal cargado' }))).toBe(1000n);
   });
 });

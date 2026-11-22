@@ -214,6 +214,24 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
 .closing-materials-table tfoot td { border-bottom: 0; font-weight: 700; }
 
+/* The expenses the settlement's total is made of: the motive each one was recorded with, its note
+   and the signed amount it charged. The branch reads the reason the drawer moved, not only the
+   number it is being charged for (S8). */
+.closing-expenses { display: grid; gap: 8px; margin-top: 14px; }
+.closing-expenses h3 { margin: 0; color: var(--muted); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; }
+.closing-expenses ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.closing-expenses li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px;
+  align-items: baseline; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px;
+  background: white; }
+.closing-expense-motive { grid-column: 1; grid-row: 1; font-size: 13px; font-weight: 600;
+  overflow-wrap: anywhere; }
+.closing-expense-note { grid-column: 1; grid-row: 2; font-size: 11px; line-height: 16px;
+  overflow-wrap: anywhere; }
+.closing-expense-ref { grid-column: 1; grid-row: 3; color: var(--muted); font-size: 11px; }
+.closing-expenses li > strong { grid-column: 2; grid-row: 1 / span 3; align-self: center;
+  text-align: right; }
+
 @media (max-width: 767px) {
   .closing-balances { grid-template-columns: minmax(0, 1fr); }
   .closing-tabs button { flex: 1 1 auto; }

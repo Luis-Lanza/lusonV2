@@ -19,6 +19,7 @@ import {
   type ClosingCorrectionEffect, type ClosingCorrectionKind,
   type ClosingCorrectionPayload, type ClosingCorrectionQuantity, type ClosingCorrectionStatus,
   type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload, type CorrectionBody,
+  type ClosingExpense,
   type ClosingMaterialKind, type ClosingMaterialLine, type ClosingMaterialUnit,
   type ClosingOffer, type ClosingOfferLine,
   type ClosingPage, type ClosingPolarity, type ClosingPurchaseFund, type ClosingRail,
@@ -675,32 +676,49 @@ function purchaseFund(record: Record<string, unknown>): ClosingPurchaseFund | nu
   });
 }
 
-/** The four kinds the branch's ledger writes: the expense it paid out of the drawer, the contribution
- * it received, the collection it gave up and the correction that answers one of them (S2, S6). */
-const expenseKinds: readonly string[] = ['gasto', 'aporte', 'recaudacion', 'correccion'];
+/** The two kinds the acta's expense list holds: the pay-out of the period and the correction that
+ * answers one of them (S13). A contribution and a collection are money of the drawer, never an expense
+ * of the period, so they are not rows of this list. */
+const expenseKinds: readonly string[] = ['gasto', 'correccion'];
 
 /** The bound of the description of an expense, which is the database's own column bound. */
 const expenseMaxDescription = 500;
+
+/** The bound of the label of one motive of the closed list an expense is recorded with (061, S2). */
+const expenseMaxLabel = 500;
+
+/**
+ * A motive of the closed list is the canonical text the catalogue stores (S2, S8): it says something and
+ * it is published exactly as it is offered.
+ */
+function motive(value: unknown): string {
+  const label = text(value);
+  if (label.trim() !== label || Array.from(label).length > expenseMaxLabel) {
+    return invalidResponse();
+  }
+  return label;
+}
 
 /**
  * The branch's own expenses of the settled window, published beside the total they produced so the
  * warehouse reads what it is subtracting and the branch what it is being charged for (S13). Each row is
  * the ledger's own shape and every key is validated: the amount is canonical money and strictly
  * positive — the direction of a row is the ledger view's signed reading and never a sign this document
- * invents —, the kind is one of the four the ledger admits, the description is the canonical text the
- * database stores, the instant is the one the database stamped, and the reference is the movement a
- * correction answers and nothing else, exactly like the shape rule the database itself enforces (S6).
- * The rows are the order the branch recorded them in, so a list that does not advance in id is refused.
- *
- * They are validated and not unfolded here: the rail reads the total, and the book of the screen has its
- * own read of the ledger.
+ * invents —, the kind is one of the two this list holds, the text is the canonical text the database
+ * stores — the optional note of an expense, which may be empty, and the mandatory description of the
+ * correction that answers it —, the instant is the one the database stamped, and the reference is the
+ * movement a correction answers and nothing else, exactly like the shape rule the database itself
+ * enforces (S6). The motive is the pair the book publishes — the reference and the copy of the label it
+ * had — stated by an expense only and never one without the other (S8). The rows are the order the
+ * branch recorded them in, so a list that does not advance in id is refused.
  */
-function expensesOf(value: unknown): void {
+function expensesOf(value: unknown): readonly ClosingExpense[] {
   if (!Array.isArray(value) || value.length > closingMaxCountLines) return invalidResponse();
+  const expenses: ClosingExpense[] = [];
   let previous = 0;
   for (const entry of value) {
     const row = fields(entry, ['id', 'branch_location_id', 'kind', 'amount', 'description',
-      'occurred_at', 'created_by_account_id', 'corrects_id']);
+      'occurred_at', 'created_by_account_id', 'corrects_id', 'category_id', 'category_label']);
     const id = integer(row.id, 1, Number.MAX_SAFE_INTEGER);
     if (id <= previous) return invalidResponse();
     previous = id;
@@ -708,18 +726,30 @@ function expensesOf(value: unknown): void {
     integer(row.created_by_account_id, 1, Number.MAX_SAFE_INTEGER);
     const kind = row.kind;
     if (typeof kind !== 'string' || !expenseKinds.includes(kind)) return invalidResponse();
-    if (amount(row.amount) < 1n) return invalidResponse();
-    const description = text(row.description);
-    if (description.trim() !== description
-      || Array.from(description).length > expenseMaxDescription) {
-      return invalidResponse();
-    }
+    const amount_cents = amount(row.amount);
+    if (amount_cents < 1n) return invalidResponse();
+    const note = freeText(row.description, expenseMaxDescription);
+    if (note.trim() !== note) return invalidResponse();
+    // Only the note of an expense may be empty: a correction still says what it is for (S3).
+    if (kind !== 'gasto' && note === '') return invalidResponse();
     timestamp(row.occurred_at);
     // A correction names exactly one movement and no other kind names one (S6): a row that breaks it is
     // a cancelation this domain does not read.
-    const corrects = optionalInteger(row.corrects_id, 1, Number.MAX_SAFE_INTEGER);
-    if ((kind === 'correccion') !== (corrects !== null)) return invalidResponse();
+    const corrects_id = optionalInteger(row.corrects_id, 1, Number.MAX_SAFE_INTEGER);
+    if ((kind === 'correccion') !== (corrects_id !== null)) return invalidResponse();
+    // The motive is the pair the book publishes (S8): together or not at all, and stated by an expense
+    // only — a correction carries none of its own (S10).
+    const category_id = row.category_id === null
+      ? null : integer(row.category_id, 1, Number.MAX_SAFE_INTEGER);
+    const category_label = row.category_label === null ? null : motive(row.category_label);
+    if ((category_id === null) !== (category_label === null)) return invalidResponse();
+    if (category_id !== null && kind !== 'gasto') return invalidResponse();
+    expenses.push(Object.freeze({
+      id, kind: kind as ClosingExpense['kind'], amount_cents, motive: category_label, note,
+      corrects_id,
+    }));
   }
+  return Object.freeze(expenses);
 }
 
 /**
@@ -735,10 +765,10 @@ function readClosing(value: unknown): Closing {
     'closing_cash', 'taken_cash', 'sales_total', 'commission_amount', 'card_total',
     'transfer_total', 'qr_total', 'observation', 'opened_by_account_id', 'count_lines', 'rounds',
     'expenses', 'corrections'], [...purchaseFundKeys, 'material_lines']);
-  // The branch's own expenses of the window. They are still not rendered, but the document is only
-  // accepted when the field is the list the contract publishes, so a shape change cannot reach the
-  // rail unnoticed.
-  expensesOf(record.expenses);
+  // The branch's own expenses of the window, with the motive of each one: the document is only accepted
+  // when the field is the list the contract publishes, so a shape change cannot reach the acta unnoticed
+  // (S8, S13).
+  const expenses = expensesOf(record.expenses);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
   const state = status(record.status);
   // The corrections of the closed settlement, the pending one included: a settlement whose
@@ -794,6 +824,7 @@ function readClosing(value: unknown): Closing {
     // as a document without a sheet, and one that does is revalidated against its own arithmetic.
     material_lines: materialLines(record),
     rounds: Object.freeze(rounds),
+    expenses,
     purchase_fund: purchaseFund(record),
     corrections,
   });

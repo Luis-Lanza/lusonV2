@@ -150,6 +150,47 @@ export interface ClosingOffer {
 
 export type ClosingDecision = '' | 'accepted' | 'rejected';
 
+/**
+ * One expense of the settled window as the acta publishes it (S8, S13): the amount the branch paid out,
+ * the motive it was recorded with and the copy of the label that motive had, and the note beside it.
+ * `motive` is `null` on a row that names none — the correction of an expense and every row recorded
+ * before the closed list existed — and on those rows `note` is the text the row itself states, which is
+ * the only reason it ever had (S7).
+ */
+export interface ClosingExpense {
+  readonly id: number;
+  readonly kind: 'gasto' | 'correccion';
+  readonly amount_cents: bigint;
+  readonly motive: string | null;
+  readonly note: string;
+  readonly corrects_id: number | null;
+}
+
+/**
+ * The reason one row of the acta states, in the operator's words (S8): the motive the expense was
+ * recorded with and, on a row recorded before the closed list existed, its own free text.
+ */
+export function closingExpenseMotive(expense: ClosingExpense): string {
+  return expense.motive ?? expense.note;
+}
+
+/**
+ * The clarification beside the motive, or `null` when the row states none (S3): an expense may be
+ * recorded without a note, and a historical row already says its reason in that same text, so it is
+ * never read twice.
+ */
+export function closingExpenseNote(expense: ClosingExpense): string | null {
+  return expense.motive === null || expense.note === '' ? null : expense.note;
+}
+
+/**
+ * What the row does to the drawer: a pay-out takes the money out and the correction that answers it
+ * puts it back, which is the direction of its kind and never a sign the row stores (S13).
+ */
+export function closingExpenseEffect(expense: ClosingExpense): bigint {
+  return expense.kind === 'gasto' ? -expense.amount_cents : expense.amount_cents;
+}
+
 /** One proposal round with the branch's answer, if it has one. */
 export interface ClosingRound {
   readonly id: number;
@@ -206,6 +247,12 @@ export interface Closing {
    */
   readonly material_lines: readonly ClosingMaterialLine[] | null;
   readonly rounds: readonly ClosingRound[];
+  /**
+   * The expenses of the window, oldest first, with the corrections of those expenses among them: the
+   * ledger the `cash_expenses_cents` beside them was computed from, each row with the motive it was
+   * recorded with and the copy of that motive's label (S8, S13).
+   */
+  readonly expenses: readonly ClosingExpense[];
   /**
    * The branch's second envelope, or `null` when the payload does not publish it (S1, S5, S6).
    */

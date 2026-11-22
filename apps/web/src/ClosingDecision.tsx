@@ -7,6 +7,7 @@ import {
   closingCorrectionQuantityDeltaText, closingCorrectionStatusLabels, closingDecisionPayload,
   closingDecisionReadiness, closingDifferenceName, closingEnvelope, closingEnvelopeAcceptanceHelp,
   closingEnvelopeApartHelp, closingIsLive, closingMaterialDeliveryHelp, closingMaterialEmptySheet,
+  closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
   closingMaterialLines, closingMaterialQuantityLabel, closingMaterialQuantityText,
   closingMaterialReading, closingMaterialShelfHelp, closingMaterialSignedText,
   closingMaterialWireText, closingMoneyText,
@@ -548,6 +549,25 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
                   <dd>{rail.fund_cents === null ? 'Sin contar' : closingMoneyText(rail.fund_cents)}</dd></div>
               </dl>
               <p className="closing-help">La comisión se calcula sobre todo lo vendido en el período, también lo cobrado por QR: no depende de cómo se pagó. Se informa aparte y no se descuenta de la caja. La diferencia de caja queda registrada tal cual: no se borra al cerrar y no se reparte.</p>
+              {/* The expenses the total above is made of, each one with the motive it was recorded with
+                  and the note beside it: the branch reads the reason the drawer moved, not only the
+                  number it is being charged for (S8, S13). */}
+              {closing.expenses.length > 0 && <div className="closing-expenses" role="group"
+                aria-label="Gastos del período">
+                <h3>Gastos del período</h3>
+                <ul>
+                  {closing.expenses.map(expense => <li key={expense.id} data-expense-id={expense.id}>
+                    <span className="closing-expense-motive">{closingExpenseMotive(expense)}</span>
+                    {closingExpenseNote(expense) !== null &&
+                      <small className="closing-expense-note closing-muted">
+                        {closingExpenseNote(expense)}</small>}
+                    {expense.corrects_id !== null && <span className="closing-expense-ref">
+                      {`Corrige el gasto #${expense.corrects_id}`}</span>}
+                    <strong className={`num ${expense.kind === 'gasto' ? 'neg' : 'pos'}`}>
+                      {closingSignedText(closingExpenseEffect(expense))}</strong>
+                  </li>)}
+                </ul>
+              </div>}
             </div>
             {/* The same block the warehouse reads (ClosingWorkspace), with the offer's own rail: the
                 electronic collection is reported on its own and enters no cash identity of the

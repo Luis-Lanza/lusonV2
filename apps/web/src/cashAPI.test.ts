@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CashAPIError, canonicalCashCorrection, canonicalCashInput, cashErrorMessages, cashFailureIsDefinite,
   cashKindMovesIn, cashLedgerPath, createCashAPI, matchesCashCorrection, matchesCashInput,
-  parseCashCorrection, parseCashError, parseCashLedger, parseCashMovement,
+  parseCashCategories, parseCashCorrection, parseCashError, parseCashLedger, parseCashMovement,
   type CashCorrectionInput, type CashMovementInput,
 } from './cashAPI';
 
@@ -12,12 +12,22 @@ const json = (body: string, status = 200) =>
 const mockFetch = () => vi.fn<typeof fetch>();
 
 // One row of the book as the ledger publishes it: the positive amount the branch wrote, the kind that
-// states its direction, and the signed effect the drawer actually moved by.
-const entry = (patch: Record<string, unknown> = {}) => ({
-  id: 21, kind: 'gasto', effect_kind: 'gasto', amount: '85.00', effective: '-85.00',
-  description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
-  created_by_account_id: 2, corrects_id: null, ...patch,
-});
+// states its direction, the signed effect the drawer actually moved by, and — on an expense — the
+// motive with the copy of the label it had when the row was written (S7, S8).
+const entry = (patch: Record<string, unknown> = {}) => {
+  const row: Record<string, unknown> = {
+    id: 21, kind: 'gasto', effect_kind: 'gasto', amount: '85.00', effective: '-85.00',
+    description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
+    created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza',
+    ...patch,
+  };
+  // A motive is a fact of an expense alone: every other kind states both keys as null (S4).
+  if (row.kind !== 'gasto' && patch.category_id === undefined && patch.category_label === undefined) {
+    row.category_id = null;
+    row.category_label = null;
+  }
+  return row;
+};
 
 /** The six movements of the screen: gasto, gasto, aporte, recaudación, gasto corregido y su corrección. */
 const movements = () => [
@@ -73,7 +83,7 @@ describe('the operational drawer is read as it was written', () => {
     expect(book.movements[0]).toEqual({
       id: 21, kind: 'gasto', effect_kind: 'gasto', amount_cents: 8_500n, effective_cents: -8_500n,
       description: 'Detergente y escobas', occurred_at: '2026-11-13T09:12:00Z',
-      created_by_account_id: 2, corrects_id: null,
+      created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza',
     });
     // The correction carries the direction it answers, inverted: money that a gasto took out comes back.
     expect(book.movements[5]).toMatchObject({
@@ -83,6 +93,58 @@ describe('the operational drawer is read as it was written', () => {
     expect(Object.isFrozen(book)).toBe(true);
     expect(Object.isFrozen(book.movements)).toBe(true);
     expect(Object.isFrozen(book.movements[0])).toBe(true);
+  });
+
+  it('reads the motive of an expense with the copy of the label the row was written with', () => {
+    const book = parseCashLedger(ledgerBody());
+    // The motive is the pair the row states: the reference and the label it had at that moment (S8).
+    expect(book.movements[0]).toMatchObject({ category_id: 5, category_label: 'Limpieza' });
+    // Every kind that is not an expense names no motive at all, and states both keys as null (S4).
+    expect(book.movements[2]).toMatchObject({ kind: 'aporte', category_id: null, category_label: null });
+    expect(book.movements[5]).toMatchObject({ kind: 'correccion', category_id: null,
+      category_label: null });
+    // A row recorded before the closed list existed keeps its free-text motive and names no motive in
+    // the new sense: it still reads, and it is not broken by the list (S7).
+    const historical = parseCashLedger(ledgerBody({
+      effective: '-85.00', expected: '8185.00',
+      movements: [entry({ category_id: null, category_label: null, description: 'Flete viejo' })],
+    }));
+    expect(historical.movements[0]).toMatchObject({ category_id: null, category_label: null,
+      description: 'Flete viejo' });
+  });
+
+  it('refuses a motive the contract does not publish on a row of the book', () => {
+    const broken = (id: number, patch: Record<string, unknown>) => () => parseCashLedger(ledgerBody({
+      movements: movements().map(row => row.id === id ? { ...row, ...patch } : row),
+    }));
+    // A row states both keys or none of them, never one of the two.
+    expect(broken(21, { category_label: null })).toThrow();
+    expect(broken(21, { category_id: null })).toThrow();
+    // A motive on a kind that names none is not a row this domain wrote (S4).
+    expect(broken(23, { category_id: 5, category_label: 'Limpieza' })).toThrow();
+    expect(broken(26, { category_id: 5, category_label: 'Limpieza' })).toThrow();
+    // The label is the canonical text the catalogue stores, and the identity is positive.
+    expect(broken(21, { category_label: ' Limpieza' })).toThrow();
+    expect(broken(21, { category_label: '' })).toThrow();
+    expect(broken(21, { category_id: 0 })).toThrow();
+    expect(broken(21, { category_id: 1.5 })).toThrow();
+  });
+
+  it('reads an expense with a motive and no note, and keeps the mandatory text of every other kind', () => {
+    // The note of an expense is optional: the motive already states what the money paid for (S3).
+    const book = parseCashLedger(ledgerBody({
+      movements: movements().map(row => row.id === 21 ? { ...row, description: '' } : row),
+    }));
+    expect(book.movements[0].description).toBe('');
+    // A contribution and a collection still state what they are for: a blank text is not this book.
+    expect(() => parseCashLedger(ledgerBody({
+      movements: movements().map(row => row.id === 23 ? { ...row, description: '' } : row),
+    }))).toThrow();
+    // The write answer follows the same rule, and a correction always states its own text.
+    expect(parseCashMovement(movementBody({ kind: 'gasto', description: '' })).description).toBe('');
+    expect(() => parseCashMovement(movementBody({ kind: 'gasto', description: ' Detergente' }))).toThrow();
+    expect(() => parseCashMovement(movementBody({ description: '' }))).toThrow();
+    expect(() => parseCashCorrection(correctionBody({ description: '' }))).toThrow();
   });
 
   it('reads a movement and a correction as the two answers of the two write routes', () => {
@@ -201,6 +263,68 @@ describe('the requests the screen sends', () => {
     });
   });
 
+  it('sends the motive of an expense as its own key and its note as the description', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(movementBody({ kind: 'gasto', amount: '85.00',
+      description: 'Detergente' }), 201));
+    const movement = await createCashAPI(fetch).record(
+      { kind: 'gasto', amount: '85.00', category_id: 5, description: '  Detergente  ' }, csrf);
+    expect(movement.kind).toBe('gasto');
+    const [path, init] = fetch.mock.calls[0];
+    expect(path).toBe('/api/closings/cash-movements');
+    // The body states exactly the four keys of an expense, in the canonical text of the contract.
+    expect(String(init?.body))
+      .toBe('{"kind":"gasto","amount":"85.00","category_id":5,"description":"Detergente"}');
+  });
+
+  it('sends an empty note as an empty note and reads it back without invalidating the movement', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(movementBody({ kind: 'gasto', amount: '85.00',
+      description: '' }), 201));
+    const movement = await createCashAPI(fetch).record(
+      { kind: 'gasto', amount: '85.00', category_id: 5, description: '' }, csrf);
+    const [, init] = fetch.mock.calls[0];
+    expect(String(init?.body))
+      .toBe('{"kind":"gasto","amount":"85.00","category_id":5,"description":""}');
+    expect(movement.description).toBe('');
+  });
+
+  it('refuses an expense without a motive and a motive on a kind that names none', async () => {
+    const fetch = mockFetch();
+    const noMotive = { kind: 'gasto', amount: '85.00', description: 'Detergente' } as
+      unknown as CashMovementInput;
+    await expect(createCashAPI(fetch).record(noMotive, csrf))
+      .rejects.toMatchObject({ code: 'invalid_request' });
+    const onAnAporte = { kind: 'aporte', amount: '85.00', category_id: 5, description: 'Cambio' } as
+      unknown as CashMovementInput;
+    await expect(createCashAPI(fetch).record(onAnAporte, csrf))
+      .rejects.toMatchObject({ code: 'invalid_request' });
+    for (const category of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 2, '5', null]) {
+      const input = { kind: 'gasto', amount: '85.00', category_id: category, description: '' } as
+        unknown as CashMovementInput;
+      await expect(createCashAPI(fetch).record(input, csrf))
+        .rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    expect(fetch).not.toHaveBeenCalled();
+    // A note above the bound of the contract never leaves the screen either.
+    expect(() => canonicalCashInput({ kind: 'gasto', amount: '85.00', category_id: 5,
+      description: 'x'.repeat(501) })).toThrow();
+    expect(canonicalCashInput({ kind: 'gasto', amount: '85.00', category_id: 5, description: '' }))
+      .toEqual({ kind: 'gasto', amount: '85.00', category_id: 5, description: '' });
+  });
+
+  it('reads the closed list of motives an expense is recorded with', async () => {
+    const body = JSON.stringify({ categories: [{ id: 1, label: 'Alquiler' },
+      { id: 2, label: 'Internet' }, { id: 5, label: 'Limpieza' }] });
+    const fetch = mockFetch().mockResolvedValue(json(body));
+    const options = await createCashAPI(fetch).categories();
+    expect(options).toEqual([{ id: 1, label: 'Alquiler' }, { id: 2, label: 'Internet' },
+      { id: 5, label: 'Limpieza' }]);
+    const [path, init] = fetch.mock.calls[0];
+    // The list is the same for every branch and states no query at all.
+    expect(path).toBe('/api/closings/cash-categories');
+    expect(init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    expect(init?.body).toBeUndefined();
+  });
+
   it('reads the ledger of the default window without inventing bounds', async () => {
     const fetch = mockFetch().mockResolvedValue(json(ledgerBody()));
     const book = await createCashAPI(fetch).ledger();
@@ -269,6 +393,44 @@ describe('the requests the screen sends', () => {
   });
 });
 
+describe('the closed list of motives of an expense', () => {
+  const categoriesBody = (patch: Record<string, unknown> = {}) => JSON.stringify({
+    categories: [{ id: 1, label: 'Alquiler' }, { id: 2, label: 'Internet' }], ...patch,
+  });
+
+  it('reads the options in the order the database states them, and an empty list as an empty list', () => {
+    const options = parseCashCategories(categoriesBody());
+    expect(options).toEqual([{ id: 1, label: 'Alquiler' }, { id: 2, label: 'Internet' }]);
+    expect(Object.isFrozen(options)).toBe(true);
+    expect(Object.isFrozen(options[0])).toBe(true);
+    // An empty catalogue is published as an empty list, never as a missing key (S2).
+    expect(parseCashCategories(categoriesBody({ categories: [] }))).toEqual([]);
+  });
+
+  it('refuses an option that is not exactly the identity and the label of the list', () => {
+    const only = (option: unknown) => categoriesBody({ categories: [option] });
+    // The answer is the list and nothing else.
+    expect(() => parseCashCategories(categoriesBody({ total: 2 }))).toThrow();
+    expect(() => parseCashCategories(categoriesBody({ categories: undefined }))).toThrow();
+    expect(() => parseCashCategories('{"categories":{}}')).toThrow();
+    // An option states exactly its id and its label (S6: nothing here offers to edit one).
+    expect(() => parseCashCategories(only({ id: 1, label: 'Alquiler', archived: false }))).toThrow();
+    expect(() => parseCashCategories(only({ id: 1 }))).toThrow();
+    expect(() => parseCashCategories(only({ id: 0, label: 'Alquiler' }))).toThrow();
+    expect(() => parseCashCategories(only({ id: 1.5, label: 'Alquiler' }))).toThrow();
+    expect(() => parseCashCategories(only({ id: 1, label: '  Alquiler' }))).toThrow();
+    expect(() => parseCashCategories(only({ id: 1, label: '' }))).toThrow();
+    expect(() => parseCashCategories(only({ id: 1, label: 'x'.repeat(501) }))).toThrow();
+    // A motive is offered once, under one identity and one label.
+    expect(() => parseCashCategories(categoriesBody({
+      categories: [{ id: 1, label: 'Alquiler' }, { id: 1, label: 'Internet' }],
+    }))).toThrow();
+    expect(() => parseCashCategories(categoriesBody({
+      categories: [{ id: 1, label: 'Alquiler' }, { id: 2, label: 'Alquiler' }],
+    }))).toThrow();
+  });
+});
+
 describe('refusals of the drawer', () => {
   it.each([
     [409, 'frozen', { error: 'branch_frozen' }, 'branch_frozen'],
@@ -277,6 +439,10 @@ describe('refusals of the drawer', () => {
     [400, 'an invalid target', { error: 'correction_target_invalid' }, 'correction_target_invalid'],
     [409, 'an excess', { error: 'correction_exceeds' }, 'correction_exceeds'],
     [503, 'an outage', { error: 'service_unavailable' }, 'service_unavailable'],
+    [400, 'a missing motive', { error: 'category_required' }, 'category_required'],
+    [400, 'an unknown motive', { error: 'category_unknown' }, 'category_unknown'],
+    [400, 'a motive on another kind', { error: 'category_not_applicable' },
+      'category_not_applicable'],
   ] as const)('admits %s %s', (status, _name, body, code) => {
     expect(parseCashError(JSON.stringify(body), status)).toBe(code);
     expect(cashErrorMessages[code]).toBeTruthy();

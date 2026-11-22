@@ -283,7 +283,8 @@ func TestAdministrationLoadBranchFundsWritesBothAportes(t *testing.T) {
 	}
 	// S6: the branch is not frozen and its own account still records its own movement.
 	if _, err := f.pool.Exec(f.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,
-         amount,description,created_by_account_id) VALUES(2,'gasto',100.00,'Gasto del dia',2)`); err != nil {
+         amount,description,category_id,created_by_account_id)
+         VALUES(2,'gasto',100.00,'Gasto del dia',1,2)`); err != nil {
 		t.Fatalf("the branch must keep operating after a load: %v", err)
 	}
 	if cash, _ := f.balances(2); cash != "4900.00" {
@@ -420,7 +421,8 @@ func TestAdministrationBranchBooksPublishTheTwoBalances(t *testing.T) {
 		t.Fatalf("the load must be admitted: %v", err)
 	}
 	if _, err := f.pool.Exec(f.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,
-         amount,description,created_by_account_id) VALUES(2,'gasto',150.00,'Gasto del dia',2)`); err != nil {
+         amount,description,category_id,created_by_account_id)
+         VALUES(2,'gasto',150.00,'Gasto del dia',1,2)`); err != nil {
 		t.Fatalf("the branch must be able to record its own expense: %v", err)
 	}
 	books, err = f.service.ListBranchBooks(f.ctx, f.token)

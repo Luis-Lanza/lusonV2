@@ -524,6 +524,45 @@ describe('the electronic collection of the offer (S2)', () => {
 
 // The difference row is not a rule of its own: it is what makes the panel legible, so the tag keeps
 // the separation every other tag of the panel has (S2).
+describe('the expenses the branch is being charged for (S8, S13)', () => {
+  const expenses = [
+    // The row the verification read back with no visible reason: «Alquiler» and no note at all (S3).
+    { id: 7, branch_location_id: 2, kind: 'gasto', amount: '100.00', description: '',
+      occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null,
+      category_id: 1, category_label: 'Alquiler' },
+    { id: 8, branch_location_id: 2, kind: 'gasto', amount: '75.00',
+      description: 'Detergente y escobas', occurred_at: '2026-09-12T10:05:00Z',
+      created_by_account_id: 2, corrects_id: null, category_id: 5, category_label: 'Limpieza' },
+    // A row recorded before the closed list existed: its own text is the reason it states (S7).
+    { id: 9, branch_location_id: 2, kind: 'gasto', amount: '40.00',
+      description: 'Flete de la semana pasada', occurred_at: '2026-09-12T10:06:00Z',
+      created_by_account_id: 2, corrects_id: null, category_id: null, category_label: null },
+  ];
+
+  it('names the motive of every expense, with the note under it', async () => {
+    const h = server(proposed({ expenses }));
+    await ready(h);
+    const list = within(cash()).getByRole('group', { name: 'Gastos del período' });
+    // The motive is what the money paid for; the note is the optional clarification beside it (S3).
+    expect(within(list).getByText('Alquiler')).toBeInTheDocument();
+    expect(within(list).getByText('Limpieza')).toBeInTheDocument();
+    expect(within(list).getByText('Detergente y escobas')).toBeInTheDocument();
+    // A historical row is readable exactly as it was recorded, never as an expense with no reason (S7).
+    expect(within(list).getByText('Flete de la semana pasada')).toBeInTheDocument();
+    // The row still states what it takes out of the drawer.
+    expect(within(list).getByText('− Bs 100,00')).toBeInTheDocument();
+    expect(within(list).getByText('− Bs 75,00')).toBeInTheDocument();
+    expect(within(list).getByText('− Bs 40,00')).toBeInTheDocument();
+  });
+
+  it('reads nothing into the list that the document does not publish', async () => {
+    const h = server(proposed());
+    await ready(h);
+    // A period with no expenses states no list at all, instead of an empty heading.
+    expect(within(cash()).queryByRole('group', { name: 'Gastos del período' })).not.toBeInTheDocument();
+  });
+});
+
 describe('the difference row of the branch panel', () => {
   const styles = () => readFileSync(`${import.meta.dirname}/closings.css`, 'utf8');
 

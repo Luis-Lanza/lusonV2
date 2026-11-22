@@ -17,12 +17,16 @@ func TestDrawerRefusalOnEveryWriteRoute(t *testing.T) {
 	f.contribute(t, 2, "5.00", "Fondo de la caja")
 
 	f.refused(t, f.request(2, "POST", "/api/closings/expenses",
-		`{"amount":"10.00","description":"Flete de la semana"}`), 409,
+		`{"amount":"10.00","description":"Flete de la semana","category_id":1}`), 409,
 		`{"balance":"5.00","error":"drawer_insufficient","requested":"10.00"}`)
 
-	for _, kind := range []string{"gasto", "recaudacion"} {
-		f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
-			fmt.Sprintf(`{"kind":%q,"amount":"10.00","description":"Flete de la semana"}`, kind)), 409,
+	// Both directions of the till state the bound, and the expense states its motive: the motive is the
+	// last word of the row, so it never answers before the drawer (061, S3).
+	for _, body := range []string{
+		`{"kind":"gasto","amount":"10.00","description":"Flete de la semana","category_id":1}`,
+		`{"kind":"recaudacion","amount":"10.00","description":"Retiro de la caja"}`,
+	} {
+		f.refused(t, f.request(2, "POST", "/api/closings/cash-movements", body), 409,
 			`{"balance":"5.00","error":"drawer_insufficient","requested":"10.00"}`)
 	}
 
@@ -34,7 +38,7 @@ func TestDrawerRefusalOnEveryWriteRoute(t *testing.T) {
 		t.Fatalf("the aporte id could not be read: %v", err)
 	}
 	if w := f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"25.00","description":"Compra de la tienda"}`)); w.Code != 201 {
+		`{"kind":"gasto","amount":"25.00","description":"Compra de la tienda","category_id":1}`)); w.Code != 201 {
 		t.Fatalf("spending exactly what the till holds must be admitted: %d %s", w.Code, w.Body.String())
 	}
 	if err := f.p.QueryRow(f.ctx, `SELECT id FROM branch_cash_movements
@@ -68,15 +72,15 @@ func TestDrawerFreezeAndScopeAnswerBeforeTheBound(t *testing.T) {
 	f := closingFixture(t)
 	f.open(t, 2)
 	f.refused(t, f.request(2, "POST", "/api/closings/expenses",
-		`{"amount":"999999.00","description":"Flete de la semana"}`), 409, `{"error":"branch_frozen"}`)
+		`{"amount":"999999.00","description":"Flete de la semana","category_id":1}`), 409, `{"error":"branch_frozen"}`)
 	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"999999.00","description":"Flete de la semana"}`), 409,
+		`{"kind":"gasto","amount":"999999.00","description":"Flete de la semana","category_id":1}`), 409,
 		`{"error":"branch_frozen"}`)
 	// The warehouse writes no till of a branch (LC011 class), unchanged on both writers.
 	f.refused(t, f.request(1, "POST", "/api/closings/expenses",
-		`{"amount":"1.00","description":"Flete"}`), 403, `{"error":"forbidden"}`)
+		`{"amount":"1.00","description":"Flete","category_id":1}`), 403, `{"error":"forbidden"}`)
 	f.refused(t, f.request(1, "POST", "/api/closings/cash-movements",
-		`{"kind":"gasto","amount":"1.00","description":"Flete"}`), 403, `{"error":"forbidden"}`)
+		`{"kind":"gasto","amount":"1.00","description":"Flete","category_id":1}`), 403, `{"error":"forbidden"}`)
 }
 
 // TestDrawerNegativeFromPreRuleRows proves the answer on a till the rule did not govern: a branch
@@ -86,8 +90,8 @@ func TestDrawerNegativeFromPreRuleRows(t *testing.T) {
 	f := closingFixture(t)
 	for _, stmt := range []string{
 		"ALTER TABLE branch_cash_movements DISABLE TRIGGER admit_branch_cash_movement",
-		`INSERT INTO branch_cash_movements(branch_location_id,kind,amount,description,
- created_by_account_id,occurred_at) VALUES(2,'gasto',50.00,'Gasto anterior a la regla',2,'2020-01-01T10:00:00Z')`,
+		`INSERT INTO branch_cash_movements(branch_location_id,kind,amount,description,category_id,
+ created_by_account_id,occurred_at) VALUES(2,'gasto',50.00,'Gasto anterior a la regla',1,2,'2020-01-01T10:00:00Z')`,
 		"ALTER TABLE branch_cash_movements ENABLE TRIGGER admit_branch_cash_movement",
 	} {
 		if _, err := f.p.Exec(f.ctx, stmt); err != nil {
@@ -100,7 +104,7 @@ func TestDrawerNegativeFromPreRuleRows(t *testing.T) {
 		t.Fatalf("the drawer's whole history must be counted: %q %v", expected, err)
 	}
 	f.refused(t, f.request(2, "POST", "/api/closings/expenses",
-		`{"amount":"10.00","description":"Detergente y escobas"}`), 409,
+		`{"amount":"10.00","description":"Detergente y escobas","category_id":1}`), 409,
 		`{"balance":"-50.00","error":"drawer_insufficient","requested":"10.00"}`)
 	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
 		`{"kind":"recaudacion","amount":"10.00","description":"Retiro de la caja"}`), 409,

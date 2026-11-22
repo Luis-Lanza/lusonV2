@@ -4,8 +4,9 @@ import { centsToMoney, parseTypedMoney } from './pointOfSaleModel';
 import TransferDate from './shared/TransferDate';
 import { createMetricsAPI, metricsPeriodToken, MetricsAPIError, type MetricsPeriod } from './metricsAPI';
 import {
-  CashAPIError, cashErrorMessages, cashKindLabels, cashLedgerUnavailable, cashWrittenKinds,
-  createCashAPI, type CashLedger, type CashLedgerEntry, type CashWrittenKind,
+  CashAPIError, cashCatalogueUnavailable, cashErrorMessages, cashKindLabels, cashLedgerUnavailable,
+  cashWrittenKinds, createCashAPI, type CashCategory, type CashLedger, type CashLedgerEntry,
+  type CashMovementInput, type CashWrittenKind,
 } from './cashAPI';
 
 export interface CashProps {
@@ -20,6 +21,10 @@ export interface CashProps {
 const cashAmountMessage = 'Escribí un monto válido, con hasta dos decimales.';
 const cashZeroMessage = 'Escribí un monto mayor a cero: el libro no registra movimientos en cero.';
 const cashDescriptionMessage = 'Escribí el motivo del movimiento.';
+/** The motive of an expense is chosen from the closed list and is mandatory: it is never typed (S1, S3). */
+const cashMotiveMessage = 'Elegí un motivo de la lista: un gasto sin motivo no se registra.';
+const cashMotiveCatalogueEmpty =
+  'La lista de motivos está vacía: no hay ninguno para registrar un gasto. Los aportes y las recaudaciones siguen funcionando.';
 const cashCorrectionRowReason = 'Las correcciones no se corrigen.';
 const cashCorrectedRowReason = 'Ya está corregido por completo.';
 const cashFrozenRowReason = 'La sucursal está congelada: no se corrige mientras dure la rendición.';
@@ -33,6 +38,17 @@ interface BookState {
 }
 
 const initialBookState: BookState = Object.freeze({ phase: 'loading', book: null, problem: '' });
+
+/** The three states of the read of the closed list of motives, and its own failure (S1, S2). */
+interface CatalogueState {
+  readonly phase: 'loading' | 'ready' | 'error';
+  readonly options: readonly CashCategory[];
+  readonly problem: string;
+}
+
+const initialCatalogueState: CatalogueState = Object.freeze({
+  phase: 'loading', options: [], problem: '',
+});
 
 const money = (cents: bigint): string => closingMoneyText(cents);
 const signed = (cents: bigint): string => closingSignedText(cents);
@@ -71,11 +87,19 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
 
   const [kind, setKind] = useState<CashWrittenKind>('gasto');
   const [amount, setAmount] = useState('');
+  /** The motive of an expense: the identity of the option of the closed list, never typed text (S1). */
+  const [category, setCategory] = useState('');
+  /** The note beside the motive of an expense: optional, and the empty string is a legitimate note (S3). */
+  const [note, setNote] = useState('');
+  /** The hand-typed motive of an aporte and of a recaudación, which keeps working as it does today (S4). */
   const [reason, setReason] = useState('');
   const [formProblem, setFormProblem] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [frozen, setFrozen] = useState(false);
+  const [catalogue, setCatalogue] = useState<CatalogueState>(initialCatalogueState);
+  /** The attempts of the read of the catalogue: one when the screen loads, and one per retry. */
+  const [catalogueAttempt, setCatalogueAttempt] = useState(0);
 
   const [correcting, setCorrecting] = useState<CashLedgerEntry | null>(null);
   const [correctionAmount, setCorrectionAmount] = useState('');
@@ -83,6 +107,25 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
   const [correctionProblem, setCorrectionProblem] = useState('');
   const amountInput = useRef<HTMLInputElement>(null);
   const correctionInput = useRef<HTMLInputElement>(null);
+
+  // The closed list of motives is read once when the screen loads, with its own state: an expense cannot be
+  // registered without it, while an aporte and a recaudación name no motive of the list (S1, S4).
+  useEffect(() => {
+    const controller = new AbortController();
+    setCatalogue(initialCatalogueState);
+    void (async () => {
+      try {
+        const options = await api.categories(controller.signal);
+        if (controller.signal.aborted) return;
+        setCatalogue({ phase: 'ready', options, problem: '' });
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (error instanceof CashAPIError && error.code === 'aborted') return;
+        setCatalogue({ phase: 'error', options: [], problem: cashCatalogueUnavailable });
+      }
+    })();
+    return () => controller.abort();
+  }, [api, catalogueAttempt]);
 
   // The windows the screen may ask for are the ones the metrics reader already publishes with their
   // instants: the closed settlements. The live one is the store's own default window, which starts at
@@ -150,6 +193,8 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
   }, [correcting]);
 
   const book = state.book;
+  /** Whether an expense can be recorded at all: the list offers at least one motive to pick. */
+  const gastoReady = catalogue.phase === 'ready' && catalogue.options.length > 0;
 
   /** The money a movement still has to answer: its own amount minus the corrections already written. */
   function remainingOf(entry: CashLedgerEntry): bigint {
@@ -208,12 +253,23 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
     setFormProblem(''); setNotice('');
     const typed = typedCents(amount);
     if ('problem' in typed) { setFormProblem(typed.problem); return; }
-    const motive = reason.trim();
-    if (motive === '') { setFormProblem(cashDescriptionMessage); return; }
+    let input: CashMovementInput;
+    if (kind === 'gasto') {
+      // Without the closed list there is nothing to pick, and the card already says why.
+      if (!gastoReady) return;
+      const option = catalogue.options.find(entry => String(entry.id) === category);
+      // A gasto writes no motive of its own: it either names one of the list or it is not recorded (S1, S3).
+      if (option === undefined) { setFormProblem(cashMotiveMessage); return; }
+      input = { kind, amount: centsToMoney(typed.cents), category_id: option.id, description: note };
+    } else {
+      const motive = reason.trim();
+      if (motive === '') { setFormProblem(cashDescriptionMessage); return; }
+      input = { kind, amount: centsToMoney(typed.cents), description: motive };
+    }
     setBusy(true);
     try {
-      await api.record({ kind, amount: centsToMoney(typed.cents), description: motive }, csrf);
-      setAmount(''); setReason('');
+      await api.record(input, csrf);
+      setAmount(''); setCategory(''); setNote(''); setReason('');
       setNotice(`${cashKindLabels[kind]} registrado en el libro de la caja.`);
       // The book is read again, so the band and the list describe the movement that was just written.
       setRevision(value => value + 1);
@@ -386,7 +442,12 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                         <td><span className={`cash-kind cash-kind-${entry.kind}`}>
                           {cashKindLabels[entry.kind]}</span></td>
                         <td className="cash-motive">
-                          {entry.description}
+                          {entry.category_label !== null && <span className="cash-motive-label">
+                            {entry.category_label}</span>}
+                          {entry.category_label === null
+                            ? entry.description
+                            : entry.description !== ''
+                              && <span className="cash-motive-note">{entry.description}</span>}
                           {entry.corrects_id !== null && <span className="cash-ref">
                             {`Corrige el movimiento #${entry.corrects_id}`}
                           </span>}
@@ -474,14 +535,45 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                   <label htmlFor="cash-amount">Monto en bolivianos</label>
                   <input ref={amountInput} id="cash-amount" inputMode="decimal" value={amount}
                     disabled={busy} onChange={event => setAmount(event.target.value)} />
-                  <label htmlFor="cash-reason">Motivo</label>
-                  <textarea id="cash-reason" value={reason} disabled={busy}
-                    onChange={event => setReason(event.target.value)} />
+                  {kind === 'gasto'
+                    ? catalogue.phase === 'error'
+                      ? <p role="alert" className="cash-problem">
+                        {catalogue.problem}
+                        <button type="button"
+                          onClick={() => setCatalogueAttempt(value => value + 1)}>
+                          Reintentar motivos
+                        </button>
+                      </p>
+                      : catalogue.phase === 'loading'
+                        ? <p role="status" className="cash-note">Consultando los motivos…</p>
+                        : catalogue.options.length === 0
+                          ? <p role="alert" className="cash-problem">{cashMotiveCatalogueEmpty}</p>
+                          : <>
+                            {/* The motive of an expense is picked from the closed list: this screen offers no
+                                path to type one by hand (S1). */}
+                            <label htmlFor="cash-category">Motivo</label>
+                            <select id="cash-category" value={category} disabled={busy}
+                              onChange={event => setCategory(event.target.value)}>
+                              <option value="">Elegí un motivo…</option>
+                              {catalogue.options.map(option => <option key={option.id}
+                                value={String(option.id)}>{option.label}</option>)}
+                            </select>
+                            <label htmlFor="cash-note">Nota (opcional)</label>
+                            <textarea id="cash-note" value={note} disabled={busy}
+                              onChange={event => setNote(event.target.value)} />
+                          </>
+                    : <>
+                      {/* Aporte y recaudación no cambian: siguen con su motivo de texto libre (S4). */}
+                      <label htmlFor="cash-reason">Motivo</label>
+                      <textarea id="cash-reason" value={reason} disabled={busy}
+                        onChange={event => setReason(event.target.value)} />
+                    </>}
                   <p className="cash-stamp">
                     La hora y el autor los pone el sistema, no se escriben.
                   </p>
                   {formProblem !== '' && <p role="alert" className="cash-problem">{formProblem}</p>}
-                  <button type="submit" className="primary cash-submit" disabled={busy}>
+                  <button type="submit" className="primary cash-submit"
+                    disabled={busy || (kind === 'gasto' && !gastoReady)}>
                     {`Registrar ${cashKindLabels[kind].toLowerCase()}`}
                   </button>
                 </form>}

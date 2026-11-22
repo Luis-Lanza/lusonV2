@@ -102,6 +102,9 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
   // Whether the branch also holds a product of the second kind, which the sheet lists beside the
   // batteries (S2, S3).
   product?: boolean,
+  // The expenses of the window as the document publishes them: each one with the motive it was
+  // recorded with and the note beside it (S8, S13).
+  expenses?: unknown[],
   corrections?: unknown[] } = {}) {
   const seeded: readonly (readonly [number, number])[] = options.product
     ? [[1, 12], [2, 9], [3, 14], [40, 5]] : [[1, 12], [2, 9], [3, 14]];
@@ -199,7 +202,7 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       purchase_fund_difference: purchaseDifference, purchase_fund_cash: state.purchaseCash,
       count_lines: lines,
       material_lines: state.materialCounts === null ? [] : materialSheet(state.materialCounts),
-      rounds: state.rounds, expenses: [], corrections: state.corrections,
+      rounds: state.rounds, expenses: options.expenses ?? [], corrections: state.corrections,
     };
   };
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
@@ -633,6 +636,33 @@ describe('the numbers rail (S8, S9, S13)', () => {
     expect(within(rail()).getByText('+ Bs 10,00')).toBeInTheDocument();
     expect(within(rail()).getByText('Sobrante')).toBeInTheDocument();
     expect(within(rail()).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 800,00');
+  });
+
+  it('names the motive of every expense of the window, with the note under it (S8)', async () => {
+    const h = server({ status: 'proposed', expenses: [
+      { id: 7, branch_location_id: 2, kind: 'gasto', amount: '100.00', description: 'Detergente',
+        occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null,
+        category_id: 5, category_label: 'Limpieza' },
+      { id: 8, branch_location_id: 2, kind: 'gasto', amount: '20.00', description: '',
+        occurred_at: '2026-09-12T10:05:00Z', created_by_account_id: 2, corrects_id: null,
+        category_id: 1, category_label: 'Alquiler' },
+      { id: 9, branch_location_id: 2, kind: 'correccion', amount: '40.00',
+        description: 'Detergente mal cargado', occurred_at: '2026-09-12T10:06:00Z',
+        created_by_account_id: 2, corrects_id: 7, category_id: null, category_label: null },
+    ] });
+    await ready(h);
+    await screen.findByRole('heading', { name: 'Rendición de cuentas · Sopocachi' });
+    const list = within(rail()).getByRole('group', { name: 'Gastos del período' });
+    // The motive is the reason the row states and the note is read under it (S3, S8).
+    expect(within(list).getByText('Limpieza')).toBeInTheDocument();
+    expect(within(list).getByText('Detergente')).toBeInTheDocument();
+    // An expense with no note is still an expense: the motive above it says what the money paid for.
+    expect(within(list).getByText('Alquiler')).toBeInTheDocument();
+    // The correction of an expense names the row it answers and no motive of its own (S10).
+    expect(within(list).getByText('Corrige el gasto #7')).toBeInTheDocument();
+    expect(within(list).getByText('Detergente mal cargado')).toBeInTheDocument();
+    expect(within(list).getByText('− Bs 100,00')).toBeInTheDocument();
+    expect(within(list).getByText('+ Bs 40,00')).toBeInTheDocument();
   });
 
   it('derives the expected drawer from the facts and never from the commission', async () => {

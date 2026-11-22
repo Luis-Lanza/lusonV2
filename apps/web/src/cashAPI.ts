@@ -1,6 +1,7 @@
 /**
- * Transport of the branch's operational drawer: the book of the counter's till, the movements the
- * branch writes in it and the correction that answers one of them (S1, S2, S6, S8, S11).
+ * Transport of the branch's operational drawer: the closed list of motives an expense is recorded with,
+ * the book of the counter's till, the movements the branch writes in it and the correction that answers
+ * one of them (S1, S2, S6, S8, S11).
  *
  * Every answer is admitted only when it is JSON of exactly the contract's shape. Money is integer
  * cents from end to end: an amount is the canonical two-decimal text the database writes, the
@@ -27,6 +28,8 @@ export const cashKindLabels: Readonly<Record<CashKind, string>> = Object.freeze(
 
 /** The contract's own bounds, mirrored so a payload this client cannot express never leaves the screen. */
 export const cashMaxDescription = 500;
+/** The bound of the label of one motive of the closed list an expense is recorded with (061, S2). */
+export const cashMaxCategoryLabel = 500;
 export const cashLedgerMovements = 500;
 /** `numeric(12,2)` in cents: the largest amount the database can publish. */
 const cashMaxMoneyCents = 999_999_999_999n;
@@ -43,11 +46,13 @@ export function cashKindMovesIn(kind: CashWrittenKind): boolean {
 
 export type CashErrorCode = 'invalid_request' | 'correction_target_invalid' | 'forbidden'
   | 'branch_frozen' | 'correction_exceeds' | 'drawer_insufficient' | 'service_unavailable'
+  | 'category_required' | 'category_unknown' | 'category_not_applicable'
   | 'invalid_response' | 'network' | 'aborted';
 
 /** One admitted refusal per HTTP status; nothing else may reach the UI. */
 export const cashAdmittedErrors: ReadonlyMap<number, readonly CashErrorCode[]> = new Map([
-  [400, ['invalid_request', 'correction_target_invalid']],
+  [400, ['invalid_request', 'correction_target_invalid', 'category_required', 'category_unknown',
+    'category_not_applicable']],
   [403, ['forbidden']],
   [409, ['branch_frozen', 'correction_exceeds', 'drawer_insufficient']],
   [503, ['service_unavailable']],
@@ -62,6 +67,9 @@ export const cashErrorMessages: Record<CashErrorCode, string> = {
   correction_exceeds: 'La corrección supera lo que todavía falta corregir de ese movimiento. No se registró nada.',
   drawer_insufficient: 'La caja no tiene ese dinero: el movimiento gasta más de lo que hay en el cajón. Gastá menos o registrá un aporte por el efectivo que tenés. No se registró nada.',
   service_unavailable: 'El servicio no está disponible. No pudimos confirmar el movimiento: no sabemos si se registró.',
+  category_required: 'Elegí un motivo de la lista: un gasto sin motivo no se registra. No se registró nada.',
+  category_unknown: 'Ese motivo ya no está en la lista. Elegí otro y volvé a intentar. No se registró nada.',
+  category_not_applicable: 'Un aporte o una recaudación no llevan motivo de gasto. No se registró nada.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el movimiento.',
   network: 'No se pudo conectar con el servidor. No pudimos confirmar el movimiento.',
   aborted: 'La operación se interrumpió. Revisá la conexión e intentá de nuevo.',
@@ -70,6 +78,18 @@ export const cashErrorMessages: Record<CashErrorCode, string> = {
 /** The read of the book has its own words: a refused answer is not a refusal of a movement. */
 export const cashLedgerUnavailable =
   'No se pudo leer el libro de la caja. Revisá la conexión e intentá de nuevo.';
+
+/** The closed list of motives has its own words too: without it an expense cannot be registered, while
+ * a contribution and a collection name no motive of the list and keep working (S1, S4). */
+export const cashCatalogueUnavailable =
+  'No se pudo leer la lista de motivos: un gasto no se puede registrar hasta que la lista vuelva. Los aportes y las recaudaciones siguen funcionando.';
+
+/** One motive of the closed list an expense is recorded with (S1, S2): the id the row states and the
+ * label the screen offers. Nothing here creates, renames or archives one (S6). */
+export interface CashCategory {
+  readonly id: number;
+  readonly label: string;
+}
 
 /** One movement as the two write routes answer it. */
 export interface CashMovement {
@@ -85,7 +105,9 @@ export interface CashMovement {
 
 /**
  * One row of the book: the movement plus the direction it carries (`effect_kind`, which for a
- * correction is the kind of the movement it answers) and the signed effect the drawer moved by.
+ * correction is the kind of the movement it answers) and the signed effect the drawer moved by. An
+ * expense states its motive beside it — the reference and the copy of the label it had when the row was
+ * written — and every other row states both as null (S4, S7, S8).
  */
 export interface CashLedgerEntry {
   readonly id: number;
@@ -97,6 +119,8 @@ export interface CashLedgerEntry {
   readonly occurred_at: string;
   readonly created_by_account_id: number;
   readonly corrects_id: number | null;
+  readonly category_id: number | null;
+  readonly category_label: string | null;
 }
 
 /**
@@ -115,11 +139,14 @@ export interface CashLedger {
   readonly movements: readonly CashLedgerEntry[];
 }
 
-/** A movement the branch records: its direction, its amount and what it was for. */
+/** A movement the branch records: its direction, its amount and what it was for. An expense names the
+ * motive of the closed list and its note is optional; a contribution and a collection name no motive and
+ * still state what they are for (S3, S4). */
 export interface CashMovementInput {
   readonly kind: CashWrittenKind;
   readonly amount: string;
   readonly description: string;
+  readonly category_id?: number;
 }
 
 /** A correction: the movement it answers, the amount it returns or takes back, and why. */
@@ -214,6 +241,33 @@ function description(value: unknown): string {
   return value;
 }
 
+/** The note beside the motive of an expense is optional, so it may be the empty string: it is stored
+ * trimmed and inside its bound like every other text of the contract (S3). */
+function note(value: unknown): string {
+  if (typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()) {
+    return invalidResponse();
+  }
+  if (Array.from(value).length > cashMaxDescription || value.trim() !== value) return invalidResponse();
+  return value;
+}
+
+/** The text a row of the book states: the optional note of an expense, the mandatory description of
+ * every other kind. */
+function rowText(kind: CashKind, value: unknown): string {
+  return kind === 'gasto' ? note(value) : description(value);
+}
+
+/** The label of one motive of the closed list is the canonical text the catalogue stores (061, S2). */
+function label(value: unknown): string {
+  if (typeof value !== 'string' || value === '' || value.includes('\0') || !value.isWellFormed()) {
+    return invalidResponse();
+  }
+  if (Array.from(value).length > cashMaxCategoryLabel || value.trim() !== value) {
+    return invalidResponse();
+  }
+  return value;
+}
+
 /** The three kinds a direction can be written with; a correction is never one of them. */
 function writtenKind(value: unknown): CashWrittenKind {
   if (typeof value !== 'string' || !cashWrittenKinds.includes(value as CashWrittenKind)) {
@@ -235,12 +289,14 @@ function anyKind(value: unknown): CashKind {
 export function parseCashMovement(raw: string): CashMovement {
   const record = fields(decode(raw), ['id', 'branch_location_id', 'kind', 'amount', 'description',
     'occurred_at', 'created_by_account_id']);
+  const kind = writtenKind(record.kind);
   return Object.freeze({
     id: integer(record.id, 1, cashMaxID),
     branch_location_id: integer(record.branch_location_id, 2, 32767),
-    kind: writtenKind(record.kind),
+    kind,
     amount_cents: positiveMoney(record.amount),
-    description: description(record.description),
+    // A gasto is written with a motive, so its text is the optional note beside it (S3).
+    description: rowText(kind, record.description),
     occurred_at: timestamp(record.occurred_at),
     created_by_account_id: integer(record.created_by_account_id, 1, cashMaxID),
     corrects_id: null,
@@ -273,7 +329,7 @@ export function parseCashCorrection(raw: string): CashMovement {
 /** One row of the book, judged as the money and the direction it states. */
 function ledgerEntry(value: unknown): CashLedgerEntry {
   const record = fields(value, ['id', 'kind', 'effect_kind', 'amount', 'effective', 'description',
-    'occurred_at', 'created_by_account_id', 'corrects_id']);
+    'occurred_at', 'created_by_account_id', 'corrects_id', 'category_id', 'category_label']);
   const id = integer(record.id, 1, cashMaxID);
   const kind = anyKind(record.kind);
   const effect_kind = writtenKind(record.effect_kind);
@@ -281,6 +337,13 @@ function ledgerEntry(value: unknown): CashLedgerEntry {
   const effective_cents = wireMoney(record.effective, true);
   const corrects_id = record.corrects_id === null
     ? null : integer(record.corrects_id, 1, id - 1);
+  // The motive is the pair an expense states: its reference and the copy of the label it had when the row
+  // was written. A row that states only one of the two describes nothing this domain wrote (S8).
+  const category_id = record.category_id === null ? null : integer(record.category_id, 1, cashMaxID);
+  const category_label = record.category_label === null ? null : label(record.category_label);
+  if ((category_id === null) !== (category_label === null)) return invalidResponse();
+  // Only an expense names a motive: a motive on any other kind is not a row of this book (S4).
+  if (category_id !== null && kind !== 'gasto') return invalidResponse();
   // A correction without a target would be money out of nowhere, and a target on any other kind
   // would describe a cancelation the rest of the domain does not read (S6).
   if ((kind === 'correccion') !== (corrects_id !== null)) return invalidResponse();
@@ -297,10 +360,10 @@ function ledgerEntry(value: unknown): CashLedgerEntry {
   }
   return Object.freeze({
     id, kind, effect_kind, amount_cents, effective_cents,
-    description: description(record.description),
+    description: rowText(kind, record.description),
     occurred_at: timestamp(record.occurred_at),
     created_by_account_id: integer(record.created_by_account_id, 1, cashMaxID),
-    corrects_id,
+    corrects_id, category_id, category_label,
   });
 }
 
@@ -352,6 +415,32 @@ export function parseCashLedger(raw: string): CashLedger {
 }
 
 // ---------------------------------------------------------------------------------
+// The closed list of motives an expense is recorded with
+// ---------------------------------------------------------------------------------
+
+/**
+ * Parses the closed list of motives whole: the options of the screen, in the order the database states
+ * them. Every option states exactly its identity and its label, both canonical, and no motive is offered
+ * twice; an empty catalogue is an empty list and never a missing key (S1, S2, S6).
+ */
+export function parseCashCategories(raw: string): readonly CashCategory[] {
+  const record = fields(decode(raw), ['categories']);
+  if (!Array.isArray(record.categories)) return invalidResponse();
+  const seenID = new Set<number>();
+  const seenLabel = new Set<string>();
+  const options = record.categories.map((option: unknown) => {
+    const one = fields(option, ['id', 'label']);
+    const id = integer(one.id, 1, cashMaxID);
+    const text = label(one.label);
+    if (seenID.has(id) || seenLabel.has(text)) return invalidResponse();
+    seenID.add(id);
+    seenLabel.add(text);
+    return Object.freeze({ id, label: text });
+  });
+  return Object.freeze(options);
+}
+
+// ---------------------------------------------------------------------------------
 // Payloads this client can express
 // ---------------------------------------------------------------------------------
 
@@ -383,6 +472,14 @@ function canonicalDescription(value: unknown): string {
   return trimmed;
 }
 
+/** The note of an expense goes out as it is stored: trimmed, inside its bound and possibly empty. */
+function canonicalNote(value: unknown): string {
+  if (typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()) return invalidPayload();
+  const trimmed = value.trim();
+  if (Array.from(trimmed).length > cashMaxDescription) return invalidPayload();
+  return trimmed;
+}
+
 function canonicalID(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > cashMaxID) {
     return invalidPayload();
@@ -390,14 +487,30 @@ function canonicalID(value: unknown): number {
   return value;
 }
 
-/** One movement this client may send: a direction, a positive canonical amount and a motive. */
+/**
+ * One movement this client may send, judged per kind exactly as the contract judges it: an expense states
+ * the motive of the closed list and an optional note, and a contribution or a collection states no motive
+ * and still states what it is for (S3, S4).
+ */
 export function canonicalCashInput(input: CashMovementInput): CashMovementInput {
-  const record = inputFields(input, ['kind', 'amount', 'description']);
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return invalidPayload();
+  const record = input as unknown as Record<string, unknown>;
+  const keys = record.kind === 'gasto'
+    ? ['kind', 'amount', 'category_id', 'description']
+    : ['kind', 'amount', 'description'];
+  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.hasOwn(record, key))) {
+    return invalidPayload();
+  }
   if (typeof record.kind !== 'string' || !cashWrittenKinds.includes(record.kind as CashWrittenKind)) {
     return invalidPayload();
   }
-  return Object.freeze({ kind: record.kind as CashWrittenKind,
-    amount: canonicalPositive(record.amount), description: canonicalDescription(record.description) });
+  const kind = record.kind as CashWrittenKind;
+  const amount = canonicalPositive(record.amount);
+  if (kind === 'gasto') {
+    return Object.freeze({ kind, amount, category_id: canonicalID(record.category_id),
+      description: canonicalNote(record.description) });
+  }
+  return Object.freeze({ kind, amount, description: canonicalDescription(record.description) });
 }
 
 /** One correction this client may send: no correction of a correction is even expressible here. */
@@ -587,6 +700,14 @@ export function createCashAPI(fetch: typeof globalThis.fetch = globalThis.fetch)
       const movement = await post('/api/closings/cash-corrections', body, csrf, parseCashCorrection, signal);
       if (!matchesCashCorrection(sent, movement)) throw new CashAPIError('invalid_response', 201);
       return movement;
+    },
+
+    /**
+     * The closed list of motives an expense is recorded with (S1, S2): the options the screen offers. It
+     * states no branch, because the list is the same for every branch.
+     */
+    async categories(signal?: AbortSignal): Promise<readonly CashCategory[]> {
+      return await get('/api/closings/cash-categories', parseCashCategories, signal);
     },
 
     /**

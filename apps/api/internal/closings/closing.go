@@ -100,6 +100,17 @@ var (
 	// ErrCorrectionJournal is the refusal of the journal of applied deltas (LC023): an effect
 	// exists because the branch accepted its own correction, and for no other reason.
 	ErrCorrectionJournal = errors.New("a correction effect is written when its correction is accepted")
+	// ErrCategoryRequired is the refusal of an expense that names no motive (LC033, S3): what the
+	// money paid for is the motive, and the note beside it is the optional clarification.
+	ErrCategoryRequired = errors.New("an expense states a motive of the drawer")
+	// ErrCategoryUnknown is the refusal of an expense whose motive the closed list does not offer: an
+	// unknown id and an archived motive are the same answer, because neither is an option of the
+	// screen (LC033, S3, S8).
+	ErrCategoryUnknown = errors.New("the motive of this expense is unknown or archived")
+	// ErrCategoryNotApplicable is the refusal of a motive on a kind that does not state one (LC033,
+	// S3): only an expense is recorded with a motive, so a contribution, a collection and a
+	// correction name none.
+	ErrCategoryNotApplicable = errors.New("only an expense states a motive of the drawer")
 )
 
 // RetiredBranch is the refusal of a settlement or a setting for a branch the warehouse
@@ -218,8 +229,12 @@ const (
 	// bought, and a request states at most that many lines at once.
 	MaxMaterialLines = 190
 	// MaxDescription is the bound of the description of an expense, which is the database's
-	// own: the ledger admits between 1 and 500 characters once trimmed (S12).
+	// own: the ledger admits between 1 and 500 characters once trimmed (S12), and from 061 the
+	// note of an expense may also be empty when the row names a motive (S3).
 	MaxDescription = 500
+	// MaxCategoryLabel is the bound of the label of a motive, which is the database's own bound for
+	// the closed list an expense is recorded with (061, S2).
+	MaxCategoryLabel = 500
 )
 
 // Status is the state of a settlement. A closed one is never reopened (S16): an error is
@@ -682,6 +697,19 @@ type Expense struct {
 	OccurredAt         time.Time `json:"occurred_at"`
 	CreatedByAccountID int64     `json:"created_by_account_id"`
 	CorrectsID         *int64    `json:"corrects_id"`
+	// CategoryID is the motive the expense was recorded with and CategoryLabel the copy of its label
+	// at that instant (061, S3, S8). Both are nil on every kind that names no motive, and the copy is
+	// what the book, the acta and the report keep reading when the motive is renamed or archived.
+	CategoryID    *int64  `json:"category_id"`
+	CategoryLabel *string `json:"category_label"`
+}
+
+// CashCategory is one motive of the closed list an expense is recorded with (S2, S5): the identity the
+// row states and the label the screen offers, in the order the list states. The catalogue is global to
+// every branch, so it names no branch at all.
+type CashCategory struct {
+	ID    int64  `json:"id"`
+	Label string `json:"label"`
 }
 
 // ProposalCountLine is one line of the count sheet as the branch reads it in the offer.
@@ -878,6 +906,63 @@ func CanonicalDescription(description string) (string, bool) {
 		return "", false
 	}
 	return trimmed, true
+}
+
+// CanonicalNote admits the optional note of an expense (S3) and returns the exact text that is
+// persisted: valid UTF-8, no NUL, at most 500 characters, and the empty string when the branch states
+// no note at all. What the note pays for is the motive, so a note that says nothing is a row that
+// says everything through the motive beside it. Callers that persist the text require the result to be
+// the text they were given, so a padded note is refused instead of trimmed (S3).
+func CanonicalNote(note string) (string, bool) {
+	if !validText(note, MaxDescription) {
+		return "", false
+	}
+	return strings.TrimSpace(note), true
+}
+
+// CanonicalMovementText is the one per-kind text rule of the branch's book (S3): an expense states the
+// optional note beside its motive, so its text may be the empty string and is read as the note it is,
+// while the contribution, the collection, the correction and the transfers of a settlement still say
+// what they are for. The write path and every read of the same row call this one function and then
+// require the text they were given to be the canonical text of its kind, so the rule a row is written
+// with and the rule it is read back with cannot drift apart again (S3).
+func CanonicalMovementText(kind, text string) (string, bool) {
+	if kind == metricsMovementExpense {
+		return CanonicalNote(text)
+	}
+	return CanonicalDescription(text)
+}
+
+// CanonicalLabel admits the label of one motive of the closed list and returns the exact text the
+// database stores: valid UTF-8, no NUL, at most 500 characters, and never blank once trimmed (061,
+// S2).
+func CanonicalLabel(label string) (string, bool) {
+	if !validText(label, MaxCategoryLabel) {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(label)
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// ValidMotive reports whether a motive reference and the copy of the label recorded beside it are the
+// pair this domain writes (S3, S8): both are stated together or not at all, the reference is an identity
+// of the closed list, and only an expense names one -- a contribution, a collection, a correction and
+// the transfers of a settlement state none. The write path and every read of the book and of the acta
+// judge the same pair with this one function, so a motive cannot be admitted by the writer and refused
+// by a reader, nor the other way round.
+func ValidMotive(kind string, categoryID *int64, label *string) bool {
+	if (categoryID == nil) != (label == nil) ||
+		(categoryID != nil && (*categoryID < 1 || kind != metricsMovementExpense)) {
+		return false
+	}
+	if label == nil {
+		return true
+	}
+	canonical, ok := CanonicalLabel(*label)
+	return ok && canonical == *label
 }
 
 // validText is the house text bound: valid UTF-8, no NUL and at most maximum characters.
