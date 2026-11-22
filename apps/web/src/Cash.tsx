@@ -651,7 +651,8 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                               }} />
                             <p className="cash-note">
                               Una sola foto por gasto: si elegís otra, reemplaza la que está. Sólo un
-                              gasto lleva comprobante; es una foto JPEG o PNG de hasta 8 MB.
+                              gasto lleva comprobante; es una foto JPEG o PNG de hasta 8 MB y
+                              6000 × 6000 píxeles.
                             </p>
                             {evidence !== null && <div className="cash-evidence">
                               {evidence.preview !== null && <img className="cash-evidence-preview"

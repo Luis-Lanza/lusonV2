@@ -2,16 +2,21 @@ package closings_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"luson/api/internal/closings"
 )
@@ -43,6 +48,27 @@ func evidencePNG(t *testing.T, width, height int) []byte {
 		t.Fatalf("the PNG fixture could not be built: %v", err)
 	}
 	return buffer.Bytes()
+}
+
+// evidenceGrayPNG builds one real PNG of the given sides in grayscale: the same format the contract
+// decodes, cheap enough to build at the pixel cap its boundary is proved on.
+func evidenceGrayPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	canvas := image.NewGray(image.Rect(0, 0, width, height))
+	canvas.Set(0, 0, color.Gray{Y: 200})
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, canvas); err != nil {
+		t.Fatalf("the grayscale PNG fixture could not be built: %v", err)
+	}
+	return buffer.Bytes()
+}
+
+// withTrailer is one real image followed by the payload of a polyglot, built on a fresh slice so the
+// fixture it starts from is never written through.
+func withTrailer(body, trailer []byte) []byte {
+	joined := make([]byte, 0, len(body)+len(trailer))
+	joined = append(joined, body...)
+	return append(joined, trailer...)
 }
 
 // evidenceDigest is the SHA-256 of one fixture in the spelling the contract publishes.
@@ -192,23 +218,180 @@ func TestEvidenceRefusesWhatIsNotAnAcceptedImage(t *testing.T) {
 		// A file whose header claims one format and whose content is another is refused, because the
 		// format is what the decode proves and not what the bytes of the header promise.
 		"png with jpeg magic prefix": {append([]byte{0xFF, 0xD8, 0xFF}, pngBody...), closings.ErrEvidenceUnsupported},
-		// The caps: 10000 pixels a side is admitted, one more is not (S6).
-		"above the width cap":  {evidenceJPEG(t, 10001, 1), closings.ErrEvidenceDimensions},
-		"above the height cap": {evidencePNG(t, 1, 10001), closings.ErrEvidenceDimensions},
+		// A real image with a payload glued behind it is not a receipt (S6): the decode stops at the end
+		// of the image, so the bytes past that end are what proves the upload was more than its photo.
+		"png with a zip trailer":     {withTrailer(pngBody, []byte("PK\x03\x04")), closings.ErrEvidenceUnsupported},
+		"png with a script trailer":  {withTrailer(pngBody, []byte("<script>alert(1)</script>")), closings.ErrEvidenceUnsupported},
+		"png with a byte trailer":    {withTrailer(pngBody, []byte("\x00")), closings.ErrEvidenceUnsupported},
+		"jpeg with a script trailer": {withTrailer(jpegBody, []byte("<script>alert(1)</script>")), closings.ErrEvidenceUnsupported},
+		"jpeg with a zip trailer":    {withTrailer(jpegBody, []byte("PK\x03\x04")), closings.ErrEvidenceUnsupported},
+		// The caps: 6000 pixels a side is admitted, one more is not (S6).
+		"above the width cap":  {evidenceJPEG(t, 6001, 1), closings.ErrEvidenceDimensions},
+		"above the height cap": {evidencePNG(t, 1, 6001), closings.ErrEvidenceDimensions},
+		"above the square cap": {evidenceGrayPNG(t, 6001, 6001), closings.ErrEvidenceDimensions},
 		"above the byte cap":   {make([]byte, closings.MaxEvidenceBytes+1), closings.ErrEvidenceTooLarge},
+		// The size cap is judged before the dimensions, so a file that states both is refused for its
+		// size and never reaches the header it would be measured by (S6).
+		"above both caps": {withTrailer(evidenceGrayPNG(t, 6001, 1),
+			make([]byte, closings.MaxEvidenceBytes)), closings.ErrEvidenceTooLarge},
 	} {
 		_, err := closings.ReadEvidence(bytes.NewReader(fixture.body))
 		if err != fixture.want {
 			t.Fatalf("%s must be refused with %v, got %v", name, fixture.want, err)
 		}
 	}
-	// The boundary of the pixel cap is the cap itself: a receipt of exactly 10000 pixels a side is
-	// one this contract accepts, so the refusal above is the cap and not a coefficient.
-	if _, err := closings.ReadEvidence(bytes.NewReader(evidenceJPEG(t, 10000, 1))); err != nil {
-		t.Fatalf("10000 pixels is admitted (S6): %v", err)
+	// The boundary of the pixel cap is the cap itself: a receipt of exactly 6000 pixels a side is
+	// one this contract accepts, so the refusals above are the cap and not a coefficient.
+	for _, sides := range []struct{ width, height int }{{6000, 1}, {1, 6000}, {6000, 6000}} {
+		body := evidenceGrayPNG(t, sides.width, sides.height)
+		upload, err := closings.ReadEvidence(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("%dx%d pixels is admitted (S6): %v", sides.width, sides.height, err)
+		}
+		if upload.Type != "image/png" || upload.Size != int64(len(body)) ||
+			upload.SHA256 != evidenceDigest(body) {
+			t.Fatalf("the admitted boundary is the receipt that was uploaded: %+v", upload)
+		}
 	}
-	if _, err := closings.ReadEvidence(bytes.NewReader(evidencePNG(t, 10000, 100))); err != nil {
-		t.Fatalf("10000 pixels is admitted (S6): %v", err)
+	if _, err := closings.ReadEvidence(bytes.NewReader(evidenceJPEG(t, 6000, 1))); err != nil {
+		t.Fatalf("6000 pixels is admitted (S6): %v", err)
+	}
+	if _, err := closings.ReadEvidence(bytes.NewReader(evidencePNG(t, 1, 6000))); err != nil {
+		t.Fatalf("6000 pixels is admitted (S6): %v", err)
+	}
+}
+
+// gatedReceipt is one fixture whose read starts only when the test opens the gate, so the test can
+// count how many receipts are inside the validator at the same time.
+type gatedReceipt struct {
+	body      []byte
+	read      int
+	announced bool
+	started   chan<- struct{}
+	release   <-chan struct{}
+}
+
+func (g *gatedReceipt) Read(buffer []byte) (int, error) {
+	if !g.announced {
+		g.announced = true
+		g.started <- struct{}{}
+	}
+	<-g.release
+	if g.read >= len(g.body) {
+		return 0, io.EOF
+	}
+	read := copy(buffer, g.body[g.read:])
+	g.read += read
+	return read, nil
+}
+
+// TestEvidenceDecodesRunTwoAtATime proves S6 on the memory a decode reserves: a receipt is read and
+// decoded under one of two slots, so simultaneous uploads queue for the validator instead of
+// multiplying what its images reserve, and the ones that wait are never refused by a new code.
+func TestEvidenceDecodesRunTwoAtATime(t *testing.T) {
+	body := evidencePNG(t, 8, 8)
+	const callers = closings.MaxConcurrentEvidenceDecodes + 2
+	started := make(chan struct{}, callers)
+	release := make(chan struct{})
+	errs := make([]error, callers)
+	var waiting sync.WaitGroup
+	for index := range callers {
+		waiting.Add(1)
+		go func(index int) {
+			defer waiting.Done()
+			_, errs[index] = closings.ReadEvidenceContext(context.Background(),
+				&gatedReceipt{body: body, started: started, release: release})
+		}(index)
+	}
+	// The validator holds exactly the bound: the other uploads wait for a slot.
+	for slot := range closings.MaxConcurrentEvidenceDecodes {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d receipts entered the validator", slot,
+				closings.MaxConcurrentEvidenceDecodes)
+		}
+	}
+	select {
+	case <-started:
+		t.Fatalf("more than %d receipts are inside the validator at once",
+			closings.MaxConcurrentEvidenceDecodes)
+	case <-time.After(250 * time.Millisecond):
+	}
+	// Opening the gate lets the two held receipts finish; the queue behind them follows, and every
+	// upload is admitted rather than refused for having waited.
+	close(release)
+	waiting.Wait()
+	for index, err := range errs {
+		if err != nil {
+			t.Fatalf("upload %d of the queue must be admitted, got %v", index, err)
+		}
+	}
+}
+
+// untouchedReceipt fails the test if a request that never owned a slot reads its file.
+type untouchedReceipt struct{ t *testing.T }
+
+func (u untouchedReceipt) Read([]byte) (int, error) {
+	u.t.Error("a cancelled request must not read the receipt")
+	return 0, io.EOF
+}
+
+// TestEvidenceCancelledUploadReleasesItsSlot proves S6 on a request that never gets to decode: one
+// cancelled while it waits for a slot is answered by its own context and neither holds nor leaks the
+// slot, so the two that follow it are still admitted.
+func TestEvidenceCancelledUploadReleasesItsSlot(t *testing.T) {
+	body := evidencePNG(t, 8, 8)
+	// A request cancelled before it starts reads nothing at all.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := closings.ReadEvidenceContext(cancelled, untouchedReceipt{t: t}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled upload is answered by its context, got %v", err)
+	}
+
+	// With both slots taken, an upload that waits and is then cancelled answers its context instead of
+	// queueing forever, and it leaves no slot behind.
+	started := make(chan struct{}, closings.MaxConcurrentEvidenceDecodes)
+	release := make(chan struct{})
+	var holding sync.WaitGroup
+	for range closings.MaxConcurrentEvidenceDecodes {
+		holding.Add(1)
+		go func() {
+			defer holding.Done()
+			if _, err := closings.ReadEvidenceContext(context.Background(),
+				&gatedReceipt{body: body, started: started, release: release}); err != nil {
+				t.Errorf("a held receipt must be admitted, got %v", err)
+			}
+		}()
+	}
+	for range closings.MaxConcurrentEvidenceDecodes {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the two slots were never taken")
+		}
+	}
+	waiting, stop := context.WithCancel(context.Background())
+	answered := make(chan error, 1)
+	go func() {
+		_, err := closings.ReadEvidenceContext(waiting, &gatedReceipt{body: body,
+			started: started, release: release})
+		answered <- err
+	}()
+	stop()
+	select {
+	case err := <-answered:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("a request cancelled while waiting is answered by its context, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a cancelled request kept waiting for a slot")
+	}
+	close(release)
+	holding.Wait()
+	// The cancelled request left nothing behind: a later upload owns a slot at once.
+	if _, err := closings.ReadEvidence(bytes.NewReader(body)); err != nil {
+		t.Fatalf("the cancelled upload must not leak its slot: %v", err)
 	}
 }
 

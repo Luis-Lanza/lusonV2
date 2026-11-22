@@ -710,11 +710,22 @@ applies to it unchanged, and the `evidence` part is judged by the bytes it conta
 
 * Only **JPEG** and **PNG** are accepted, and the format is decided by the **content**, never by the
   declared `Content-Type`, the extension or the file name: the magic bytes select the decoder and a
-  **full decode** of the image is the proof that the file really is one, so an SVG, a renamed script,
-  a polyglot and a truncated image are all refused (S6).
-* The caps are **8 MB** of bytes and **10000×10000** pixels. The upload is read through the byte cap
-  and no further, and the image is measured from its own header before it is decoded whole, so an
-  image above the pixel cap is refused without being decoded.
+  **full decode** of the image is the proof that the file really is one, so an SVG, a renamed script
+  and a truncated image are all refused (S6).
+* The whole upload must be the image: the decode has to reach the end of the file, and not only the
+  end of the image. Both decoders stop at their own end marker and would otherwise accept anything
+  glued behind it, so a **polyglot** — a real PNG or JPEG followed by a zip header, a script or any
+  other payload — is refused with `evidence_unsupported` and never stored. A single trailing byte is
+  already a refusal.
+* The caps are **8 MB** of bytes and **6000×6000** pixels. The upload is read through the byte cap
+  and no further, the size is judged before anything is decoded, and the image is measured from its
+  own header before it is decoded whole, so an image above the pixel cap is refused without being
+  decoded. A receipt photo from a phone fits comfortably inside 6000 pixels a side.
+* At most **two** receipts are read and decoded at the same time. Further uploads wait for a slot of
+  that bound under their own request context, so simultaneous uploads queue instead of multiplying
+  the memory their decoded images reserve; a request cancelled while it waits is answered by its
+  context and neither holds nor leaks a slot. Queueing is not a refusal: the refusals of this
+  contract are the ones below, unchanged.
 * The row stores the bytes **exactly as they arrived** — nothing is re-encoded, resized or rewritten —
   beside the content type the decode proved, their real size and the SHA-256 of exactly those bytes.
 * The photo is written by the **same statement** as the movement, so the two exist together or not at
@@ -732,8 +743,8 @@ Refusals of the upload, in the creation:
 |---|---|
 | The file states no bytes | `400 {"error":"evidence_empty"}` |
 | The file is above the 8 MB cap | `400 {"error":"evidence_too_large"}` |
-| The bytes are not a JPEG or a PNG, or they do not decode to the end | `400 {"error":"evidence_unsupported"}` |
-| The image is above the 10000×10000 pixel cap | `400 {"error":"evidence_dimensions"}` |
+| The bytes are not a JPEG or a PNG, or the decode does not reach the end of the file | `400 {"error":"evidence_unsupported"}` |
+| The image is above the 6000×6000 pixel cap | `400 {"error":"evidence_dimensions"}` |
 | A receipt on a kind that is not a `gasto` | `400 {"error":"evidence_not_applicable"}` |
 | A repeated `evidence` part, a missing or repeated `movement` part, or an unknown part | `400 {"error":"invalid_request"}` |
 
@@ -1169,8 +1180,8 @@ about instead of a generic code.
 | 400 | `category_not_applicable` | — | A motive was stated on a kind that names none: only an expense is recorded with one (LC033) |
 | 400 | `evidence_empty` | — | The uploaded receipt states no bytes |
 | 400 | `evidence_too_large` | — | The uploaded receipt is above the 8 MB cap |
-| 400 | `evidence_unsupported` | — | The uploaded bytes are not a JPEG nor a PNG, or they do not decode to the end |
-| 400 | `evidence_dimensions` | — | The uploaded image is above 10000×10000 pixels |
+| 400 | `evidence_unsupported` | — | The uploaded bytes are not a JPEG nor a PNG, or the decode does not reach the end of the file: a truncated image and one with a payload behind it answer the same |
+| 400 | `evidence_dimensions` | — | The uploaded image is above 6000×6000 pixels |
 | 400 | `evidence_not_applicable` | — | A receipt was uploaded on a kind that carries none: only a `gasto` carries one |
 | 401 | `unauthenticated` | — | No session |
 | 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, warehouse on an expense, warehouse or another branch on a decision) |

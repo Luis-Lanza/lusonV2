@@ -2,8 +2,10 @@ package closings
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -20,9 +22,20 @@ import (
 const (
 	// MaxEvidenceBytes is the largest receipt the contract accepts: 8 MB of bytes.
 	MaxEvidenceBytes = 8 << 20
-	// MaxEvidenceSide is the largest side of the image, in pixels: 10000 by 10000.
-	MaxEvidenceSide = 10000
+	// MaxEvidenceSide is the largest side of the image, in pixels: 6000 by 6000. A receipt photo of a
+	// phone fits comfortably, and the largest image this cap admits reserves about a third of what the
+	// former 10000 by 10000 cap did.
+	MaxEvidenceSide = 6000
+	// MaxConcurrentEvidenceDecodes is how many receipts this process reads and decodes at the same
+	// time: the rest of the uploads queue for a slot respecting their request's context instead of
+	// multiplying what their images reserve.
+	MaxConcurrentEvidenceDecodes = 2
 )
+
+// evidenceSlots is the bound above as the counter that enforces it (S6). A receipt holds one slot
+// from the first byte it reads to the last byte it stores, so the buffers of a slow upload and the
+// fully decoded image of a fast one can never add up past two of either.
+var evidenceSlots = make(chan struct{}, MaxConcurrentEvidenceDecodes)
 
 // The two formats the product accepts (S6). They are the values the database admits and the values
 // the image route serves as its own `Content-Type`, so one spelling is the whole contract.
@@ -79,11 +92,32 @@ type EvidenceImage struct {
 // The read stops at the cap instead of buffering the body: one byte above the largest admitted receipt
 // is enough to refuse it.
 func ReadEvidence(source io.Reader) (EvidenceUpload, error) {
+	return ReadEvidenceContext(context.Background(), source)
+}
+
+// ReadEvidenceContext is ReadEvidence for one request: it waits for a slot of the validator under the
+// request's own context, so an upload that is cancelled while it queues is answered by that context
+// instead of waiting for the uploads ahead of it, and the slot it never owned is never leaked.
+func ReadEvidenceContext(ctx context.Context, source io.Reader) (EvidenceUpload, error) {
 	if source == nil {
 		return EvidenceUpload{}, ErrEvidenceEmpty
 	}
-	body, err := io.ReadAll(io.LimitReader(source, MaxEvidenceBytes+1))
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case evidenceSlots <- struct{}{}:
+	case <-ctx.Done():
+		return EvidenceUpload{}, ctx.Err()
+	}
+	defer func() { <-evidenceSlots }()
+	body, err := io.ReadAll(io.LimitReader(contextSource{ctx: ctx, source: source}, MaxEvidenceBytes+1))
 	if err != nil {
+		// A read that stops because the request is gone answers the context, not a refusal: there is
+		// nobody left to answer. Any other stop is the truncated file this contract refuses.
+		if contextErr := ctx.Err(); contextErr != nil {
+			return EvidenceUpload{}, contextErr
+		}
 		// An upload that stops in the middle is a file that does not decode to its end, which is the
 		// refusal this contract states for a truncated receipt.
 		return EvidenceUpload{}, ErrEvidenceUnsupported
@@ -103,40 +137,72 @@ func ReadEvidence(source io.Reader) (EvidenceUpload, error) {
 		SHA256: hex.EncodeToString(digest[:])}, nil
 }
 
+// contextSource stops the body read of one receipt when the request that owns it is gone, so a
+// cancelled upload releases its slot instead of waiting for the rest of a file nobody wants.
+type contextSource struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (s contextSource) Read(buffer []byte) (int, error) {
+	select {
+	case <-s.ctx.Done():
+		return 0, s.ctx.Err()
+	default:
+		return s.source.Read(buffer)
+	}
+}
+
 // evidenceFormat decides the format of one file by sniffing its magic bytes and proves it by decoding
 // the image whole (S6): the header is read first, so an image above the pixel cap is refused without
 // ever being decoded, and the full decode after it is what tells a JPEG or a PNG from bytes that only
 // start like one.
 func evidenceFormat(body []byte) (string, error) {
 	if bytes.HasPrefix(body, jpegSignature) {
-		config, err := jpeg.DecodeConfig(bytes.NewReader(body))
-		if err != nil || config.Width < 1 || config.Height < 1 {
-			return "", ErrEvidenceUnsupported
-		}
-		if config.Width > MaxEvidenceSide || config.Height > MaxEvidenceSide {
-			return "", ErrEvidenceDimensions
-		}
-		if _, err := jpeg.Decode(bytes.NewReader(body)); err != nil {
-			return "", ErrEvidenceUnsupported
-		}
-		return evidenceJPEG, nil
+		return evidenceDecoded(body, jpeg.DecodeConfig, jpeg.Decode, evidenceJPEG)
 	}
 	if bytes.HasPrefix(body, pngSignature) {
-		config, err := png.DecodeConfig(bytes.NewReader(body))
-		if err != nil || config.Width < 1 || config.Height < 1 {
-			return "", ErrEvidenceUnsupported
-		}
-		if config.Width > MaxEvidenceSide || config.Height > MaxEvidenceSide {
-			return "", ErrEvidenceDimensions
-		}
-		if _, err := png.Decode(bytes.NewReader(body)); err != nil {
-			return "", ErrEvidenceUnsupported
-		}
-		return evidencePNG, nil
+		return evidenceDecoded(body, png.DecodeConfig, png.Decode, evidencePNG)
 	}
 	// SVG is text and so is every other file that is not a JPEG or a PNG: the two signatures above are
 	// the whole list (S6).
 	return "", ErrEvidenceUnsupported
+}
+
+// wholePicture hands one file to a decoder one byte at a time. image/jpeg fills a four kilobyte window
+// ahead of the image, so with a chunked read it consumes the whole file before it even reaches the end
+// of the image and nothing could tell a photo from a photo with a payload glued behind it; read byte
+// by byte, the decoder takes exactly the bytes the image needs and what is left is the payload.
+// image/png reads exactly what it needs either way, so the same reader proves both formats the same.
+type wholePicture struct{ source *bytes.Reader }
+
+func (w wholePicture) Read(buffer []byte) (int, error) {
+	if len(buffer) == 0 {
+		return 0, nil
+	}
+	return w.source.Read(buffer[:1])
+}
+
+// evidenceDecoded proves that one whole file is one whole image of an accepted format (S6). The header
+// states the sides, so an image above the cap is refused before it is decoded; the decode then reads
+// the file to the end of the image. Both decoders stop at the end of the image and never require the
+// file to end there, so the bytes the reader has left are what refuses a polyglot: a real PNG or JPEG
+// with a zip header, a script or any other payload glued behind it is not a receipt, whatever the
+// bytes before it are.
+func evidenceDecoded(body []byte, header func(io.Reader) (image.Config, error),
+	decode func(io.Reader) (image.Image, error), contentType string) (string, error) {
+	config, err := header(bytes.NewReader(body))
+	if err != nil || config.Width < 1 || config.Height < 1 {
+		return "", ErrEvidenceUnsupported
+	}
+	if config.Width > MaxEvidenceSide || config.Height > MaxEvidenceSide {
+		return "", ErrEvidenceDimensions
+	}
+	picture := bytes.NewReader(body)
+	if _, err := decode(wholePicture{source: picture}); err != nil || picture.Len() != 0 {
+		return "", ErrEvidenceUnsupported
+	}
+	return contentType, nil
 }
 
 // ValidEvidence reports whether one published receipt is the shape this domain writes (S2, S6): only a

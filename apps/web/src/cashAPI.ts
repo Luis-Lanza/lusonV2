@@ -82,7 +82,7 @@ export const cashErrorMessages: Record<CashErrorCode, string> = {
   evidence_empty: 'El archivo del comprobante está vacío. Elegí otra foto o registrá el gasto sin comprobante.',
   evidence_too_large: 'La foto del comprobante pesa más de 8 MB. Elegí una más liviana o registrá el gasto sin comprobante.',
   evidence_unsupported: 'El comprobante tiene que ser una foto JPEG o PNG. Ese archivo no es una imagen de las que se aceptan.',
-  evidence_dimensions: 'La foto del comprobante mide más de 10000 × 10000 píxeles. Achicála o registrá el gasto sin comprobante.',
+  evidence_dimensions: 'La foto del comprobante mide más de 6000 × 6000 píxeles. Achicála o registrá el gasto sin comprobante.',
   evidence_not_applicable: 'Sólo un gasto lleva comprobante: un aporte o una recaudación no llevan foto.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el movimiento.',
   network: 'No se pudo conectar con el servidor. No pudimos confirmar el movimiento.',
@@ -650,7 +650,7 @@ function jpegSides(bytes: Uint8Array): { width: number; height: number } | null 
 
 /**
  * Judges one chosen file before anything leaves the screen (S1, S6): a file that states no bytes, one
- * above the 8 MB cap, one whose own bytes are not a JPEG or a PNG, and one above the 10000×10000 pixel
+ * above the 8 MB cap, one whose own bytes are not a JPEG or a PNG, and one above the 6000×6000 pixel
  * cap, which is measured from the header of the image exactly as the server measures it. The answer is
  * the refusal the contract names — the same words the screen shows for the server's own — or `null`.
  */

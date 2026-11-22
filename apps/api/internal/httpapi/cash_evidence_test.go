@@ -62,6 +62,27 @@ func evidencePNG(t *testing.T, width, height int) []byte {
 	return buffer.Bytes()
 }
 
+// evidenceGrayPNG builds one real PNG of the given sides in grayscale: the same format the route
+// decodes, cheap enough to build at the pixel cap its boundary is proved on.
+func evidenceGrayPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	canvas := image.NewGray(image.Rect(0, 0, width, height))
+	canvas.Set(0, 0, color.Gray{Y: 210})
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, canvas); err != nil {
+		t.Fatalf("the grayscale PNG fixture could not be built: %v", err)
+	}
+	return buffer.Bytes()
+}
+
+// withTrailer is one real image followed by the payload of a polyglot, on a fresh slice so the fixture
+// it starts from is never written through.
+func withTrailer(body, trailer []byte) []byte {
+	joined := make([]byte, 0, len(body)+len(trailer))
+	joined = append(joined, body...)
+	return append(joined, trailer...)
+}
+
 // evidenceDigest is the SHA-256 of one fixture in the spelling the contract publishes.
 func evidenceDigest(body []byte) string {
 	sum := sha256.Sum256(body)
@@ -279,9 +300,26 @@ func TestClosingsCashMovementEvidenceRefusals(t *testing.T) {
 			`{"error":"evidence_unsupported"}`},
 		"renamed script": {f.upload(t, 2, movementPart(gasto),
 			evidencePart([]byte("#!/bin/sh\nrm -rf /\n"))), `{"error":"evidence_unsupported"}`},
-		// The dimensions cap is 10000 pixels a side.
+		// The dimensions cap is 6000 pixels a side.
 		"above the dimensions": {f.upload(t, 2, movementPart(gasto),
-			evidencePart(evidenceJPEG(t, 10001, 1))), `{"error":"evidence_dimensions"}`},
+			evidencePart(evidenceJPEG(t, 6001, 1))), `{"error":"evidence_dimensions"}`},
+		// A real image with a payload glued behind it is refused: the whole upload must be the image (S6).
+		"png with a zip trailer": {f.upload(t, 2, movementPart(gasto),
+			evidencePart(withTrailer(evidencePNG(t, 4, 4), []byte("PK\x03\x04")))),
+			`{"error":"evidence_unsupported"}`},
+		"png with a script trailer": {f.upload(t, 2, movementPart(gasto),
+			evidencePart(withTrailer(evidencePNG(t, 4, 4), []byte("<script>alert(1)</script>")))),
+			`{"error":"evidence_unsupported"}`},
+		"jpeg with a script trailer": {f.upload(t, 2, movementPart(gasto),
+			evidencePart(withTrailer(evidenceJPEG(t, 4, 4), []byte("<script>alert(1)</script>")))),
+			`{"error":"evidence_unsupported"}`},
+		"jpeg with a zip trailer": {f.upload(t, 2, movementPart(gasto),
+			evidencePart(withTrailer(evidenceJPEG(t, 4, 4), []byte("PK\x03\x04")))),
+			`{"error":"evidence_unsupported"}`},
+		// The size cap is judged before the sides, so a file that states both is refused for its size.
+		"above both caps": {f.upload(t, 2, movementPart(gasto),
+			evidencePart(withTrailer(evidenceGrayPNG(t, 6001, 1), make([]byte, closings.MaxEvidenceBytes)))),
+			`{"error":"evidence_too_large"}`},
 		// Only a gasto carries a receipt.
 		"on a contribution": {f.upload(t, 2,
 			movementPart(`{"kind":"aporte","amount":"1.00","description":"Cambio"}`), evidencePart(body)),
@@ -319,6 +357,54 @@ func TestClosingsCashMovementEvidenceRefusals(t *testing.T) {
 	closingCashWire(t, read, 200, closingCashLedgerKeys, &book)
 	if len(book.Movements) != 0 || book.Expected != "100.00" {
 		t.Fatalf("a refused upload writes nothing and moves no drawer (S4): %+v", book)
+	}
+}
+
+// TestClosingsCashMovementEvidencePixelBound pins the pixel cap over HTTP (S6): an image of exactly
+// 6000×6000 is a receipt the route stores and serves byte for byte, one pixel more is refused with its
+// own code and writes nothing, and the size cap is judged before the sides are.
+func TestClosingsCashMovementEvidencePixelBound(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	gasto := `{"kind":"gasto","amount":"10.00","description":"Detergente","category_id":1}`
+
+	// The cap itself is a receipt: 6000 pixels a side decodes whole and is stored exactly as it arrived.
+	body := evidenceGrayPNG(t, 6000, 6000)
+	admitted := closingCashMovementReply(t, f.serve(t, f.upload(t, 2, movementPart(gasto),
+		evidencePart(body))), 201, closingCashMovementKeys)
+	read := f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", ""))
+	evidence, _ := evidenceOf(t, read, admitted.ID)
+	want := closingEvidenceWire{Type: "image/png", Size: int64(len(body)), SHA256: evidenceDigest(body)}
+	if evidence == nil || *evidence != want {
+		t.Fatalf("the book publishes the boundary receipt: got %+v want %+v", evidence, want)
+	}
+	served := f.serve(t, f.request(2, "GET",
+		fmt.Sprintf("/api/closings/cash-movements/%d/evidence", admitted.ID), ""))
+	if served.Code != 200 || !bytes.Equal(served.Body.Bytes(), body) {
+		t.Fatalf("the route serves the stored boundary receipt byte for byte: %d %d bytes",
+			served.Code, served.Body.Len())
+	}
+	if got := served.Header().Get("Content-Type"); got != "image/png" {
+		t.Fatalf("the served type is the stored one, got %q", got)
+	}
+	if got := served.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
+		t.Fatalf("the served length is the stored one, got %q", got)
+	}
+
+	// One pixel more is refused by the cap and writes nothing.
+	f.refused(t, f.upload(t, 2, movementPart(gasto),
+		evidencePart(evidenceGrayPNG(t, 6001, 6001))), 400, `{"error":"evidence_dimensions"}`)
+	// The size cap is judged before the sides: a file of 8 MB plus one byte is refused for its size.
+	f.refused(t, f.upload(t, 2, movementPart(gasto),
+		evidencePart(withTrailer(evidenceGrayPNG(t, 6001, 1),
+			make([]byte, closings.MaxEvidenceBytes)))), 400, `{"error":"evidence_too_large"}`)
+
+	read = f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", ""))
+	var book closingCashLedgerWire
+	closingCashWire(t, read, 200, closingCashLedgerKeys, &book)
+	if len(book.Movements) != 1 || book.Expected != "90.00" {
+		t.Fatalf("a refused boundary writes nothing and moves no drawer (S4): %+v", book)
 	}
 }
 

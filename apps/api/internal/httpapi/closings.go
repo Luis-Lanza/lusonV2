@@ -328,7 +328,7 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// decided by the content, so an SVG, a renamed script and a truncated image answer the same.
 		failure(w, 400, "evidence_unsupported")
 	case errors.Is(err, closings.ErrEvidenceDimensions):
-		// The image is above the pixel cap of 10000 a side (S6).
+		// The image is above the pixel cap of 6000 a side (S6).
 		failure(w, 400, "evidence_dimensions")
 	case errors.Is(err, closings.ErrEvidenceNotApplicable):
 		// Only a pay-out carries a receipt (S2): a contribution, a collection and a correction name
@@ -1006,7 +1006,7 @@ func decodeClosingCashMovementParts(r *http.Request) (closingCashMovementInput, 
 				return closingCashMovementInput{}, nil, closings.ErrInvalid
 			}
 			seenEvidence = true
-			upload, err := closings.ReadEvidence(part)
+			upload, err := closings.ReadEvidenceContext(r.Context(), part)
 			_ = part.Close()
 			if err != nil {
 				return closingCashMovementInput{}, nil, err
@@ -3050,6 +3050,11 @@ func (a *API) closingCashMovements(store *closings.Store) http.HandlerFunc {
 		}
 		body, receipt, err := decodeClosingCashMovementUpload(r)
 		if err != nil {
+			// An upload abandoned before it owned a slot of the validator answers its own context and
+			// not one of the refusals of this contract: there is nobody left to read it (S6).
+			if r.Context().Err() != nil {
+				return
+			}
 			closingFailure(w, err)
 			return
 		}

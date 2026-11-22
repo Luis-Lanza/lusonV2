@@ -600,6 +600,11 @@ describe('el comprobante del gasto (S1, S2, S7)', () => {
     // is optional and single.
     expect(picker).toHaveAttribute('type', 'file');
     expect(picker).toHaveAttribute('accept', 'image/jpeg,image/png');
+    // The copy of the picker states the two limits of the contract, which are the server's own (S6).
+    const hint = screen.getByText(/Una sola foto por gasto/);
+    expect(hint).toHaveTextContent('8 MB');
+    expect(hint).toHaveTextContent('6000 × 6000');
+    expect(hint).not.toHaveTextContent('10000');
     expect(screen.getByText(/Una sola foto por gasto/)).toBeInTheDocument();
     expect(screen.getByText(/sólo un gasto lleva comprobante/i)).toBeInTheDocument();
     // A contribution and a collection have no picker at all, not a disabled one.
@@ -644,13 +649,32 @@ describe('el comprobante del gasto (S1, S2, S7)', () => {
     expect(screen.queryByRole('button', { name: 'Quitar el comprobante' })).not.toBeInTheDocument();
   });
 
+  it('admits the photo of exactly the pixel cap and refuses one pixel more (S6)', async () => {
+    const { posts } = setup();
+    await screen.findByText('Quedó al cerrar');
+    // Exactly 6000 pixels a side is a receipt the screen offers with its preview, before sending it.
+    chooseFile(photo(pngBytes(6_000, 6_000), 'limite.png'));
+    await screen.findByAltText('Vista previa del comprobante');
+    expect(screen.getByText('limite.png')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // One pixel more is the refusal of the contract, in the operator's words and before any request.
+    chooseFile(photo(pngBytes(6_001, 6_001), 'pasado.png'));
+    const problem = await screen.findByRole('alert');
+    expect(problem).toHaveTextContent(cashErrorMessages.evidence_dimensions);
+    expect(problem).not.toHaveTextContent('evidence_dimensions');
+    expect(problem).toHaveTextContent('6000');
+    expect(problem).not.toHaveTextContent('10000');
+    expect(screen.queryByAltText('Vista previa del comprobante')).not.toBeInTheDocument();
+    expect(posts()).toHaveLength(0);
+  });
+
   it.each([
     ['evidence_empty', () => photo(new Uint8Array(0), 'vacio.jpg')],
     ['evidence_too_large', () => photo(new Uint8Array(cashMaxEvidenceBytes + 1), 'pesada.jpg')],
     ['evidence_unsupported', () =>
       new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'comprobante.svg',
         { type: 'image/svg+xml' })],
-    ['evidence_dimensions', () => photo(pngBytes(10_001, 10), 'enorme.png')],
+    ['evidence_dimensions', () => photo(pngBytes(6_001, 6_001), 'enorme.png')],
   ] as const)('refuses %s on the screen, before any request leaves it (S1, S6)', async (code, make) => {
     const { posts } = setup();
     await screen.findByText('Quedó al cerrar');

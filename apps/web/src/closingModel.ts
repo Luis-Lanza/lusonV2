@@ -159,9 +159,10 @@ export type ClosingDecision = '' | 'accepted' | 'rejected';
 export type ClosingEvidenceType = 'image/jpeg' | 'image/png';
 export const closingEvidenceTypes: readonly ClosingEvidenceType[] = ['image/jpeg', 'image/png'];
 
-/** The two caps of one photo: 8 MB of bytes and 10000×10000 pixels (S6). */
+/** The two caps of one photo: 8 MB of bytes and 6000×6000 pixels (S6). The screen judges a chosen
+ * file by these and the server by its own, and a photo of a phone fits comfortably inside both. */
 export const closingMaxEvidenceBytes = 8 * 1024 * 1024;
-export const closingMaxEvidenceSide = 10_000;
+export const closingMaxEvidenceSide = 6_000;
 
 /**
  * The receipt of one pay-out as the book and the acta publish it (S1, S7): the content type the server

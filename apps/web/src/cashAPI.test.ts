@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   CashAPIError, canonicalCashCorrection, canonicalCashInput, cashErrorMessages, cashEvidenceRefusal,
-  cashFailureIsDefinite, cashKindMovesIn, cashLedgerPath, cashMaxEvidenceBytes, createCashAPI,
-  matchesCashCorrection, matchesCashInput,
+  cashFailureIsDefinite, cashKindMovesIn, cashLedgerPath, cashMaxEvidenceBytes, cashMaxEvidenceSide,
+  createCashAPI, matchesCashCorrection, matchesCashInput,
   parseCashCategories, parseCashCorrection, parseCashError, parseCashLedger, parseCashMovement,
   type CashCorrectionInput, type CashErrorCode, type CashMovementInput,
 } from './cashAPI';
@@ -625,7 +625,10 @@ describe('the receipt of an expense', () => {
     // The two formats the server decodes are admitted by their header, which is what the screen reads.
     expect(await cashEvidenceRefusal(pngFile(1, 1))).toBeNull();
     expect(await cashEvidenceRefusal(jpegFile(2, 2))).toBeNull();
-    expect(await cashEvidenceRefusal(jpegFile(10_000, 10_000))).toBeNull();
+    // The pixel cap is 6000 a side, on both formats and on the square that states it twice.
+    expect(cashMaxEvidenceSide).toBe(6_000);
+    expect(await cashEvidenceRefusal(jpegFile(6_000, 6_000))).toBeNull();
+    expect(await cashEvidenceRefusal(pngFile(6_000, 6_000))).toBeNull();
     // A file that states no bytes is the first refusal of the contract.
     expect(await cashEvidenceRefusal(new Blob([]))).toBe('evidence_empty');
     // The cap of 8 MB is the contract's own, and it is judged before the bytes are even read.
@@ -639,16 +642,22 @@ describe('the receipt of an expense', () => {
       .toBe('evidence_unsupported');
     const disguised = new File(['<?php echo 1; ?>'], 'comprobante.png', { type: 'image/png' });
     expect(await cashEvidenceRefusal(disguised)).toBe('evidence_unsupported');
-    // The cap of 10000×10000 pixels is read from the header of the image, on both formats.
-    expect(await cashEvidenceRefusal(pngFile(10_001, 1))).toBe('evidence_dimensions');
-    expect(await cashEvidenceRefusal(pngFile(1, 10_001))).toBe('evidence_dimensions');
-    expect(await cashEvidenceRefusal(jpegFile(10_001, 10))).toBe('evidence_dimensions');
-    expect(await cashEvidenceRefusal(jpegFile(10, 10_001))).toBe('evidence_dimensions');
+    // The cap of 6000×6000 pixels is read from the header of the image, on both formats and on both
+    // sides, and one pixel past it is the refusal the contract names.
+    expect(await cashEvidenceRefusal(pngFile(6_001, 1))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(pngFile(1, 6_001))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(pngFile(6_001, 6_001))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(jpegFile(6_001, 10))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(jpegFile(10, 6_001))).toBe('evidence_dimensions');
+    expect(await cashEvidenceRefusal(jpegFile(6_001, 6_001))).toBe('evidence_dimensions');
     // A PNG whose header does not state the two sides is not a file this screen can judge.
     expect(await cashEvidenceRefusal(new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])])))
       .toBe('evidence_unsupported');
     expect(await cashEvidenceRefusal(new Blob([new Uint8Array([0xff, 0xd8, 0xff, 0xe0])])))
       .toBe('evidence_unsupported');
+    // The words of the screen state the contract's own cap, which is the server's.
+    expect(cashErrorMessages.evidence_dimensions).toContain('6000');
+    expect(cashErrorMessages.evidence_dimensions).not.toContain('10000');
     // The screen and the server refuse with the same words, because it is one message.
     for (const code of ['evidence_empty', 'evidence_too_large', 'evidence_unsupported',
       'evidence_dimensions', 'evidence_not_applicable'] as const) {
