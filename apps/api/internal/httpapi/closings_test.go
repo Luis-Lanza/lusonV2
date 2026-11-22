@@ -1403,10 +1403,10 @@ func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closing
 		t.Fatalf("expenses are not decodable: %s", w.Body.String())
 	}
 	for _, row := range expenses {
-		if len(row) != len(closingExpenseKeys) {
+		if len(row) != len(closingActaExpenseKeys) {
 			t.Fatalf("expense row whitelist changed: %s", w.Body.String())
 		}
-		for _, key := range closingExpenseKeys {
+		for _, key := range closingActaExpenseKeys {
 			if _, ok := row[key]; !ok {
 				t.Fatalf("expense row key %q missing: %s", key, w.Body.String())
 			}
@@ -2066,12 +2066,21 @@ type closingExpenseWireRecord struct {
 	CorrectsID         *int64  `json:"corrects_id"`
 	CategoryID         *int64  `json:"category_id"`
 	CategoryLabel      *string `json:"category_label"`
+	// Evidence is the receipt of the pay-out as the acta publishes it (S7): the type the server
+	// validated, the size of the stored bytes and their SHA-256, and JSON null on a row without one.
+	// The bytes are never part of the row.
+	Evidence *closingEvidenceWire `json:"evidence"`
 }
 
 // closingExpenseKeys is the frozen shape of one published row of the till: the keys the screen's own
 // decoder admits, so a missing, renamed or extra key of a recorded expense is caught here.
 var closingExpenseKeys = []string{"id", "branch_location_id", "kind", "amount", "description",
 	"occurred_at", "created_by_account_id", "corrects_id", "category_id", "category_label"}
+
+// closingActaExpenseKeys is the same row as the settlement publishes it: the ten keys of the row plus
+// the receipt of the pay-out, which belongs to the acta and to the book (S7). The route of the
+// expense states no receipt, so its own answer keeps the ten keys above.
+var closingActaExpenseKeys = append(append([]string{}, closingExpenseKeys...), "evidence")
 
 // closingExpenseWire admits only the frozen expense shape: one object with exactly the published
 // keys, so a missing or renamed key of a recorded expense is caught.
@@ -3576,17 +3585,18 @@ type closingCashLedgerWire struct {
 // closingCashLedgerRowWire is one row of the book: the kind the branch recorded, the kind whose direction
 // it carries, the positive amount it stated and the signed effect the drawer moves by.
 type closingCashLedgerRowWire struct {
-	ID                 int64   `json:"id"`
-	Kind               string  `json:"kind"`
-	EffectKind         string  `json:"effect_kind"`
-	Amount             string  `json:"amount"`
-	Effective          string  `json:"effective"`
-	Description        string  `json:"description"`
-	OccurredAt         string  `json:"occurred_at"`
-	CreatedByAccountID int64   `json:"created_by_account_id"`
-	CorrectsID         *int64  `json:"corrects_id"`
-	CategoryID         *int64  `json:"category_id"`
-	CategoryLabel      *string `json:"category_label"`
+	ID                 int64                `json:"id"`
+	Kind               string               `json:"kind"`
+	EffectKind         string               `json:"effect_kind"`
+	Amount             string               `json:"amount"`
+	Effective          string               `json:"effective"`
+	Description        string               `json:"description"`
+	OccurredAt         string               `json:"occurred_at"`
+	CreatedByAccountID int64                `json:"created_by_account_id"`
+	CorrectsID         *int64               `json:"corrects_id"`
+	CategoryID         *int64               `json:"category_id"`
+	CategoryLabel      *string              `json:"category_label"`
+	Evidence           *closingEvidenceWire `json:"evidence"`
 }
 
 // The published key sets of the drawer: a missing, renamed or extra key is a change of the contract.
@@ -3598,7 +3608,7 @@ var (
 		"truncated", "movements"}
 	closingCashLedgerRowKeys = []string{"id", "kind", "effect_kind", "amount", "effective",
 		"description", "occurred_at", "created_by_account_id", "corrects_id", "category_id",
-		"category_label"}
+		"category_label", "evidence"}
 )
 
 // closingCashWire admits an answer of the drawer: it states exactly the published keys and decodes into

@@ -1,0 +1,428 @@
+package httpapi
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+
+	"luson/api/internal/auth"
+	"luson/api/internal/closings"
+)
+
+// The receipt of a pay-out over HTTP (S1-S9): the drawer route accepts the JSON of always and the
+// two-part multipart body of a photo, the refusal of the file keeps its own code, the book and the
+// acta publish the metadata and never the bytes, and the image is served by an authenticated route of
+// the branch that owns the movement. Every fixture is generated in Go.
+
+// closingEvidenceWire is the metadata of one receipt exactly as this contract publishes it: the type
+// the server validated, the size of the stored bytes and their SHA-256. It states three keys and no
+// fourth, because the bytes never travel in an answer (S7).
+type closingEvidenceWire struct {
+	Type   string `json:"type"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+// closingEvidenceKeys is the frozen shape of the published receipt.
+var closingEvidenceKeys = []string{"type", "size", "sha256"}
+
+// evidenceJPEG builds one real JPEG of the given size, which is a receipt the contract accepts.
+func evidenceJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+	canvas.Set(0, 0, color.RGBA{R: 15, G: 25, B: 35, A: 255})
+	var buffer bytes.Buffer
+	if err := jpeg.Encode(&buffer, canvas, nil); err != nil {
+		t.Fatalf("the JPEG fixture could not be built: %v", err)
+	}
+	return buffer.Bytes()
+}
+
+// evidencePNG builds one real PNG of the given size.
+func evidencePNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
+	canvas.Set(0, 0, color.RGBA{R: 90, G: 180, B: 20, A: 255})
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, canvas); err != nil {
+		t.Fatalf("the PNG fixture could not be built: %v", err)
+	}
+	return buffer.Bytes()
+}
+
+// evidenceDigest is the SHA-256 of one fixture in the spelling the contract publishes.
+func evidenceDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// multipartPart is one part of the two-form body of the drawer route: the JSON of the movement and
+// the file of its receipt, which is what the screen uploads.
+type multipartPart struct {
+	name     string
+	filename string
+	body     []byte
+}
+
+// movementPart is the first part of the contract: exactly the JSON object of the route, unchanged.
+func movementPart(body string) multipartPart {
+	return multipartPart{name: "movement", filename: "movement.json", body: []byte(body)}
+}
+
+// evidencePart is the second part: the file, whose format is decided by its content and never by the
+// name it declares.
+func evidencePart(body []byte) multipartPart {
+	return multipartPart{name: "evidence", filename: "comprobante.jpg", body: body}
+}
+
+// upload posts the parts of the receipt contract exactly as a browser would: a multipart body with
+// the session, origin and CSRF framing of every other mutation of this contract.
+func (f *closingHTTPFixture) upload(t *testing.T, actor int, parts ...multipartPart) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, part := range parts {
+		field, err := writer.CreateFormFile(part.name, part.filename)
+		if err != nil {
+			t.Fatal("the multipart fixture could not be built")
+		}
+		if _, err := field.Write(part.body); err != nil {
+			t.Fatal("the multipart part could not be written")
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal("the multipart fixture could not be closed")
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/closings/cash-movements", &body)
+	r.Header.Set("Content-Type", writer.FormDataContentType())
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.tokens[actor-1]})
+	r.Header.Set("X-CSRF-Token", auth.CSRF(f.tokens[actor-1]))
+	r.Header.Set("Origin", f.cfg.Origin)
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	return r
+}
+
+// evidenceOf reads the receipt of one movement of the book, and whether the book publishes that key
+// at all, so "the bytes never appear" is one shape and not a substring search.
+func evidenceOf(t *testing.T, w *httptest.ResponseRecorder, id int64) (*closingEvidenceWire, map[string]json.RawMessage) {
+	t.Helper()
+	var book struct {
+		Movements []map[string]json.RawMessage `json:"movements"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &book) != nil {
+		t.Fatalf("the book is not decodable: %s", w.Body.String())
+	}
+	for _, row := range book.Movements {
+		var rowID int64
+		if json.Unmarshal(row["id"], &rowID) != nil || rowID != id {
+			continue
+		}
+		raw, ok := row["evidence"]
+		if !ok {
+			t.Fatalf("every row of the book states its receipt (S7): %s", w.Body.String())
+		}
+		if string(raw) == "null" {
+			return nil, row
+		}
+		var evidence closingEvidenceWire
+		if json.Unmarshal(raw, &evidence) != nil {
+			t.Fatalf("the receipt is not decodable: %s", w.Body.String())
+		}
+		var shape map[string]json.RawMessage
+		if json.Unmarshal(raw, &shape) != nil || len(shape) != len(closingEvidenceKeys) {
+			t.Fatalf("the receipt states %d keys, want %d: %s", len(shape), len(closingEvidenceKeys),
+				w.Body.String())
+		}
+		for _, key := range closingEvidenceKeys {
+			if _, ok := shape[key]; !ok {
+				t.Fatalf("the receipt must state %q: %s", key, w.Body.String())
+			}
+		}
+		return &evidence, row
+	}
+	t.Fatalf("the book does not list movement %d: %s", id, w.Body.String())
+	return nil, nil
+}
+
+// TestClosingsCashMovementEvidenceUpload pins S1, S3 and S6 over HTTP: the drawer route accepts the
+// two-part body, the answer keeps the key set of a movement, and the book publishes the metadata of
+// the stored receipt beside the row that carries it.
+func TestClosingsCashMovementEvidenceUpload(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	body := evidenceJPEG(t, 16, 16)
+
+	// The two forms of the same route: the part states exactly the JSON the body would state, and the
+	// answer is the answer of a movement and nothing more (S9).
+	gasto := closingCashMovementReply(t, f.serve(t, f.upload(t, 2,
+		movementPart(`{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}`),
+		evidencePart(body))), 201, closingCashMovementKeys)
+	if gasto.ID < 1 || gasto.Kind != "gasto" || gasto.Amount != "45.50" ||
+		gasto.Description != "Detergente" || gasto.BranchLocationID != 2 ||
+		gasto.CreatedByAccountID != 2 || gasto.CorrectsID != nil {
+		t.Fatalf("the recorded expense is not the published movement: %+v", gasto)
+	}
+	// A pay-out with no photo is the same route and the same row (S1): a multipart body without the
+	// second part and the JSON body of always both record it.
+	sinFoto := closingCashMovementReply(t, f.serve(t, f.upload(t, 2,
+		movementPart(`{"kind":"gasto","amount":"5.00","description":"Insumos","category_id":1}`))), 201,
+		closingCashMovementKeys)
+	aporte := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"100.00","description":"Cambio para el cajón"}`)), 201,
+		closingCashMovementKeys)
+
+	// The book publishes the receipt as its type, its size and its digest, and null on the rows that
+	// carry none (S7). The bytes are not part of the answer: the row states the three keys of the
+	// metadata and no other.
+	read := f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", ""))
+	var book closingCashLedgerWire
+	closingCashWire(t, read, 200, closingCashLedgerKeys, &book)
+	evidence, row := evidenceOf(t, read, gasto.ID)
+	want := closingEvidenceWire{Type: "image/jpeg", Size: int64(len(body)), SHA256: evidenceDigest(body)}
+	if evidence == nil || *evidence != want {
+		t.Fatalf("the book publishes the stored receipt: got %+v want %+v", evidence, want)
+	}
+	if len(row) != len(closingCashLedgerRowKeys) {
+		t.Fatalf("a row of the book states %d keys, want %d: %s", len(row),
+			len(closingCashLedgerRowKeys), read.Body.String())
+	}
+	for _, id := range []int64{sinFoto.ID, aporte.ID} {
+		if evidence, _ := evidenceOf(t, read, id); evidence != nil {
+			t.Fatalf("a movement without a receipt states none (S7): %+v", evidence)
+		}
+	}
+	// The refusal of the same photograph on a contribution keeps its own code, and the movement is
+	// never written (S2).
+	f.refused(t, f.upload(t, 2, movementPart(`{"kind":"aporte","amount":"1.00","description":"Cambio"}`),
+		evidencePart(body)), 400, `{"error":"evidence_not_applicable"}`)
+}
+
+// TestClosingsCashMovementJSONPathIsUnchanged pins S9 over HTTP: the JSON body of the route is the
+// body it always was, key by key, and a receipt is never part of it.
+func TestClosingsCashMovementJSONPathIsUnchanged(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+
+	// The three kinds of the book are the three requests this contract already served, with exactly
+	// the keys the route always published.
+	for _, call := range []struct{ body, kind, amount, description string }{
+		{`{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}`,
+			"gasto", "45.50", "Detergente"},
+		{`{"kind":"gasto","amount":"5.00","description":"","category_id":1}`, "gasto", "5.00", ""},
+		{`{"kind":"aporte","amount":"100.00","description":"Cambio para el cajón"}`,
+			"aporte", "100.00", "Cambio para el cajón"},
+		{`{"kind":"recaudacion","amount":"20.00","description":"Retiro entre rendiciones"}`,
+			"recaudacion", "20.00", "Retiro entre rendiciones"},
+	} {
+		movement := closingCashMovementReply(t, f.serve(t, f.request(2, "POST",
+			"/api/closings/cash-movements", call.body)), 201, closingCashMovementKeys)
+		if movement.Kind != call.kind || movement.Amount != call.amount ||
+			movement.Description != call.description {
+			t.Fatalf("the JSON body records the movement it always recorded: %+v", movement)
+		}
+	}
+	// A receipt is not a key of that body: the JSON path gained nothing (S9).
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"1.00","description":"Agua","category_id":1,`+
+			`"evidence":"image/jpeg"}`), 400, `{"error":"invalid_request"}`)
+	// And the book of those movements states no receipt at all.
+	read := f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", ""))
+	var book closingCashLedgerWire
+	closingCashWire(t, read, 200, closingCashLedgerKeys, &book)
+	if len(book.Movements) != 4 {
+		t.Fatalf("the book lists the four movements of the JSON path: %+v", book.Movements)
+	}
+	for _, row := range book.Movements {
+		if evidence, _ := evidenceOf(t, read, row.ID); evidence != nil {
+			t.Fatalf("no movement of the JSON path carries a receipt: %+v", evidence)
+		}
+	}
+}
+
+// TestClosingsCashMovementEvidenceRefusals pins the refusal table of the contract: every case keeps
+// its own status and its own code, and a refused upload writes nothing anywhere.
+func TestClosingsCashMovementEvidenceRefusals(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	body := evidenceJPEG(t, 8, 8)
+	gasto := `{"kind":"gasto","amount":"10.00","description":"Detergente","category_id":1}`
+
+	for _, refusal := range map[string]struct {
+		request *http.Request
+		answer  string
+	}{
+		// An empty file is not a receipt.
+		"empty": {f.upload(t, 2, movementPart(gasto), evidencePart(nil)),
+			`{"error":"evidence_empty"}`},
+		// The cap is 8 MB, and the body stops being read there.
+		"above the cap": {f.upload(t, 2, movementPart(gasto),
+			evidencePart(make([]byte, closings.MaxEvidenceBytes+1))), `{"error":"evidence_too_large"}`},
+		// The format is decided by the content: SVG is refused always, and so is a renamed script.
+		"svg": {f.upload(t, 2, movementPart(gasto),
+			evidencePart([]byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>`))),
+			`{"error":"evidence_unsupported"}`},
+		"renamed script": {f.upload(t, 2, movementPart(gasto),
+			evidencePart([]byte("#!/bin/sh\nrm -rf /\n"))), `{"error":"evidence_unsupported"}`},
+		// The dimensions cap is 10000 pixels a side.
+		"above the dimensions": {f.upload(t, 2, movementPart(gasto),
+			evidencePart(evidenceJPEG(t, 10001, 1))), `{"error":"evidence_dimensions"}`},
+		// Only a gasto carries a receipt.
+		"on a contribution": {f.upload(t, 2,
+			movementPart(`{"kind":"aporte","amount":"1.00","description":"Cambio"}`), evidencePart(body)),
+			`{"error":"evidence_not_applicable"}`},
+		"on a collection": {f.upload(t, 2,
+			movementPart(`{"kind":"recaudacion","amount":"1.00","description":"Retiro"}`),
+			evidencePart(body)), `{"error":"evidence_not_applicable"}`},
+		// One receipt is one part; the framing of the request is judged before the file.
+		"repeated part": {f.upload(t, 2, movementPart(gasto), evidencePart(body), evidencePart(body)),
+			`{"error":"invalid_request"}`},
+		"missing movement": {f.upload(t, 2, evidencePart(body)), `{"error":"invalid_request"}`},
+		"unknown part": {f.upload(t, 2, movementPart(gasto), evidencePart(body),
+			multipartPart{name: "signature", filename: "x.txt", body: []byte("hola")}),
+			`{"error":"invalid_request"}`},
+		"repeated movement": {f.upload(t, 2, movementPart(gasto), movementPart(gasto),
+			evidencePart(body)), `{"error":"invalid_request"}`},
+		"empty movement": {f.upload(t, 2, movementPart(""), evidencePart(body)),
+			`{"error":"invalid_request"}`},
+		// The movement of a multipart body is the JSON of the route, judged by the same decoder.
+		"malformed movement": {f.upload(t, 2,
+			movementPart(`{"kind":"gasto","amount":10.00,"description":"Agua","category_id":1}`),
+			evidencePart(body)), `{"error":"invalid_request"}`},
+		"movement without motive": {f.upload(t, 2,
+			movementPart(`{"kind":"gasto","amount":"10.00","description":"Agua"}`), evidencePart(body)),
+			`{"error":"category_required"}`},
+		// A part this route does not read is a framing error, whatever it contains.
+		"no parts": {f.upload(t, 2), `{"error":"invalid_request"}`},
+	} {
+		f.refused(t, refusal.request, 400, refusal.answer)
+	}
+	// And the book of the branch is the empty book of the previous requests: no refused upload left a
+	// movement and no drawer moved (S4).
+	read := f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", ""))
+	var book closingCashLedgerWire
+	closingCashWire(t, read, 200, closingCashLedgerKeys, &book)
+	if len(book.Movements) != 0 || book.Expected != "100.00" {
+		t.Fatalf("a refused upload writes nothing and moves no drawer (S4): %+v", book)
+	}
+}
+
+// TestClosingsCashMovementEvidenceImage pins S8 over HTTP: the bytes are served by an authenticated
+// route of the branch that owns the movement, with the validated content type and the two headers of
+// the contract, and every other authority or method is refused by its own answer.
+func TestClosingsCashMovementEvidenceImage(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	body := evidenceJPEG(t, 20, 20)
+	gasto := closingCashMovementReply(t, f.serve(t, f.upload(t, 2,
+		movementPart(`{"kind":"gasto","amount":"45.50","description":"Detergente","category_id":1}`),
+		evidencePart(body))), 201, closingCashMovementKeys)
+	photo := fmt.Sprintf("/api/closings/cash-movements/%d/evidence", gasto.ID)
+
+	served := f.serve(t, f.request(2, "GET", photo, ""))
+	if served.Code != 200 || !bytes.Equal(served.Body.Bytes(), body) {
+		t.Fatalf("the route must serve the stored bytes: %d %d bytes", served.Code, served.Body.Len())
+	}
+	if got := served.Header().Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("the route serves the validated content type, got %q", got)
+	}
+	if got := served.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("a receipt is never cached, got %q", got)
+	}
+	if got := served.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("a receipt is never sniffed, got %q", got)
+	}
+	if got := served.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline") {
+		t.Fatalf("a receipt is served inline, got %q", got)
+	}
+	if got := served.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
+		t.Fatalf("the length of the receipt is the length of the bytes, got %q", got)
+	}
+	// The method is a read and only a read: HEAD answers the same headers and no body.
+	head := f.serve(t, f.request(2, "HEAD", photo, ""))
+	if head.Code != 200 || head.Body.Len() != 0 ||
+		head.Header().Get("Content-Type") != "image/jpeg" {
+		t.Fatalf("HEAD answers the headers of the image and no body: %d %q", head.Code, head.Body.String())
+	}
+	for _, verb := range []string{"POST", "PUT", "DELETE", "PATCH"} {
+		w := f.serve(t, f.request(2, verb, photo, ""))
+		closingFailureBody(t, w, 405, `{"error":"method_not_allowed"}`)
+		if allow := w.Header().Get("Allow"); allow != "GET, HEAD" {
+			t.Fatalf("%s must advertise GET, HEAD, got %q", verb, allow)
+		}
+	}
+	// The authority is the one of the book: the branch of the session owns the movement, another
+	// branch's movement is not found, and the warehouse reads no drawer at all.
+	f.contribute(t, 3, "10.00", "Cambio de la otra sucursal")
+	foreign := closingCashMovementReply(t, f.serve(t, f.upload(t, 3,
+		movementPart(`{"kind":"gasto","amount":"10.00","description":"Agua","category_id":1}`),
+		evidencePart(evidencePNG(t, 4, 4)))), 201, closingCashMovementKeys)
+	if own := f.serve(t, f.request(3, "GET",
+		fmt.Sprintf("/api/closings/cash-movements/%d/evidence", foreign.ID), "")); own.Code != 200 ||
+		own.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("each branch reads its own receipt: %d %q", own.Code, own.Header().Get("Content-Type"))
+	}
+	f.refused(t, f.request(3, "GET", photo, ""), 404, `{"error":"not_found"}`)
+	f.refused(t, f.request(1, "GET", photo, ""), 403, `{"error":"forbidden"}`)
+	// A movement without a receipt and a movement that does not exist are the same absence.
+	plain := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"1.00","description":"Insumos","category_id":1}`)), 201,
+		closingCashMovementKeys)
+	f.refused(t, f.request(2, "GET",
+		fmt.Sprintf("/api/closings/cash-movements/%d/evidence", plain.ID), ""), 404,
+		`{"error":"not_found"}`)
+	f.refused(t, f.request(2, "GET", "/api/closings/cash-movements/999999/evidence", ""), 404,
+		`{"error":"not_found"}`)
+	// An anonymous caller reads nothing and a query string is not part of this route.
+	f.refused(t, f.request(0, "GET", photo, ""), 401, `{"error":"unauthenticated"}`)
+	f.refused(t, f.request(2, "GET", photo+"?download=1", ""), 400, `{"error":"invalid_request"}`)
+}
+
+// TestClosingsActaPublishesTheReceiptOfItsWindow pins S7 over HTTP: the settlement publishes the
+// receipt of each pay-out of its window as metadata, and the bytes never appear in the document.
+func TestClosingsActaPublishesTheReceiptOfItsWindow(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	body := evidencePNG(t, 6, 6)
+	gasto := closingCashMovementReply(t, f.serve(t, f.upload(t, 2,
+		movementPart(`{"kind":"gasto","amount":"10.00","description":"Detergente","category_id":1}`),
+		evidencePart(body))), 201, closingCashMovementKeys)
+	opened := f.open(t, 2)
+
+	document := f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/closings/%d", opened), ""))
+	var wire struct {
+		Expenses []struct {
+			ID       int64                `json:"id"`
+			Evidence *closingEvidenceWire `json:"evidence"`
+		} `json:"expenses"`
+	}
+	if document.Code != 200 || json.Unmarshal(document.Body.Bytes(), &wire) != nil {
+		t.Fatalf("the settlement is not decodable: %d %s", document.Code, document.Body.String())
+	}
+	if len(wire.Expenses) != 1 || wire.Expenses[0].ID != gasto.ID ||
+		wire.Expenses[0].Evidence == nil {
+		t.Fatalf("the acta publishes the receipt of its pay-out (S7): %s", document.Body.String())
+	}
+	want := closingEvidenceWire{Type: "image/png", Size: int64(len(body)), SHA256: evidenceDigest(body)}
+	if *wire.Expenses[0].Evidence != want {
+		t.Fatalf("the acta publishes the stored receipt: got %+v want %+v",
+			*wire.Expenses[0].Evidence, want)
+	}
+}
