@@ -61,8 +61,8 @@ no value is ever guessed.
   "period": {"kind": "open", "closing_id": 5, "from": "2026-11-01T12:00:00Z",
              "to": "2026-11-12T12:00:00Z", "label": "En curso"},
   "source": "live",
-  "sales": {"total": "200.00", "cash": "100.00", "card": "50.00", "transfer": "20.00",
-            "qr": "30.00", "commission": "25.00", "sales": 4, "units": 4},
+  "sales": {"total": "200.00", "batteries": "185.00", "cash": "100.00", "card": "50.00",
+            "transfer": "20.00", "qr": "30.00", "commission": "25.00", "sales": 4, "units": 4},
   "cash": {"opening": "500.00", "sales": "100.00", "expenses": "12.50", "expected": "587.50",
            "counted": null, "difference": null},
   "fund": {"opening": "0.00", "purchases": "0.00", "expected": "0.00", "counted": null,
@@ -77,7 +77,8 @@ no value is ever guessed.
   "today": {
     "since": "2026-11-01T12:00:00Z", "opening": "500.00", "sales": "240.00",
     "expenses": "12.50", "effective": "-12.50", "expected": "727.50",
-    "rate": "4.50", "sold": "3200.00", "commission": "144.00",
+    "rate": "4.50", "sold": "3200.00", "commission_base": "3000.00",
+    "commission": "135.00",
     "movements": [
       {"kind": "aporte", "amount": "100.00", "occurred_at": "2026-11-01T12:00:00Z"},
       {"kind": "recaudacion", "amount": "150.00", "occurred_at": "2026-11-03T09:15:00Z"},
@@ -118,7 +119,12 @@ a response that does not close is rejected instead of shown.
 ### `sales`
 
 `total`, `cash`, `card`, `transfer`, `qr` and `commission` are the money of the
-period by source, with the commission beside the drawer and never inside it. For a
+period by source, with the commission beside the drawer and never inside it.
+`batteries` is how much of that `total` was sold in batteries: the rest of the
+money is the other products of the catalogue, so `total - batteries` is what the
+screen shows as its own reading, and an answer whose batteries exceed the total is
+refused instead of shown. A settlement derives it from the sales of the same
+stretch, which are immutable, so the split exists for a closed period too. For a
 settlement they are the ones its closure froze; for the history they are derived
 from the sales themselves. `sales` is how many documents the window holds and
 `units` how many batteries they took off the shelf — the two numbers no document
@@ -207,14 +213,15 @@ in chronological order, so a long history cannot flood the answer; the expectati
 from the ledger and not from the list, so the bound never changes it — `effective` is the
 window's own aggregate.
 
-`rate`, `sold` and `commission` are what the branch is **earning so far**: the commission
-rate the warehouse configured for it, the total it sold in the same window and the commission
-that rate produces on that total, rounded exactly once — the rule the settlement itself applies,
-so the card and the acta of a period being lived cannot disagree on the arithmetic.
+`rate`, `sold`, `commission_base` and `commission` are what the branch is **earning so far**:
+the commission rate the warehouse configured for it, the total it sold in the same window, the
+batteries of that total — the only base a commission is paid on — and the commission that rate
+produces on that base, rounded exactly once. It is the rule the settlement itself applies, so the
+card and the acta of a period being lived cannot disagree on the arithmetic.
 
-`sold` is the **total sold**, not the cash: a card sale never enters the drawer and is still
-part of the base the commission is computed on, which is why `sold` is never equal to `sales`
-when the window collected by more than one method.
+`sold` is the **total sold**, not the cash: a card sale never enters the drawer, and the whole
+sale stays in `sold` while only its battery lines enter `commission_base`, which is why the two
+differ as soon as the period sold a product that is not a battery.
 
 `rate` is **null** for a branch the warehouse never configured, and then `commission` is
 `"0.00"`: the absence of a rate is a state of its own and never a zero percentage dressed as a
