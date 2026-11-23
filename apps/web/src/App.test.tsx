@@ -2039,8 +2039,9 @@ describe('branch metrics', () => {
   const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
   const closedPeriod = { kind: 'settlement', closing_id: 4, from: '2026-10-20T12:00:00Z',
     to: '2026-11-01T12:00:00Z', label: 'Rendición #4' };
-  // The screen opens on the only default this contract has: the whole history, which states no
-  // drawer at all and says so in words.
+  // The period the screen opens on, and the body it reads when another period is chosen.
+  const currentPeriod = { kind: 'current', closing_id: null, from: '2026-11-01T12:00:00Z', to: null,
+    label: 'Desde el último corte' };
   const metricsBody = {
     periods: [closedPeriod, allPeriod], period: allPeriod, source: 'history',
     sales: { total: '0.00', cash: '0.00', card: '0.00', transfer: '0.00', qr: '0.00',
@@ -2054,8 +2055,13 @@ describe('branch metrics', () => {
       rate: null, sold: '0.00', commission: '0.00', movements: [] },
     fund_today: { since: null, opening: '0.00', purchases: '0.00', effective: '0.00', balance: '0.00', documents: 0,
       used_units: 0, scrap_milli: 0 } };
-  const metricsSetup = () => setup(branchSession, url => url.startsWith('/api/metrics?')
-    ? Promise.resolve(metricsAnswer(metricsBody)) : undefined);
+  // The screen opens on the window since the last cut (S10): a computed period with no acta, so it
+  // states no drawer and says when it will be counted.
+  const metricsWindow = { ...metricsBody, periods: [currentPeriod, closedPeriod, allPeriod],
+    period: currentPeriod, source: 'live' };
+  const metricsSetup = () => setup(branchSession, url => url.includes('period=current')
+    ? Promise.resolve(metricsAnswer(metricsWindow))
+    : url.startsWith('/api/metrics?') ? Promise.resolve(metricsAnswer(metricsBody)) : undefined);
   const metricsCalls = (mock: ReturnType<typeof setup>) =>
     mock.mock.calls.filter(([url]) => String(url).startsWith('/api/metrics'));
 
@@ -2069,11 +2075,11 @@ describe('branch metrics', () => {
     expect(screen.getByText('Luson Métricas')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Métricas' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
-    // The screen opened on the history: it states there is no drawer in words, in the figures.
+    // The screen opened on the window since the last cut: it states there is no acta yet, in words.
     const figures = await screen.findByRole('region', { name: 'Lo que dejó el período' });
     expect(await within(figures).findByText('Sin caja')).toBeInTheDocument();
-    expect(within(figures).getByText('el acumulado no tiene caja')).toBeInTheDocument();
-    expect(metricsCalls(mock).some(([url]) => String(url) === '/api/metrics?period=all')).toBe(true);
+    expect(within(figures).getByText('se cuenta al rendir')).toBeInTheDocument();
+    expect(metricsCalls(mock).some(([url]) => String(url) === '/api/metrics?period=current')).toBe(true);
     expect(metricsCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 

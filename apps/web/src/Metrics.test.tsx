@@ -16,8 +16,11 @@ const currentPeriod = { kind: 'current', closing_id: null, from: '2026-11-01T12:
 const closed = closedPeriod(4, '2026-10-20T12:00:00Z', '2026-11-01T12:00:00Z');
 const older = closedPeriod(3, '2026-10-01T12:00:00Z', '2026-10-20T12:00:00Z');
 const live = livePeriod(5, '2026-11-01T12:00:00Z', '2026-11-12T12:00:00Z');
-// The selector the server publishes: the closed settlements newest first, the live one, the history.
-const periods = [closed, older, live, allPeriod];
+// The selector the server publishes for a branch that is not inside a settlement: the window since the
+// last cut first, then the closed settlements newest first, then the whole history (S4).
+const periods = [currentPeriod, closed, older, allPeriod];
+// A branch inside a live settlement has no window to publish: «En curso» covers that same stretch.
+const livePeriods = [closed, live, allPeriod];
 
 const sales = {
   total: '4286400.00', cash: '1842300.00', card: '1486900.00', transfer: '612200.00',
@@ -92,7 +95,7 @@ const olderBody = () => settlementBody({
     capacity_ah: '75', units: 12, money: '1000000.00' }],
 });
 const liveBody = () => JSON.stringify({
-  periods, period: live, source: 'live', sales,
+  periods: livePeriods, period: live, source: 'live', sales,
   cash: { ...cash, counted: null, difference: null },
   fund: { ...fund, counted: null, difference: null, replacement: null },
   materials: { used_units: 78, used_delivered_units: null, scrap_milli: 214500,
@@ -123,7 +126,13 @@ const defaultRoutes: Route = token => {
   throw new Error('Unexpected mocked period: ' + token);
 };
 
-function setup(route: Route = defaultRoutes) {
+const notFound = () => new Response('{"error":"not_found"}',
+  { status: 404, headers: { 'Content-Type': 'application/json' } });
+
+// The screen opens on the window since the last cut (S10), so every branch is read for it first. A
+// route that does not answer it gets the base window; the tests of a branch without one (a live
+// settlement, or no closed settlement at all) pass `notFound` and the screen falls back to history.
+function setup(route: Route = defaultRoutes, current: Route = () => json(currentBody())) {
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init = {}) => {
     const url = String(input);
     const match = /^\/api\/metrics\?period=(.+)$/.exec(url);
@@ -131,7 +140,7 @@ function setup(route: Route = defaultRoutes) {
     // Reading metrics is a read: the screen never writes, whatever period is on screen.
     expect(init.method ?? 'GET').toBe('GET');
     expect(init.body).toBeUndefined();
-    return route(match[1]);
+    return match[1] === 'current' ? current(match[1]) : route(match[1]);
   });
   render(<Metrics branch="Sucursal A" fetcher={fetch} />);
   const calls = () => fetch.mock.calls.map(([url]) => String(url));
@@ -151,21 +160,35 @@ const panel = (name: string) => screen.getByRole('region', { name });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('branch metrics screen', () => {
-  it('opens on the whole history, names where the numbers come from and offers the published periods', async () => {
+  it('opens on the window since the last cut and names where its numbers come from', async () => {
     const { calls } = setup();
-    // The screen starts on the only default this contract has: the whole history.
-    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=all']));
-    expect(await screen.findByText('Todo el historial de la sucursal')).toBeInTheDocument();
+    // The screen starts on the window that moves with the branch today (S10).
+    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=current']));
+    expect(await screen.findByText(/se mueve con cada venta/)).toBeInTheDocument();
+    expect(screen.getByText(/Desde el corte del/)).toBeInTheDocument();
+    const first = screen.getByLabelText('Período') as HTMLSelectElement;
+    expect(first.value).toBe('current');
 
     await selectPeriod('4');
-    expect(calls()).toEqual(['/api/metrics?period=all', '/api/metrics?period=4']);
+    expect(calls()).toEqual(['/api/metrics?period=current', '/api/metrics?period=4']);
     // Where the numbers come from, in words, under the title (S6).
     expect(await screen.findByText(/Números al cierre del/)).toBeInTheDocument();
 
     // Only a period this server published can be asked for, in the server's own order.
     const select = screen.getByLabelText('Período') as HTMLSelectElement;
     const offered = within(select).getAllByRole('option').map(option => (option as HTMLOptionElement).value);
-    expect(offered).toEqual(['4', '3', '5', 'all']);
+    expect(offered).toEqual(['current', '4', '3', 'all']);
+  });
+
+  it('opens on the whole history, with no error, when the branch has no window', async () => {
+    // A branch inside a live settlement, or one that never closed a settlement, has no window: the
+    // screen opens on its history instead of showing a fault (S10).
+    const { calls } = setup(defaultRoutes, notFound);
+    await waitFor(() => expect(calls())
+      .toEqual(['/api/metrics?period=current', '/api/metrics?period=all']));
+    expect(await screen.findByText('Todo el historial de la sucursal')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByLabelText('Período') as HTMLSelectElement).value).toBe('all');
   });
 
   it('states the period in four figures and keeps no prose of the acta', async () => {
@@ -300,12 +323,9 @@ describe('branch metrics screen', () => {
   });
 
   it('states a window without purchases in words instead of a zero', async () => {
-    const windowPeriods = [currentPeriod, closed, older, allPeriod];
-    setup(token => token === 'current'
-      ? json(JSON.stringify({ ...JSON.parse(currentBody()),
-        fund_today: { ...fundToday, purchases: '0.00', effective: '0.00', balance: '480000.00',
-          documents: 0, used_units: 0, scrap_milli: 0 } }))
-      : json(historyBody({ periods: windowPeriods })));
+    setup(defaultRoutes, () => json(JSON.stringify({ ...JSON.parse(currentBody()),
+      fund_today: { ...fundToday, purchases: '0.00', effective: '0.00', balance: '480000.00',
+        documents: 0, used_units: 0, scrap_milli: 0 } })));
     await selectPeriod('current');
     expect(within(panel('Chatarra comprada')).getByText('Sin compras')).toBeInTheDocument();
   });
@@ -327,7 +347,7 @@ describe('branch metrics screen', () => {
   });
 
   it('says with words that the accumulated history has no drawer, no fund and no sheet', async () => {
-    setup();
+    setup(defaultRoutes, notFound);
     const figures = await screen.findByRole('region', { name: 'Lo que dejó el período' });
     await waitFor(() => expect(within(figures).getByText('Sin caja')).toBeInTheDocument());
     expect(within(figures).getByText('Sin fondo')).toBeInTheDocument();
@@ -340,7 +360,7 @@ describe('branch metrics screen', () => {
   });
 
   it('states the expectation of a live period and never a counted zero', async () => {
-    setup();
+    setup(token => json(token === 'all' ? historyBody({ periods: livePeriods }) : liveBody()), notFound);
     await selectPeriod('5');
     const figures = panel('Lo que dejó el período');
     // Nobody counted the drawer yet: the figure is the expectation and it says so.
@@ -417,7 +437,7 @@ describe('branch metrics screen', () => {
 
   it('says that today starts at the beginning of the branch when there is no cut', async () => {
     const noCut = { ...today, since: null };
-    setup(() => json(historyBody({ today: noCut })));
+    setup(() => json(historyBody({ today: noCut })), notFound);
     const card = await screen.findByRole('region', { name: 'Hoy' });
     expect(card).toHaveTextContent('desde el comienzo de la sucursal');
     expect(within(card).getByText('Bs 2.299.800,00')).toBeInTheDocument();
@@ -467,17 +487,21 @@ describe('branch metrics screen', () => {
   });
 
   it('refuses a payload the server could not have written and offers the same retry', async () => {
+    // This branch has no window, so the screen falls back to the history, which is the answer that
+    // cannot be trusted.
     const { calls } = setup(token => {
       if (token !== 'all') throw new Error('Unexpected mocked period: ' + token);
       return json(historyBody({ sales: { ...sales, total: '4286400.0' } }));
-    });
+    }, notFound);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Respuesta inválida del servidor.');
     // A refused answer is not shown: no figure and no panel survive it.
     expect(screen.queryByRole('region', { name: 'Lo que dejó el período' })).toBeNull();
     expect(screen.queryByText('Bs 4.286.400,00')).toBeNull();
     fireEvent.click(within(alert).getByRole('button', { name: 'Reintentar' }));
-    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=all', '/api/metrics?period=all']));
+    // The window the branch does not have, the history that failed, and the retry of the history.
+    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=current',
+      '/api/metrics?period=all', '/api/metrics?period=all']));
     expect(await screen.findByRole('alert')).toHaveTextContent('Respuesta inválida del servidor.');
   });
 });

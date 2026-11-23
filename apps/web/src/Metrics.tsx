@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { closingDifferenceName, closingMaterialQuantityText, closingMoneyText } from './closingModel';
 import TransferDate from './shared/TransferDate';
 import {
@@ -13,6 +13,9 @@ export interface MetricsProps {
   branch: string;
   fetcher?: typeof globalThis.fetch;
 }
+
+/** The period the screen opens on: the window since the last cut, when the branch has one (S10). */
+const metricsDefaultToken = 'current';
 
 /** The three states of one read, in the order the screen travels them. */
 interface MetricsState {
@@ -298,7 +301,11 @@ export default function Metrics({ fetcher = globalThis.fetch }: MetricsProps) {
   const api = useMemo(() => createMetricsAPI(fetcher), [fetcher]);
   // The whole history is the only default this contract has, and the selector names it from the
   // first answer on: no period is ever guessed (S2, S6).
-  const [periodToken, setPeriodToken] = useState('all');
+  // The screen opens on the window since the last cut, the only period that moves with the branch
+  // today; a branch that never closed a settlement has none, and falls back to its whole history.
+  const [periodToken, setPeriodToken] = useState(metricsDefaultToken);
+  // Read inside the read's error path only, so the fallback below cannot re-trigger the read.
+  const picked = useRef(false);
   const [revision, setRevision] = useState(0);
   const [state, setState] = useState<MetricsState>(initialMetricsState);
 
@@ -317,6 +324,14 @@ export default function Metrics({ fetcher = globalThis.fetch }: MetricsProps) {
         if (controller.signal.aborted) return;
         const code = error instanceof MetricsAPIError ? error.code : 'invalid_response';
         if (code === 'aborted') return;
+        // The window is the default, not an error: a branch without a closed settlement has none, and
+        // it opens on the whole history the way it always did. Only a period a human picked is refused
+        // with words, and the fallback never overrides that choice.
+        if (!picked.current && periodToken === metricsDefaultToken
+          && (code === 'not_found' || code === 'invalid_request')) {
+          setPeriodToken('all');
+          return;
+        }
         // An answer this client cannot trust is refused whole: no selector, no figure, no panel.
         setState({ phase: 'error', answer: null, periods: [],
           problem: metricsErrorMessages[code] ?? metricsUnavailable });
@@ -345,6 +360,7 @@ export default function Metrics({ fetcher = globalThis.fetch }: MetricsProps) {
             const chosen = event.target.value;
             // Only a period this server published can be asked for.
             if (!periods.some(period => metricsPeriodToken(period) === chosen)) return;
+            picked.current = true;
             setPeriodToken(chosen);
           }}>
           {periods.map(period => <option key={metricsPeriodToken(period)}

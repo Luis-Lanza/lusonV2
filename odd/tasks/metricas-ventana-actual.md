@@ -14,6 +14,8 @@ Pantalla de Métricas de la sucursal: agregar un período calculado «Desde el �
 - **S8.** Pantalla: con esa ventana las cuatro cifras dicen `Sin caja` / `Sin fondo` / `Sin planilla` con notas que nombran el acta que falta — `se cuenta al rendir`, `lo declara el Almacén al rendir`, `se entrega al rendir` — y el sello dice `Desde el corte del <fecha> · se mueve con cada venta`.
 - **S9.** El selector de Compras no cambia: `Pendiente` sigue siendo su default y su semántica.
 
+- **S10.** La pantalla abre en la ventana cuando la sucursal tiene una rendición cerrada y no está dentro de una rendición viva. Si no la tiene, abre en el acumulado sin mostrar ningún error; una caída al acumulado nunca pisa un período que el humano eligió.
+
 ## Tasks
 
 - **T1** — Go, store: lectura de métricas de una ventana calculada (`closings`). Spec: S3, S5, S6.
@@ -27,3 +29,4 @@ Pantalla de Métricas de la sucursal: agregar un período calculado «Desde el �
 - **L1.** «pero cuando una rendicion esta abierta quiere decir que la sucursal esta bloqueada... como puedo ver las metricas entonces»
 - **L2.** «Período «Desde el último corte» en el selector» (dirección elegida sobre las tres ofrecidas).
 - **L3.** Incidente en uso: el selector seguía sin ofrecer la ventana. Causa: el handler armaba la entrada `current` **solo** cuando la lectura ya la pedía, así que la lectura que publica el selector (`period=all`, la primera de la pantalla) nunca la incluía y era imposible elegirla. Corregido: la ventana se coloca delante del selector en toda lectura y se usa como período elegido solo cuando se pide. El test que faltaba —publicación en `period=all`— quedó agregado.
+- **L4.** «la vista por defecto que sea la que dice desde el ulktimo corte»: la pantalla abre en la ventana; sin ventana publicada cae al acumulado en silencio (S10).

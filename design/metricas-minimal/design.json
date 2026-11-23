@@ -5,7 +5,7 @@
     {
       "file": "01-cuatro-cifras.html",
       "title": "Cuatro cifras",
-      "tradeoff": "Cuatro cifras grandes y una línea de 'hoy' resuelven la pantalla sin cajas ni notas; el detalle que se corta (apertura, gastos, diferencia de la caja, kilos por material) ya no está a la vista y hay que ir a Rendición para verlo. En angosto la misma pantalla se apila sola, sin estado aparte.",
+      "tradeoff": "Cuatro cifras grandes y una línea de 'hoy' resuelven la pantalla sin cajas ni notas; el detalle que se corta (apertura, gastos, diferencia de la caja, kilos por material) ya no está a la vista y hay que ir a Rendición para verlo. En angosto la misma pantalla se apila sola, sin estado aparte. La pantalla abre en «Desde el último corte» cuando la sucursal tiene una rendición cerrada, y en el acumulado cuando no la tiene.",
       "width": 1440,
       "height": 880
     },
