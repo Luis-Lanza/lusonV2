@@ -247,26 +247,39 @@ function Ranking({ models, total }: { models: readonly MetricsModel[]; total: nu
 }
 
 /** The scrap the branch delivered, by material and in total, as one strip under the two columns. */
-function ScrapStrip({ materials, history }: {
-  materials: MetricsMaterials | null; history: boolean;
+function ScrapStrip({ materials, fundToday, kind }: {
+  materials: MetricsMaterials | null; fundToday: MetricsFundToday; kind: MetricsPeriodKind;
 }) {
+  // The strip states what the period BOUGHT, never what it delivered: the delivery is counted at the
+  // settlement, and the branch reads its purchases here.
+  const window = kind === 'current';
   return <section className="metrics-scrap" aria-labelledby="metrics-scrap-title">
-    <h2 id="metrics-scrap-title">Chatarra entregada</h2>
-    {materials === null
-      ? <p className="metrics-empty">{history
-        ? metricsNoSheet : 'Sin planilla de materiales en este período.'}</p>
-      : <dl>
-        {materials.materials.map(line => <div key={line.material_id}>
-          <dt>{line.material}</dt>
-          <dd>{line.delivered_milli === null
-            ? metricsNotCounted : `${kilos(line.delivered_milli)} kg`}</dd>
-        </div>)}
-        {materials.materials.length > 1 && <div className="metrics-scrap-total">
-          <dt>Total</dt>
-          <dd>{materials.scrap_delivered_milli === null
-            ? metricsNotCounted : `${kilos(materials.scrap_delivered_milli)} kg`}</dd>
-        </div>}
-      </dl>}
+    <h2 id="metrics-scrap-title">Chatarra comprada</h2>
+    {materials !== null
+      ? (materials.materials.length === 0
+        ? <p className="metrics-empty">El período no compró chatarra.</p>
+        : <dl>
+          {materials.materials.map(line => <div key={line.material_id}>
+            <dt>{line.material}</dt>
+            <dd>{`${kilos(line.bought_milli)} kg`}</dd>
+          </div>)}
+          {materials.materials.length > 1 && <div className="metrics-scrap-total">
+            <dt>Total</dt>
+            <dd>{`${kilos(materials.scrap_milli)} kg`}</dd>
+          </div>}
+        </dl>)
+      // A window has no sheet: it states the kilos the branch bought since the cut, and the breakdown
+      // by material arrives with the settlement that counts it.
+      : window
+        ? <dl>
+          <div>
+            <dt>Comprada desde el corte</dt>
+            <dd>{fundToday.documents === 0
+              ? 'Sin compras' : `${kilos(fundToday.scrap_milli)} kg`}</dd>
+          </div>
+        </dl>
+        : <p className="metrics-empty">{kind === 'all'
+          ? metricsNoSheet : 'Sin planilla de materiales en este período.'}</p>}
   </section>;
 }
 
@@ -354,7 +367,8 @@ export default function Metrics({ fetcher = globalThis.fetch }: MetricsProps) {
         <CollectionMix answer={answer} />
         <Ranking models={answer.top_models} total={answer.sales.units} />
       </div>
-      <ScrapStrip materials={answer.materials} history={answer.source === 'history'} />
+      <ScrapStrip materials={answer.materials} fundToday={answer.fund_today}
+          kind={answer.period.kind} />
     </>}
   </section>;
 }

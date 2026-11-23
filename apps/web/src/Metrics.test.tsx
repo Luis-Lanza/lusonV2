@@ -260,14 +260,54 @@ describe('branch metrics screen', () => {
     expect(screen.queryByRole('region', { name: 'Baterías más vendidas' })).toBeNull();
   });
 
-  it('states the scrap the branch delivered, by material and in total', async () => {
+  it('states the scrap the branch bought in the period, by material and in total', async () => {
     setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
     await selectPeriod('4');
-    const scrap = panel('Chatarra entregada');
+    const scrap = panel('Chatarra comprada');
     expect(within(scrap).getByText('Cobre')).toBeInTheDocument();
     expect(within(scrap).getByText('92,300 kg')).toBeInTheDocument();
     expect(within(scrap).getByText('Bronce')).toBeInTheDocument();
     expect(within(scrap).getByText('214,500 kg')).toBeInTheDocument();
+    // What the branch bought, never what it delivered: there is no delivery reading on this strip.
+    expect(within(scrap).queryByText(/entregad/i)).toBeNull();
+  });
+
+  it('reads the bought kilos when the count and the purchase do not agree', async () => {
+    // The sheet counted more than the period bought: the strip keeps stating the purchase, because the
+    // delivery is the warehouse's reading and not this one.
+    const overRows = scrapRows.map(row => ({ ...row, delivered_milli: row.bought_milli + 375 }));
+    setup(token => token === '4'
+      ? json(settlementBody({ materials: { used_units: 78, used_delivered_units: 80,
+        scrap_milli: 214500, scrap_delivered_milli: 216000, materials: overRows } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const scrap = panel('Chatarra comprada');
+    expect(within(scrap).getByText('92,300 kg')).toBeInTheDocument();
+    expect(within(scrap).getByText('214,500 kg')).toBeInTheDocument();
+    expect(within(scrap).queryByText('92,675 kg')).toBeNull();
+    expect(within(scrap).queryByText('216,000 kg')).toBeNull();
+  });
+
+  it('states the scrap a window bought even though it has no sheet yet', async () => {
+    const windowPeriods = [currentPeriod, closed, older, allPeriod];
+    setup(token => token === 'current' ? json(currentBody())
+      : json(historyBody({ periods: windowPeriods })));
+    await selectPeriod('current');
+    const scrap = panel('Chatarra comprada');
+    // The window has no material sheet: it states the kilos the branch bought since the cut.
+    expect(within(scrap).getByText('Comprada desde el corte')).toBeInTheDocument();
+    expect(within(scrap).getByText('42,500 kg')).toBeInTheDocument();
+  });
+
+  it('states a window without purchases in words instead of a zero', async () => {
+    const windowPeriods = [currentPeriod, closed, older, allPeriod];
+    setup(token => token === 'current'
+      ? json(JSON.stringify({ ...JSON.parse(currentBody()),
+        fund_today: { ...fundToday, purchases: '0.00', effective: '0.00', balance: '480000.00',
+          documents: 0, used_units: 0, scrap_milli: 0 } }))
+      : json(historyBody({ periods: windowPeriods })));
+    await selectPeriod('current');
+    expect(within(panel('Chatarra comprada')).getByText('Sin compras')).toBeInTheDocument();
   });
 
   it('reads a settlement that counted more material than the period bought', async () => {
@@ -280,9 +320,10 @@ describe('branch metrics screen', () => {
     // The delivered quantity is the counted one, and it may exceed what the period bought (L7).
     expect(within(panel('Lo que dejó el período')).getByText('80 u · 216,000 kg'))
       .toBeInTheDocument();
-    const scrap = panel('Chatarra entregada');
-    expect(within(scrap).getByText('92,675 kg')).toBeInTheDocument();
-    expect(within(scrap).getByText('216,000 kg')).toBeInTheDocument();
+    // The figure counts the delivery; the strip keeps stating the purchase, which did not move.
+    const scrap = panel('Chatarra comprada');
+    expect(within(scrap).getByText('92,300 kg')).toBeInTheDocument();
+    expect(within(scrap).getByText('214,500 kg')).toBeInTheDocument();
   });
 
   it('says with words that the accumulated history has no drawer, no fund and no sheet', async () => {
@@ -295,7 +336,7 @@ describe('branch metrics screen', () => {
     expect(within(figures).getByText('Bs 4.286.400,00')).toBeInTheDocument();
     expect(screen.queryByText('Bs 0,00')).toBeNull();
     // The strip of the scrap says it with words too, and states no kilos it never had.
-    expect(within(panel('Chatarra entregada')).getByText(/no tiene planilla/)).toBeInTheDocument();
+    expect(within(panel('Chatarra comprada')).getByText(/no tiene planilla/)).toBeInTheDocument();
   });
 
   it('states the expectation of a live period and never a counted zero', async () => {
@@ -309,7 +350,8 @@ describe('branch metrics screen', () => {
     expect(within(figures).getByText('Sin declarar')).toBeInTheDocument();
     expect(within(figures).getByText('Sin contar')).toBeInTheDocument();
     expect(screen.getByText('En vivo, se mueve con cada venta')).toBeInTheDocument();
-    expect(within(panel('Chatarra entregada')).queryByText('214,500 kg')).toBeNull();
+    // The strip still states the purchase of the sheet: a delivery nobody counted does not hide it.
+    expect(within(panel('Chatarra comprada')).getByText('214,500 kg')).toBeInTheDocument();
   });
 
   it('reads the drawer, the envelope, the sales and the commission of today as four figures', async () => {
