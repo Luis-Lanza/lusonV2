@@ -22,7 +22,13 @@ Base: `feat/metricas-minimal`.
 - [x] **T3** Rendiciones Go: la vista previa calcula la base filtrada y la publica; la lectura de un acta publica `commission_base` (null en las viejas). Tests. · S5, S6
 - [x] **T4** `httpapi`: `commission_base` en `metricsTodayDTO` y en el acta; tests de claves fijas. · S3, S5, S6
 - [x] **T5** Web: tipos e identidades en `metricsAPI.ts` y `closingsAPI.ts` (`commission == round(base × tasa)`, null tolerado). Tests. · S3, S6, S7
-- [ ] **T6** Suite completa Go y web, `vet`, `tsc`, build, servidores, commit y cierre del documento.
+- [x] **T6** Suite completa Go y web, `vet`, `tsc`, build, servidores, commit y cierre del documento.
+  - Go: `./migrations` 78s, `./internal/closings` 102s, `./internal/httpapi` 376s con Postgres efímero; `go vet ./...` limpio.
+  - Web: `tsc --noEmit` limpio, suite completa **4570 pasados / 1 skip**.
+  - Verificación independiente: S1-S8 cumplidas; observaciones aplicadas (CHECK en la columna, dos comentarios obsoletos) y una anotada: el despliegue de api y web tiene que ser atómico, porque el cliente exige la clave nueva y el servidor viejo no la publica.
+  - Commits: `e1601ac` (migración), `7df15bf` (Go), `54755bb` (web).
+  - Corte de rebanada: la rebanada de 064 cierra en `e1601ac`; el resto de la feature va en los dos commits siguientes.
+  - Servidores locales: 8080 y 8081 con `index-BgV8314l.js`; la base de desarrollo quedó migrada a la versión 64.
 
 ## Log
 
