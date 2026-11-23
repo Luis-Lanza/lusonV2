@@ -928,155 +928,122 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .purchases-bar { width: 64px; }
 }
 
-/* Métricas de la sucursal, warehouse-free branch screen (design/metricas-sucursal/
-   01-acta-por-periodo.html, S1-S9, S11). It speaks the settlement workspace's language — white
-   panels over the page canvas, a 1px border, radius 4px, uppercase muted headings and the summary
-   list — and it adds no colour of its own: the wine primary, the page, the tint, the border, the
-   muted text, white and the flag/short pair the rest of the shell already uses. Every figure is
-   tabular, because a column of money is read by its digits, never by its colour alone. */
-.metrics-workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.metrics-workspace h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; overflow-wrap: anywhere; }
-.metrics-workspace p { margin: 0; }
-.metrics-workspace small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; margin-top: 2px; }
-.metrics-heading { display: grid; gap: 4px; }
-.metrics-lede { color: var(--muted); font-size: 13px; line-height: 18px; }
-.metrics-section-title, .metrics-panel-title { color: var(--muted); font-size: 12px; font-weight: 600;
+/* Métricas de la sucursal, warehouse-free branch screen (design/metricas-minimal/
+   01-cuatro-cifras.html). The acta-style density of the old screen is gone: four figures, one line of
+   today, the collection mix, the ranking and the scrap strip. It adds no colour of its own -- the wine
+   primary, the page, the tint, the border, the muted text, white and the flag/short pair the rest of
+   the shell already uses -- and it separates its blocks with a hairline instead of nesting cards. Every
+   figure is tabular, because a column of money is read by its digits, never by its colour alone. */
+.metrics-workspace { display: flex; flex-direction: column; min-width: 0; }
+.metrics-workspace h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -.015em; overflow-wrap: anywhere; }
+.metrics-workspace h2 { margin: 0; color: var(--muted); font-size: 11px; font-weight: 600;
   letter-spacing: .04em; text-transform: uppercase; }
-.metrics-section-title { margin: 0 0 10px; }
-.metrics-panel-title { margin: 0 0 12px; }
-.metrics-note { color: var(--muted); font-size: 12px; line-height: 18px; }
+.metrics-workspace p { margin: 0; }
+.metrics-workspace small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px;
+  font-weight: 400; }
+.metrics-note { color: var(--muted); font-size: 12px; }
 
-/* The period control mirrors Compras: the label, the select the server's own list fills and one
-   line of words saying which period is on screen and where its numbers come from (S2, S6). */
-.metrics-period { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 12px 16px; background: white; border: 1px solid var(--border); border-radius: 4px; }
-.metrics-period-field { display: grid; gap: 6px; }
-.metrics-period-field label { color: var(--muted); font-size: 12px; font-weight: 600;
+/* The title line is the only control of the screen: the title with where its numbers come from, and
+   the selector the server's own list fills (S2, S6). */
+.metrics-topline { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px;
+  padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+.metrics-heading { display: grid; min-width: 0; }
+.metrics-stamp { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.metrics-period-field { display: grid; gap: 6px; justify-items: start; }
+.metrics-period-field label { color: var(--muted); font-size: 11px; font-weight: 600;
   letter-spacing: .04em; text-transform: uppercase; }
 .metrics-period-field select { min-width: 240px; max-width: 100%; min-height: 44px; }
-.metrics-provenance { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px;
-  border: 1px solid var(--border); border-radius: 999px; background: var(--page);
-  color: var(--muted); font-size: 12px; line-height: 18px; }
-.metrics-dot { width: 7px; height: 7px; border-radius: 50%; background: #047857; flex-shrink: 0; }
-.metrics-period-note { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 18px; }
 
 .metrics-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px;
   border: 1px solid #ffdad6; border-radius: 4px; background: #fff0f0; color: #991515; font-size: 13px; }
 .metrics-problem button { min-height: 44px; color: #991515; border-color: #ccaaaa; background: white; }
 
-/* What the period left: three readings of the acta and, only when the selector publishes a live
-   period, the days it has been running (S3, S11). */
-.metrics-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px;
-  margin: 0; background: var(--border); border: 1px solid var(--border); border-radius: 4px;
-  overflow: hidden; }
-.metrics-band-cell { background: white; padding: 16px 18px; min-width: 0; }
-.metrics-band-cell dt { color: var(--muted); font-size: 12px; }
-.metrics-band-cell dd { margin: 6px 0 0; font-size: 22px; font-weight: 700; letter-spacing: -.02em;
-  font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.metrics-band-sub { display: block; margin-top: 2px; color: var(--muted); font-size: 12px;
-  font-weight: 400; letter-spacing: 0; }
+/* The four figures of the period: a row joined by hairlines and nothing behind them (S3). */
+.metrics-figures dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0;
+  border-bottom: 1px solid var(--border); }
+.metrics-figure { min-width: 0; padding: 26px 24px 24px; border-left: 1px solid var(--border); }
+.metrics-figure:first-child { padding-left: 0; border-left: 0; }
+.metrics-figure dt { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; }
+.metrics-figure-value { margin: 12px 0 0; font-size: 26px; font-weight: 700; letter-spacing: -.02em;
+  overflow-wrap: anywhere; }
+.metrics-figure-note { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
 
-.metrics-columns { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  gap: 20px; align-items: start; }
-.metrics-panel { background: white; border: 1px solid var(--border); border-radius: 4px;
-  padding: 16px 18px; min-width: 0; }
-.metrics-panel.metrics-nocash { border-left: 3px solid var(--wine); }
-.metrics-big { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
-.metrics-amount { font-size: 26px; font-weight: 700; letter-spacing: -.02em;
-  font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.metrics-big-note { color: var(--muted); font-size: 12px; }
-.metrics-big + .metrics-note { margin-bottom: 12px; }
+/* Hoy, en una sola línea de cifras: the label column and the four readings of the branch (S12, S18). */
+.metrics-today-line { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 16px;
+  padding: 20px 0; border-bottom: 1px solid var(--border); }
+.metrics-today-line h2 { grid-column: 1; padding-top: 2px; }
+.metrics-today-since { grid-column: 2; color: var(--muted); font-size: 12px; }
+.metrics-today-line dl { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px; margin: 12px 0 0; }
+.metrics-today-line dt { color: var(--muted); font-size: 12px; }
+.metrics-today-line dd { margin: 6px 0 0; font-size: 18px; font-weight: 600; }
+
+/* Cómo se cobró + más vendidas, side by side and never as two cards. */
+.metrics-bottom { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 40px; align-items: start; padding: 28px 0; border-bottom: 1px solid var(--border); }
+.metrics-bottom h2 { margin-bottom: 14px; }
+
+.metrics-mix { list-style: none; margin: 0; padding: 0; }
+.metrics-mix li { display: grid; grid-template-columns: 88px minmax(48px, 1fr) 96px 40px;
+  align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border);
+  font-size: 13px; }
+.metrics-mix li:last-child { border-bottom: 0; }
+.metrics-mix-track { height: 6px; border-radius: 3px; background: var(--tint); overflow: hidden; }
+.metrics-mix-fill { display: block; height: 100%; border-radius: 3px; background: var(--wine); }
+.metrics-mix-amount { text-align: right; }
+.metrics-mix-pct { color: var(--muted); font-size: 12px; text-align: right; }
 
 .metrics-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.metrics-caption { padding-bottom: 6px; color: var(--muted); font-size: 12px; text-align: left; }
-.metrics-table th { padding: 6px 0; border-bottom: 1px solid var(--border); color: var(--muted);
-  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
-.metrics-table td { padding: 8px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
-.metrics-table tbody tr:last-child td, .metrics-table tfoot tr:last-child td { border-bottom: 0; }
+.metrics-table th { padding: 0 0 8px; border-bottom: 1px solid var(--border); color: var(--muted);
+  font-size: 11px; font-weight: 600; letter-spacing: .03em; text-align: left; text-transform: uppercase; }
+.metrics-table td { padding: 9px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.metrics-table tbody tr:last-child td { border-bottom: 0; }
 .metrics-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .metrics-table th.num { text-align: right; }
-.metrics-table tr.total td { padding-top: 10px; border-top: 1px solid var(--border);
-  border-bottom: 0; font-weight: 700; }
 .metrics-table .rank { width: 20px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .metrics-table .model { font-weight: 600; overflow-wrap: anywhere; }
-.metrics-difference-name { margin-left: 6px; font-size: 11px; font-weight: 600; letter-spacing: .04em;
-  text-transform: uppercase; white-space: nowrap; }
 
-/* The share of the period a model took: a bar and its number, never the bar alone. */
-.metrics-share { display: flex; align-items: center; gap: 8px; }
-.metrics-share-track { flex: 1; height: 6px; min-width: 48px; border-radius: 3px;
-  background: var(--tint); overflow: hidden; }
-.metrics-share-fill { display: block; height: 100%; border-radius: 3px; background: var(--wine); }
-.metrics-share-pct { width: 38px; text-align: right; color: var(--muted); font-size: 12px;
+.metrics-workspace .metrics-hint, .metrics-workspace .metrics-empty { margin: 10px 0 0;
+  color: var(--muted); font-size: 12px; }
+
+/* Chatarra entregada: the strip under the two columns, wrapping instead of tabling. */
+.metrics-scrap { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 16px;
+  align-items: baseline; padding: 22px 0 24px; }
+.metrics-scrap dl { display: flex; flex-wrap: wrap; gap: 16px 44px; margin: 0; }
+.metrics-scrap dt { color: var(--muted); font-size: 12px; }
+.metrics-scrap dd { margin: 4px 0 0; font-size: 13px; font-weight: 600;
   font-variant-numeric: tabular-nums; }
+.metrics-scrap-total dt, .metrics-scrap-total dd { color: #047857; }
 
-.metrics-split { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
-  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 13px; }.metrics-split span { color: var(--muted); }
-.metrics-split strong { font-variant-numeric: tabular-nums; text-align: right; }
-.metrics-split + .metrics-note { margin-top: 6px; }
-.metrics-summary { margin: 12px 0 0; display: grid; }
-.metrics-summary > div { display: flex; justify-content: space-between; align-items: baseline;
-  gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--border); }
-.metrics-summary > div:last-child { border-bottom: 0; }
-.metrics-summary dt { color: var(--muted); font-size: 12px; }
-.metrics-summary dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums;
-  text-align: right; overflow-wrap: anywhere; }
-
-.metrics-footnote { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border);
-  color: var(--muted); font-size: 12px; line-height: 18px; }
-.metrics-footnote strong { font-weight: 600; }
-
-/* Caja de hoy: the drawer of the branch as it stands, always above the period accounts, so a branch
-   whose settlements are all closed still reads a live drawer (S12-S14). It is the same panel of the
-   block above and adds no colour of its own: the wine edge it shares with the no-drawer note, the
-   muted words and the tabular figures the rest of the screen already uses. The movements are listed
-   as information, never as a column that moves the expectation, and a window without movements
-   states that in words instead of a row of zeros. */
-.metrics-today { border-left: 3px solid var(--wine); }
-.metrics-today .metrics-big { margin-bottom: 2px; }
-.metrics-today .metrics-big + .metrics-note { margin-bottom: 12px; }
-.metrics-today .metrics-summary { margin-bottom: 12px; }
-.metrics-today .metrics-note + .metrics-note { margin-top: 6px; }
-.metrics-today-kind { font-weight: 600; }
-/* The ledger of today: the three columns never touch each other, and the moment is pinned to the
-   right edge so a column of amounts and a column of instants can be read down, not across. */
-.metrics-today .metrics-table th, .metrics-today .metrics-table td { padding-left: 12px; }
-.metrics-today .metrics-table th:first-child, .metrics-today .metrics-table td:first-child {
-  padding-left: 0;
+.metrics-figure-value, .metrics-today-line dd, .metrics-mix-amount, .metrics-mix-pct {
+  font-variant-numeric: tabular-nums;
 }
-.metrics-today .metrics-table th:last-child, .metrics-today .metrics-table td:last-child {
-  width: 1%; text-align: right; white-space: nowrap;
-}
-.metrics-today-moment { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
-/* The two money boxes of today read as a pair and not as two unrelated panels (S15-S17): the drawer and
-   the purchase envelope share one row, one height of heading and the same wine edge, so a reader sees
-   two boxes of the same branch beside each other. It adds no colour of its own: the same white panel, the
-   same border, the same muted words and the same tabular figures as the block above. */
-.metrics-today-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px;
-  align-items: start; }
-/* Each card ends where its own reading ends: the fund's rows are fewer than the drawer's movements, and
-   stretching it to the drawer's height would leave an empty panel pretending to say something. */
-/* The commission is not a box, so it does not take a third column: it closes the band of today across
-   both, and the drawer keeps the width its movements table needs. */
-.metrics-today-pair > .metrics-commission-today { grid-column: 1 / -1; }
-.metrics-commission-empty { color: var(--wine); font-weight: 600; }
-.metrics-fund-today .metrics-big + .metrics-note { margin-bottom: 12px; }
-.metrics-fund-today .metrics-summary { margin-top: 0; margin-bottom: 12px; }
-/* The end of the branch's buying, said with words beside the figure it follows from. */
-.metrics-fund-today .metrics-fund-empty { color: var(--wine); font-weight: 600; }
-
-@media (max-width: 1279px) {
-  .metrics-columns, .metrics-today-pair { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1100px) {
+  .metrics-figures dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metrics-figure:nth-child(2n+1) { padding-left: 0; border-left: 0; }
+  .metrics-figure:nth-child(n+3) { border-top: 1px solid var(--border); }
+  .metrics-bottom { grid-template-columns: minmax(0, 1fr); }
 }
+
 @media (max-width: 767px) {
-  .metrics-workspace { gap: 12px; }
-  .metrics-period { padding: 12px; }
+  .metrics-topline { flex-direction: column; align-items: stretch; gap: 14px; }
   .metrics-period-field, .metrics-period-field select { width: 100%; min-width: 0; }
-  .metrics-panel { padding: 12px; }
-  .metrics-band-cell { padding: 12px; }
-  .metrics-band-cell dd { font-size: 20px; }
-  .metrics-amount { font-size: 22px; }
+  .metrics-figures dl { grid-template-columns: minmax(0, 1fr); }
+  .metrics-figure { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline;
+    gap: 8px; padding: 14px 0; border-left: 0; }
+  .metrics-figure:nth-child(n+2) { border-top: 1px solid var(--border); }
+  .metrics-figure:first-child { border-top: 0; }
+  .metrics-figure-value { margin: 0; text-align: right; }
+  .metrics-figure-note { grid-column: 1 / -1; margin: 2px 0 0; }
+  .metrics-today-line { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .metrics-today-line h2, .metrics-today-since, .metrics-today-line dl { grid-column: 1; }
+  .metrics-today-line dl { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 12px; }
+  .metrics-bottom { gap: 34px; }
+  .metrics-mix li { grid-template-columns: minmax(0, 1fr) 96px 40px; }
+  .metrics-mix-track { display: none; }
+  .metrics-scrap { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 }
 
 /* Caja operativa: the book of the counter's till (design/caja-operativa/01-libro-y-ticket.html,

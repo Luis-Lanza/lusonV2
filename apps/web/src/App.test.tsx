@@ -2069,8 +2069,10 @@ describe('branch metrics', () => {
     expect(screen.getByText('Luson Métricas')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Métricas' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
-    expect(await screen.findByText('El acumulado no tiene caja: la caja se cierra en cada rendición.'))
-      .toBeInTheDocument();
+    // The screen opened on the history: it states there is no drawer in words, in the figures.
+    const figures = await screen.findByRole('region', { name: 'Lo que dejó el período' });
+    expect(await within(figures).findByText('Sin caja')).toBeInTheDocument();
+    expect(within(figures).getByText('el acumulado no tiene caja')).toBeInTheDocument();
     expect(metricsCalls(mock).some(([url]) => String(url) === '/api/metrics?period=all')).toBe(true);
     expect(metricsCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
   });
