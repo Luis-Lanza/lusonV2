@@ -770,20 +770,26 @@ type ProposalCountLine struct {
 // accepted (S14, S15). It carries no seller and no manager name: the commission of a
 // period is one amount for the whole branch (S7).
 type ProposalPayload struct {
-	PeriodStart           time.Time `json:"period_start"`
-	CutAt                 time.Time `json:"cut_at"`
-	SalesTotal            Money     `json:"sales_total"`
-	CommissionRatePercent Percent   `json:"commission_rate_percent"`
-	CommissionAmount      Money     `json:"commission_amount"`
-	CashSales             Money     `json:"cash_sales"`
-	CashExpenses          Money     `json:"cash_expenses"`
-	CardTotal             Money     `json:"card_total"`
-	TransferTotal         Money     `json:"transfer_total"`
-	QRTotal               Money     `json:"qr_total"`
-	CountedCash           *Money    `json:"counted_cash"`
-	ContributedCash       Money     `json:"contributed_cash"`
-	ClosingCash           *Money    `json:"closing_cash"`
-	Observation           string    `json:"observation"`
+	PeriodStart time.Time `json:"period_start"`
+	CutAt       time.Time `json:"cut_at"`
+	SalesTotal  Money     `json:"sales_total"`
+	// CommissionBase is the amount the offered commission was computed on: the battery lines of the
+	// period (S1, S2, S5). CommissionAmount is that base times the frozen rate, rounded once, and
+	// SalesTotal above keeps counting every line of the period, of either catalogue kind (S4). An
+	// offer stored before this rule carries no such key, which is why it is omitted instead of being
+	// invented as a zero the commission was never computed on.
+	CommissionBase        *Money  `json:"commission_base,omitempty"`
+	CommissionRatePercent Percent `json:"commission_rate_percent"`
+	CommissionAmount      Money   `json:"commission_amount"`
+	CashSales             Money   `json:"cash_sales"`
+	CashExpenses          Money   `json:"cash_expenses"`
+	CardTotal             Money   `json:"card_total"`
+	TransferTotal         Money   `json:"transfer_total"`
+	QRTotal               Money   `json:"qr_total"`
+	CountedCash           *Money  `json:"counted_cash"`
+	ContributedCash       Money   `json:"contributed_cash"`
+	ClosingCash           *Money  `json:"closing_cash"`
+	Observation           string  `json:"observation"`
 	// PurchaseFundCounted and PurchaseFundCash are the second envelope of the offer: what the
 	// warehouse counted in the purchase fund and the amount it leaves there for the next period.
 	// They are absent from an offer made before the envelope was stated, which is why they are
@@ -840,8 +846,12 @@ type Closing struct {
 	// states. It is the third term of the expectation and it is not published by the document's DTO in
 	// so many words for the acta (the DTO publishes `cash_effective`); it is what lets the HTTP
 	// revalidation call the one rule instead of a second arithmetic of the expenses.
-	CashEffective     Signed `json:"-"`
-	SalesTotal        Money  `json:"sales_total"`
+	CashEffective Signed `json:"-"`
+	SalesTotal    Money  `json:"sales_total"`
+	// CommissionBase is the base the commission was computed on -- the battery lines of this period --
+	// and it is null for an acta recorded before that rule, which keeps the commission it settled with
+	// rather than a backfilled number nobody multiplied (S5, S6, S8).
+	CommissionBase    *Money `json:"commission_base"`
 	CommissionAmount  Money  `json:"commission_amount"`
 	CardTotal         Money  `json:"card_total"`
 	TransferTotal     Money  `json:"transfer_total"`

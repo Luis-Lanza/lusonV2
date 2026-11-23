@@ -2039,23 +2039,29 @@ describe('branch metrics', () => {
   const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
   const closedPeriod = { kind: 'settlement', closing_id: 4, from: '2026-10-20T12:00:00Z',
     to: '2026-11-01T12:00:00Z', label: 'Rendición #4' };
-  // The screen opens on the only default this contract has: the whole history, which states no
-  // drawer at all and says so in words.
+  // The period the screen opens on, and the body it reads when another period is chosen.
+  const currentPeriod = { kind: 'current', closing_id: null, from: '2026-11-01T12:00:00Z', to: null,
+    label: 'Desde el último corte' };
   const metricsBody = {
     periods: [closedPeriod, allPeriod], period: allPeriod, source: 'history',
-    sales: { total: '0.00', cash: '0.00', card: '0.00', transfer: '0.00', qr: '0.00',
-      commission: '0.00', sales: 0, units: 0 },
+    sales: { total: '0.00', batteries: '0.00', cash: '0.00', card: '0.00', transfer: '0.00',
+      qr: '0.00', commission: '0.00', sales: 0, units: 0 },
     cash: null, fund: null, materials: null, top_models: [], stock: { units: 0 },
     // The drawer of today is published whatever the period is, so even the history states it.
     // A branch the warehouse never configured and that sold nothing: the drawer, the base and the
     // commission it did not earn are all stated, and the absence of a rate is a null (S18-S20).
     today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', effective: '0.00',
       expected: '0.00',
-      rate: null, sold: '0.00', commission: '0.00', movements: [] },
+      rate: null, sold: '0.00', commission_base: '0.00', commission: '0.00', movements: [] },
     fund_today: { since: null, opening: '0.00', purchases: '0.00', effective: '0.00', balance: '0.00', documents: 0,
       used_units: 0, scrap_milli: 0 } };
-  const metricsSetup = () => setup(branchSession, url => url.startsWith('/api/metrics?')
-    ? Promise.resolve(metricsAnswer(metricsBody)) : undefined);
+  // The screen opens on the window since the last cut (S10): a computed period with no acta, so it
+  // states no drawer and says when it will be counted.
+  const metricsWindow = { ...metricsBody, periods: [currentPeriod, closedPeriod, allPeriod],
+    period: currentPeriod, source: 'live' };
+  const metricsSetup = () => setup(branchSession, url => url.includes('period=current')
+    ? Promise.resolve(metricsAnswer(metricsWindow))
+    : url.startsWith('/api/metrics?') ? Promise.resolve(metricsAnswer(metricsBody)) : undefined);
   const metricsCalls = (mock: ReturnType<typeof setup>) =>
     mock.mock.calls.filter(([url]) => String(url).startsWith('/api/metrics'));
 
@@ -2069,9 +2075,11 @@ describe('branch metrics', () => {
     expect(screen.getByText('Luson Métricas')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Métricas' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
-    expect(await screen.findByText('El acumulado no tiene caja: la caja se cierra en cada rendición.'))
-      .toBeInTheDocument();
-    expect(metricsCalls(mock).some(([url]) => String(url) === '/api/metrics?period=all')).toBe(true);
+    // The screen opened on the window since the last cut: it states there is no acta yet, in words.
+    const figures = await screen.findByRole('region', { name: 'Lo que dejó el período' });
+    expect(await within(figures).findByText('Sin caja')).toBeInTheDocument();
+    expect(within(figures).getByText('se cuenta al rendir')).toBeInTheDocument();
+    expect(metricsCalls(mock).some(([url]) => String(url) === '/api/metrics?period=current')).toBe(true);
     expect(metricsCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 

@@ -10,13 +10,18 @@ const closedPeriod = (id: number, from: string, to: string) =>
 const livePeriod = (id: number, from: string, to: string) =>
   ({ kind: 'open', closing_id: id, from, to, label: 'En curso' });
 const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
+// The window since the last closed cut: no closing of its own, no end, computed at the read (S3, S4).
+const currentPeriod = { kind: 'current', closing_id: null, from: '2026-11-01T12:00:00Z', to: null,
+  label: 'Desde el último corte' };
 const closed = closedPeriod(4, '2026-10-20T12:00:00Z', '2026-11-01T12:00:00Z');
 const live = livePeriod(5, '2026-11-01T12:00:00Z', '2026-11-12T12:00:00Z');
 const periods = [closed, live, allPeriod];
 
+// The money of the period by kind and by method: `batteries` is the battery lines of the same window
+// and the other products are the rest of the total, never a third figure of their own (S2, S3).
 const sales = {
-  total: '4286400.00', cash: '1842300.00', card: '1486900.00', transfer: '612200.00',
-  qr: '345000.00', commission: '192888.00', sales: 63, units: 78,
+  total: '4286400.00', batteries: '2100000.00', cash: '1842300.00', card: '1486900.00',
+  transfer: '612200.00', qr: '345000.00', commission: '192888.00', sales: 63, units: 78,
 };
 // The drawer closes: 120000 + 1842300 − 84500 = 1877800.
 const cash = {
@@ -60,9 +65,10 @@ const stock = { units: 214 };
 const today = {
   since: '2026-11-01T12:00:00Z', opening: '500000.00', sales: '1842300.00',
   expenses: '2500.00', effective: '-42500.00', expected: '2299800.00',
-  // What the branch is earning so far: 2100000.00 sold since the cut at 12.50% is 262500.00, rounded
-  // once on the total, the settlement's own rule (S18).
-  rate: '12.50', sold: '2100000.00', commission: '262500.00',
+  // What the branch is earning so far: the rate over the base the commission is computed on, never
+  // over the whole sale. This window sold 2100000.00 of batteries and no other product, so its base is
+  // its total and 12.50% of it is 262500.00, rounded once, the settlement's own rule (S3, S18).
+  rate: '12.50', sold: '2100000.00', commission_base: '2100000.00', commission: '262500.00',
   movements: [
     { kind: 'aporte', amount: '10000.00', effective: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
     { kind: 'gasto', amount: '2500.00', effective: '-2500.00', occurred_at: '2026-11-02T09:30:00Z' },
@@ -93,6 +99,16 @@ const liveBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     scrap_delivered_milli: null, materials: scrapRows.map(row => ({ ...row, delivered_milli: null })) },
   top_models: topModels, stock, today, fund_today: fundToday, ...overrides,
 });
+// The window since the last cut: the money and the ranking of that stretch, and no acta to read a
+// drawer, an envelope or a sheet from (S5).
+const windowBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+  periods: [currentPeriod, closed, allPeriod], period: currentPeriod, source: 'live', sales,
+  cash: null, fund: null, materials: null,
+  // One window, one total: what the period collected is what the line of today says was sold, and the
+  // battery base of that same window is the `batteries` of the period it states beside it (S2, S4).
+  today: { ...today, sold: sales.total },
+  top_models: topModels, stock, fund_today: fundToday, ...overrides,
+});
 // The accumulated history: sales, catalogue and scrap, and no drawer at all (S9). The drawer of
 // today is still stated: it is the drawer of the branch, not a total of the period (S12).
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -108,9 +124,9 @@ describe('metrics wire contract', () => {
     expect(metricsPeriodToken(answer.period)).toBe('4');
     expect(answer.source).toBe('settlement');
     expect(answer.sales).toEqual({
-      total_cents: 428640000n, cash_cents: 184230000n, card_cents: 148690000n,
-      transfer_cents: 61220000n, qr_cents: 34500000n, commission_cents: 19288800n,
-      sales: 63, units: 78,
+      total_cents: 428640000n, batteries_cents: 210000000n, other_cents: 218640000n,
+      cash_cents: 184230000n, card_cents: 148690000n, transfer_cents: 61220000n,
+      qr_cents: 34500000n, commission_cents: 19288800n, sales: 63, units: 78,
     });
     expect(answer.cash).toEqual({
       opening_cents: 12000000n, sales_cents: 184230000n, expenses_cents: 8450000n,
@@ -164,6 +180,64 @@ describe('metrics wire contract', () => {
     expect(open.materials?.materials.every(row => row.delivered_milli === null)).toBe(true);
   });
 
+  it('reads the window since the last cut as a period without an acta', () => {
+    const answer = parseMetricsAnswer(windowBody());
+    expect(answer.period).toEqual(currentPeriod);
+    expect(metricsPeriodToken(answer.period)).toBe('current');
+    // It moves with every sale, and it states no drawer, no envelope and no sheet (S5).
+    expect(answer.source).toBe('live');
+    expect(answer.cash).toBeNull();
+    expect(answer.fund).toBeNull();
+    expect(answer.materials).toBeNull();
+    expect(answer.sales.total_cents).toBe(428640000n);
+    expect(answer.top_models).toHaveLength(5);
+    // It is published once and first, before every settlement (S4).
+    expect(answer.periods.map(period => period.kind)).toEqual(['current', 'settlement', 'all']);
+  });
+
+  it('refuses a window that is not the first period, or that names a closing or an end', () => {
+    const notFirst = JSON.parse(windowBody()) as Record<string, unknown>;
+    notFirst.periods = [closed, currentPeriod, allPeriod];
+    expect(() => parseMetricsAnswer(JSON.stringify(notFirst))).toThrow(metricsInvalidResponseMessage);
+
+    const withClosing = JSON.parse(windowBody()) as Record<string, unknown>;
+    withClosing.periods = [{ ...currentPeriod, closing_id: 4 }, closed, allPeriod];
+    withClosing.period = { ...currentPeriod, closing_id: 4 };
+    expect(() => parseMetricsAnswer(JSON.stringify(withClosing))).toThrow(metricsInvalidResponseMessage);
+
+    const withEnd = JSON.parse(windowBody()) as Record<string, unknown>;
+    withEnd.periods = [{ ...currentPeriod, to: '2026-11-12T12:00:00Z' }, closed, allPeriod];
+    withEnd.period = { ...currentPeriod, to: '2026-11-12T12:00:00Z' };
+    expect(() => parseMetricsAnswer(JSON.stringify(withEnd))).toThrow(metricsInvalidResponseMessage);
+
+    // A window is not an acta: a frozen origin beside it describes another period.
+    expect(() => parseMetricsAnswer(windowBody({ source: 'settlement' })))
+      .toThrow(metricsInvalidResponseMessage);
+
+    // One window, one total: a period that collected something else than what today sold is not it.
+    expect(() => parseMetricsAnswer(windowBody({ today: { ...today, sold: '100.00' } })))
+      .toThrow(metricsInvalidResponseMessage);
+  });
+
+  it('derives the other products as the rest of the total, never as a figure of their own', () => {
+    // The period sold 4286400.00 of which 2100000.00 are the battery lines: the other products are the
+    // difference and the answer publishes no field for them (S3).
+    const answer = parseMetricsAnswer(settlementBody());
+    expect(answer.sales.batteries_cents).toBe(210000000n);
+    expect(answer.sales.other_cents).toBe(218640000n);
+    expect(answer.sales.batteries_cents + answer.sales.other_cents).toBe(answer.sales.total_cents);
+    // A period that sold no battery has no other products either: the two parts still add up to it.
+    const noBattery = parseMetricsAnswer(settlementBody({ sales: { ...sales, batteries: '0.00' } }));
+    expect(noBattery.sales.batteries_cents).toBe(0n);
+    expect(noBattery.sales.other_cents).toBe(428640000n);
+    // A period that sold batteries and nothing else states no other products at all.
+    const batteryOnly = parseMetricsAnswer(settlementBody({
+      sales: { ...sales, batteries: sales.total },
+    }));
+    expect(batteryOnly.sales.other_cents).toBe(0n);
+    expect(batteryOnly.sales.batteries_cents).toBe(428640000n);
+  });
+
   it('admits a purchase net a counter-document left negative, with its sign', () => {
     // The net of a window can be negative: a counter-document reversed a purchase of an earlier
     // period, so the envelope ends up larger than what it inherited (L7).
@@ -203,7 +277,8 @@ describe('metrics wire contract', () => {
     expect(answer.today).toEqual({
       since: '2026-11-01T12:00:00Z', opening_cents: 50000000n, sales_cents: 184230000n,
       expenses_cents: 250000n, effective_cents: -4250000n, expected_cents: 229980000n,
-      rate_percent: '12.50', sold_cents: 210000000n, commission_cents: 26250000n,
+      rate_percent: '12.50', sold_cents: 210000000n, commission_base_cents: 210000000n,
+      commission_cents: 26250000n,
       movements: [
         { kind: 'aporte', amount_cents: 1000000n, effective_cents: 1000000n,
           occurred_at: '2026-11-01T12:00:00Z' },
@@ -249,6 +324,37 @@ describe('metrics wire contract', () => {
     expect(answer.today.rate_percent).toBeNull();
     expect(answer.today.commission_cents).toBe(0n);
     expect(answer.today.sold_cents).toBe(210000000n);
+    expect(answer.today.commission_base_cents).toBe(210000000n);
+  });
+
+  it('computes the commission on the battery base and never on the whole sale', () => {
+    // The window sold a battery and an other product: 2100000.00 of total, of which 1200000.00 are the
+    // battery lines. The commission is the rate over those 1200000.00 -- 150000.00 -- because an other
+    // product like the acidulated water earns nothing (S1, S2, S3).
+    const answer = parseMetricsAnswer(settlementBody({
+      today: { ...today, commission_base: '1200000.00', commission: '150000.00' },
+    }));
+    expect(answer.today.commission_base_cents).toBe(120000000n);
+    expect(answer.today.commission_cents).toBe(15000000n);
+    // The total keeps its own place: it still counts every line of the window (S4).
+    expect(answer.today.sold_cents).toBe(210000000n);
+    // The amount the old rule produced over the whole sale is not the commission of this base.
+    expect(() => parseMetricsAnswer(settlementBody({
+      today: { ...today, commission_base: '1200000.00', commission: '262500.00' },
+    }))).toThrow(metricsInvalidResponseMessage);
+  });
+
+  it('reads a window that sold no battery as no commission over a stated total', () => {
+    // The branch sold products and no battery: the total is a fact and the base is zero, so the card
+    // earns nothing and says so instead of carrying a commission the branch never earned (S7).
+    const answer = parseMetricsAnswer(settlementBody({
+      today: { ...today, commission_base: '0.00', commission: '0.00' },
+    }));
+    expect(answer.today.commission_base_cents).toBe(0n);
+    expect(answer.today.sold_cents).toBe(210000000n);
+    expect(() => parseMetricsAnswer(settlementBody({
+      today: { ...today, commission_base: '0.00', commission: '262500.00' },
+    }))).toThrow(metricsInvalidResponseMessage);
   });
 
   it('parses a drawer of today without a cut as the whole life of the branch', () => {
@@ -362,6 +468,17 @@ describe('metrics wire contract', () => {
     ['money with a thousands separator', settlementBody({ sales: { ...sales, cash: '1.842.300,00' } })],
     ['a drawer that does not close', settlementBody({ cash: { ...cash, expected: '1877850.00' } })],
     ['a counted amount without its difference', settlementBody({ cash: { ...cash, difference: null } })],
+    ['a battery money that exceeds the total of the period', settlementBody({
+      sales: { ...sales, batteries: '4286400.01' },
+    })],
+    ['a sales answer without its battery money', settlementBody({
+      sales: { ...sales, batteries: undefined },
+    })],
+    ['non-canonical battery money', settlementBody({ sales: { ...sales, batteries: '2100000.0' } })],
+    ['signed battery money', settlementBody({ sales: { ...sales, batteries: '-2100000.00' } })],
+    ['battery money published as a number', settlementBody({
+      sales: { ...sales, batteries: 2100000 },
+    })],
     ['a negative count of sales', settlementBody({ sales: { ...sales, sales: -1 } })],
     ['a negative count of units', settlementBody({ sales: { ...sales, units: -1 } })],
     ['a negative delivered count', settlementBody({
@@ -465,8 +582,17 @@ describe('metrics wire contract', () => {
       })) },
     })],
     ['an extra field in the drawer of today', settlementBody({ today: { ...today, extra: 1 } })],
-    ['a commission that is not its rate times the total sold', settlementBody({
+    ['a commission that is not its rate times the battery base', settlementBody({
       today: { ...today, commission: '1.00' },
+    })],
+    ['a commission base that is signed money', settlementBody({
+      today: { ...today, commission_base: '-2100000.00' },
+    })],
+    ['a non-canonical commission base', settlementBody({
+      today: { ...today, commission_base: '2100000.0' },
+    })],
+    ['a drawer of today without its commission base', settlementBody({
+      today: { ...today, commission_base: undefined },
     })],
     ['a commission with no rate behind it', settlementBody({
       today: { ...today, rate: null },

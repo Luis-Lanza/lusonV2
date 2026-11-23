@@ -28,7 +28,7 @@ import (
 // metricsWireKeys is the frozen key set of the answer, and the key sets of the objects it carries.
 var (
 	metricsWireKeys          = []string{"periods", "period", "source", "sales", "cash", "fund", "materials", "top_models", "stock", "today", "fund_today"}
-	metricsSalesWireKeys     = []string{"total", "cash", "card", "transfer", "qr", "commission", "sales", "units"}
+	metricsSalesWireKeys     = []string{"total", "batteries", "cash", "card", "transfer", "qr", "commission", "sales", "units"}
 	metricsCashWireKeys      = []string{"opening", "sales", "expenses", "expected", "counted", "difference"}
 	metricsFundWireKeys      = []string{"opening", "purchases", "expected", "counted", "difference", "replacement"}
 	metricsMaterialsWireKeys = []string{"used_units", "used_delivered_units", "scrap_milli", "scrap_delivered_milli", "materials"}
@@ -39,7 +39,7 @@ var (
 	metricsModelWireKeys        = []string{"catalog_entry_id", "brand", "model", "capacity_ah", "units", "money"}
 	metricsProductModelWireKeys = []string{"catalog_entry_id", "name", "units", "money"}
 	metricsStockWireKeys        = []string{"units"}
-	metricsTodayWireKeys        = []string{"since", "opening", "sales", "expenses", "effective", "expected", "rate", "sold", "commission", "movements"}
+	metricsTodayWireKeys        = []string{"since", "opening", "sales", "expenses", "effective", "expected", "rate", "sold", "commission_base", "commission", "movements"}
 	metricsFundTodayWireKeys    = []string{"since", "opening", "purchases", "effective", "balance", "documents", "used_units", "scrap_milli"}
 	metricsMovementWireKeys     = []string{"kind", "amount", "effective", "occurred_at"}
 	metricsPeriodWireKeys       = []string{"kind", "closing_id", "from", "to", "label"}
@@ -137,6 +137,7 @@ type metricsAnswerWire struct {
 	Source  string              `json:"source"`
 	Sales   struct {
 		Total      string `json:"total"`
+		Batteries  string `json:"batteries"`
 		Cash       string `json:"cash"`
 		Card       string `json:"card"`
 		Transfer   string `json:"transfer"`
@@ -196,10 +197,13 @@ type metricsAnswerWire struct {
 		Expected  string `json:"expected"`
 		// The rate is null for a branch the warehouse never configured, so the absence of a rate is
 		// a state of its own and never a zero percentage (S20).
-		Rate       *string `json:"rate"`
-		Sold       string  `json:"sold"`
-		Commission string  `json:"commission"`
-		Movements  []struct {
+		Rate *string `json:"rate"`
+		Sold string  `json:"sold"`
+		// CommissionBase is the battery sales of the window: the exact amount the commission was
+		// computed on, which `sold` -- every sale of the window -- no longer is (S1, S4).
+		CommissionBase string `json:"commission_base"`
+		Commission     string `json:"commission"`
+		Movements      []struct {
 			Kind   string `json:"kind"`
 			Amount string `json:"amount"`
 			// Effective is the signed effect of the row, positive into the drawer and negative out of
@@ -271,8 +275,8 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 	if json.Unmarshal(w.Body.Bytes(), &answer) != nil {
 		t.Fatalf("metrics answer is not decodable: %s", w.Body.String())
 	}
-	for _, money := range []string{answer.Sales.Total, answer.Sales.Cash, answer.Sales.Card,
-		answer.Sales.Transfer, answer.Sales.QR, answer.Sales.Commission} {
+	for _, money := range []string{answer.Sales.Total, answer.Sales.Batteries, answer.Sales.Cash,
+		answer.Sales.Card, answer.Sales.Transfer, answer.Sales.QR, answer.Sales.Commission} {
 		if !metricsMoneyWire.MatchString(money) {
 			t.Fatalf("sales money %q is not canonical: %s", money, w.Body.String())
 		}
@@ -320,7 +324,8 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 		metricsObject(t, movement, metricsMovementWireKeys)
 	}
 	for _, money := range []string{answer.Today.Opening, answer.Today.Sales, answer.Today.Expenses,
-		answer.Today.Effective, answer.Today.Expected} {
+		answer.Today.Effective, answer.Today.Expected, answer.Today.Sold,
+		answer.Today.CommissionBase, answer.Today.Commission} {
 		if !metricsMoneyWire.MatchString(money) {
 			t.Fatalf("today money %q is not canonical: %s", money, w.Body.String())
 		}
@@ -377,14 +382,16 @@ func TestMetricsHTTPAnswer(t *testing.T) {
 	if answer.Source != "settlement" {
 		t.Fatalf("a closed settlement states its own origin, got %q", answer.Source)
 	}
-	// The selector offers the closed settlement and the whole history: the pending balance is not a
-	// period, so it is not offered here at all.
-	if len(answer.Periods) != 2 || answer.Periods[0].Kind != "settlement" ||
-		answer.Periods[0].ClosingID == nil || *answer.Periods[0].ClosingID != closed.ID ||
-		answer.Periods[0].From == nil || answer.Periods[0].To == nil ||
-		answer.Periods[1].Kind != "all" || answer.Periods[1].ClosingID != nil ||
-		answer.Periods[1].From != nil || answer.Periods[1].To != nil {
-		t.Fatalf("the selector must publish the settlement and the history: %+v", answer.Periods)
+	// The selector offers the window since the last cut, then the closed settlement, then the whole
+	// history: the pending balance is not a period, so it is not offered here at all (S4).
+	if len(answer.Periods) != 3 || answer.Periods[0].Kind != "current" ||
+		answer.Periods[0].ClosingID != nil || answer.Periods[0].From == nil || answer.Periods[0].To != nil ||
+		answer.Periods[1].Kind != "settlement" ||
+		answer.Periods[1].ClosingID == nil || *answer.Periods[1].ClosingID != closed.ID ||
+		answer.Periods[1].From == nil || answer.Periods[1].To == nil ||
+		answer.Periods[2].Kind != "all" || answer.Periods[2].ClosingID != nil ||
+		answer.Periods[2].From != nil || answer.Periods[2].To != nil {
+		t.Fatalf("the selector must publish the window, the settlement and the history: %+v", answer.Periods)
 	}
 	if answer.Period.Kind != "settlement" || answer.Period.ClosingID == nil ||
 		*answer.Period.ClosingID != closed.ID || answer.Period.Label == "" {
@@ -393,8 +400,10 @@ func TestMetricsHTTPAnswer(t *testing.T) {
 	}
 	// The period of the settlement sold nothing and bought nothing: zero is a fact, and the ranking
 	// and the material sheet are empty lists instead of nulls.
-	if answer.Sales.Total != "0.00" || answer.Sales.Sales != 0 || answer.Sales.Units != 0 ||
-		len(answer.Top) != 0 {
+	// S2-S3: the period of the settlement sold nothing, so its total and its battery share are the
+	// zero of a period nobody sold to.
+	if answer.Sales.Total != "0.00" || answer.Sales.Batteries != "0.00" ||
+		answer.Sales.Sales != 0 || answer.Sales.Units != 0 || len(answer.Top) != 0 {
 		t.Fatalf("the closed period states its own volume: %+v", answer.Sales)
 	}
 	if answer.Cash == nil || answer.Cash.Counted == nil || *answer.Cash.Counted != "0.00" ||
@@ -424,7 +433,8 @@ func TestMetricsHTTPAnswer(t *testing.T) {
 		t.Fatalf("the history states no drawer, no envelope and no material: %+v", history)
 	}
 	if history.Period.Kind != "all" || history.Period.ClosingID != nil ||
-		len(history.Periods) != 2 || history.Periods[1].Kind != "all" {
+		len(history.Periods) != 3 || history.Periods[0].Kind != "current" ||
+		history.Periods[2].Kind != "all" {
 		t.Fatalf("the history is the last entry of the selector: %+v", history.Periods)
 	}
 
@@ -511,8 +521,10 @@ func TestMetricsHTTPPublishesAProductPeriod(t *testing.T) {
 	if row.Brand != nil || row.Model != nil || row.Capacity != nil {
 		t.Fatalf("a product row must not publish a battery column: %+v", row)
 	}
-	// S7: the volume of the period is the sum of every kind it sold.
-	if answer.Sales.Units != 3 || answer.Sales.Sales != 1 || answer.Sales.Total != "5700.00" {
+	// S7: the volume of the period is the sum of every kind it sold, and the battery share of it is
+	// the zero of a period that sold no battery (S2).
+	if answer.Sales.Units != 3 || answer.Sales.Sales != 1 || answer.Sales.Total != "5700.00" ||
+		answer.Sales.Batteries != "0.00" {
 		t.Fatalf("the volume of the period must sum both kinds: %+v", answer.Sales)
 	}
 }
@@ -659,7 +671,7 @@ func validMetrics() closings.Metrics {
 	fundCut := metricsTodayMoment()
 	return closings.Metrics{
 		Source: "settlement",
-		Sales: closings.MetricsSales{Total: "10.00", Cash: "10.00", Card: "0.00",
+		Sales: closings.MetricsSales{Total: "10.00", Batteries: "10.00", Cash: "10.00", Card: "0.00",
 			Transfer: "0.00", QR: "0.00", Commission: "1.00", Sales: 1, Units: 2},
 		Cash: &closings.MetricsCash{Opening: "0.00", Sales: "10.00", Expenses: "0.00",
 			Expected: expected, Counted: &counted, Difference: &expected},
@@ -678,7 +690,8 @@ func validMetrics() closings.Metrics {
 		// A branch with no configured rate earns nothing: the base it sold is a fact, the commission it
 		// did not earn is the zero of a rate that does not exist, and the rate itself is the null (S18-S20).
 		Today: closings.MetricsToday{Opening: "5.00", Sales: "10.00", Expenses: "2.00",
-			Effective: "-2.00", Expected: "13.00", Sold: "10.00", Commission: "0.00",
+			Effective: "-2.00", Expected: "13.00", Sold: "10.00", CommissionBase: "10.00",
+			Commission: "0.00",
 			Movements: []closings.MetricsMovement{
 				{Kind: "gasto", Amount: "2.00", Effective: "-2.00",
 					OccurredAt: metricsTodayMoment()}}},
@@ -823,6 +836,69 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 		published[0].Kind != "all" {
 		t.Fatalf("a branch without settlements offers its history: %+v %v", published, err)
 	}
+	// The computed window is the first entry of the selector and it is published only beside a closed
+	// settlement with no live one covering it (S4): a branch with a closed settlement and no live one
+	// publishes it first, and every other arrangement of it is a selector this server never wrote.
+	windowFrom := metricsTodayMoment()
+	current := purchases.Period{Kind: purchases.PeriodKind("current"), From: &windowFrom,
+		Label: "Desde el último corte"}
+	closedOnly := []purchases.Period{periods[0], periods[1], periods[3]}
+	windowed := append([]purchases.Period{current}, closedOnly...)
+	if published, err := metricsPeriodsRecord(windowed); err != nil || len(published) != 3 ||
+		published[0].Kind != "current" || published[0].ClosingID != nil || published[0].To != nil ||
+		published[0].From == nil || *published[0].From != "2024-11-12T12:00:00Z" ||
+		published[0].Label != "Desde el último corte" || published[1].Kind != "settlement" ||
+		published[2].Kind != "all" {
+		t.Fatalf("the window must be published first: %+v %v", published, err)
+	}
+	for name, list := range map[string][]purchases.Period{
+		"window after a settlement":   {periods[0], periods[1], current, periods[3]},
+		"window beside a live period": append([]purchases.Period{current}, periods...),
+		"window without a settlement": {current, periods[0], periods[3]},
+		"repeated window":             {current, current, periods[0], periods[1], periods[3]},
+		"window naming a settlement": {current, periods[0], {Kind: purchases.PeriodKind("current"),
+			ClosingID: periods[1].ClosingID, From: &windowFrom, Label: "Desde el último corte"},
+			periods[1], periods[3]},
+		"window with an end": {current, periods[0], {Kind: purchases.PeriodKind("current"),
+			From: &windowFrom, To: &windowFrom, Label: "Desde el último corte"}, periods[1], periods[3]},
+		"window without a cut": {current, periods[0],
+			{Kind: purchases.PeriodKind("current"), Label: "Desde el último corte"}, periods[1], periods[3]},
+		"window with words nobody wrote": {current, periods[0], {Kind: purchases.PeriodKind("current"),
+			From: &windowFrom, Label: "Desde el corte"}, periods[1], periods[3]},
+	} {
+		_, err := metricsPeriodsRecord(list)
+		metricsRefused(t, name, err)
+	}
+	// The answer of the window is the live read without an acta and with the total the same answer says
+	// the branch sold, so a window that publishes a drawer, an envelope, a sheet, a frozen origin or a
+	// total that contradicts today is a number this server never wrote (S5, S6).
+	windowMetrics := validMetrics()
+	windowMetrics.Source = "live"
+	windowMetrics.Cash, windowMetrics.Fund, windowMetrics.Materials = nil, nil, nil
+	if record, err := metricsRecord(windowed, current, windowMetrics); err != nil ||
+		record.Period.Kind != "current" || record.Cash != nil || record.Source != "live" {
+		t.Fatalf("the window must be admitted as it is: %+v %v", record, err)
+	}
+	shifted := windowFrom.Add(time.Hour)
+	unoffered := current
+	unoffered.From = &shifted
+	if _, err := metricsRecord(windowed, unoffered, windowMetrics); err == nil {
+		t.Fatalf("a window the selector does not offer must be refused")
+	}
+	for name, breakIt := range map[string]func(*closings.Metrics){
+		"window with a drawer":      func(m *closings.Metrics) { m.Cash = validMetrics().Cash },
+		"window with an envelope":   func(m *closings.Metrics) { m.Fund = validMetrics().Fund },
+		"window with a sheet":       func(m *closings.Metrics) { m.Materials = validMetrics().Materials },
+		"window of a frozen origin": func(m *closings.Metrics) { m.Source = "settlement" },
+		"window that contradicts today": func(m *closings.Metrics) {
+			m.Sales.Total = "9.00"
+		},
+	} {
+		metrics := windowMetrics
+		breakIt(&metrics)
+		_, err := metricsRecord(windowed, current, metrics)
+		metricsRefused(t, name, err)
+	}
 	for name, list := range map[string][]purchases.Period{
 		"empty":                         {},
 		"repeated settlement":           {periods[0], periods[1], periods[1], periods[3]},
@@ -854,11 +930,13 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 	}
 	// Every account of the answer is admitted by its own guards.
 	for name, breakIt := range map[string]func(*closings.Metrics){
-		"sales total is not canonical":  func(m *closings.Metrics) { m.Sales.Total = "10" },
-		"sales cash has three decimals": func(m *closings.Metrics) { m.Sales.Cash = "10.000" },
-		"negative commission":           func(m *closings.Metrics) { m.Sales.Commission = "-1.00" },
-		"negative sales count":          func(m *closings.Metrics) { m.Sales.Sales = -1 },
-		"negative units":                func(m *closings.Metrics) { m.Sales.Units = -1 },
+		"sales total is not canonical":      func(m *closings.Metrics) { m.Sales.Total = "10" },
+		"sales batteries are not canonical": func(m *closings.Metrics) { m.Sales.Batteries = "10" },
+		"sales batteries exceed the total":  func(m *closings.Metrics) { m.Sales.Batteries = "11.00" },
+		"sales cash has three decimals":     func(m *closings.Metrics) { m.Sales.Cash = "10.000" },
+		"negative commission":               func(m *closings.Metrics) { m.Sales.Commission = "-1.00" },
+		"negative sales count":              func(m *closings.Metrics) { m.Sales.Sales = -1 },
+		"negative units":                    func(m *closings.Metrics) { m.Sales.Units = -1 },
 		"drawer expectation is text": func(m *closings.Metrics) {
 			m.Cash.Expected = "expected"
 		},
@@ -1201,11 +1279,13 @@ func TestMetricsHTTPTodayCommission(t *testing.T) {
 		t.Fatalf("today must state the rate the warehouse configured: %+v", answer.Today.Rate)
 	}
 	// A branch with no sale since its cut sold nothing; whatever rate it holds, it earned nothing.
-	if answer.Today.Sold != "0.00" || answer.Today.Commission != "0.00" {
+	if answer.Today.Sold != "0.00" || answer.Today.CommissionBase != "0.00" ||
+		answer.Today.Commission != "0.00" {
 		t.Fatalf("a window without sales states no commission: %+v", answer.Today)
 	}
 	history := read("all")
 	if history.Today.Sold != answer.Today.Sold ||
+		history.Today.CommissionBase != answer.Today.CommissionBase ||
 		history.Today.Commission != answer.Today.Commission ||
 		(history.Today.Rate == nil) != (answer.Today.Rate == nil) {
 		t.Fatalf("the commission of today is the same whatever period is shown: %+v want %+v",
@@ -1214,40 +1294,49 @@ func TestMetricsHTTPTodayCommission(t *testing.T) {
 }
 
 // TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten proves the contract fails closed
-// on the one reading a client must be able to trust: a commission that is not its rate times the total
-// sold is a number this server never wrote, so it is refused instead of reaching the screen.
+// on the one reading a client must be able to trust: a commission that is not its rate times the battery
+// base is a number this server never wrote, so it is refused instead of reaching the screen (S1-S4).
 func TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten(t *testing.T) {
 	rate := closings.Percent("12.50")
 	sold := closings.Money("140.00")
+	base := closings.Money("100.00")
 	impossible := closings.Percent("101.00")
 	shapes := map[string]closings.MetricsToday{
-		"a commission that is not its rate times the total": {
+		"a commission that is not its rate times the base": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &rate, Sold: sold, Commission: closings.Money("99.00")},
+			Rate: &rate, Sold: sold, CommissionBase: base, Commission: closings.Money("99.00")},
 		"a commission without a rate": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: nil, Sold: sold, Commission: closings.Money("17.50")},
+			Rate: nil, Sold: sold, CommissionBase: base, Commission: closings.Money("17.50")},
 		"a zero commission with a rate that produces one": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &rate, Sold: sold, Commission: closings.Money("0.00")},
+			Rate: &rate, Sold: sold, CommissionBase: base, Commission: closings.Money("0.00")},
 		"a rate that is not a percentage": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &impossible, Sold: sold, Commission: closings.Money("17.50")},
+			Rate: &impossible, Sold: sold, CommissionBase: base, Commission: closings.Money("17.50")},
 		"a total sold that is not money": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &rate, Sold: closings.Money("-0.001"), Commission: closings.Money("17.50")},
+			Rate: &rate, Sold: closings.Money("-0.001"), CommissionBase: base,
+			Commission: closings.Money("17.50")},
+		// The base is a published amount of its own: a shape that omits it, or states it with the
+		// shape of a rate, is an answer this read could not have written (S2, S4).
+		"a base that is not money": {
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
+			Rate: &rate, Sold: sold, CommissionBase: closings.Money(""),
+			Commission: closings.Money("17.50")},
 	}
 	for name, today := range shapes {
 		if _, err := metricsTodayRecord(today); !errors.Is(err, closings.ErrUnavailable) {
 			t.Fatalf("%s must be refused as unavailable, got %v", name, err)
 		}
 	}
-	// The reading the store does write is admitted, and it is the settled rule beside it.
+	// The reading the store does write is admitted, and it is the settled rule beside it: the rate over
+	// the batteries of the window, with every sale of the window published as `sold` (S1, S4).
 	admitted, err := metricsTodayRecord(closings.MetricsToday{
 		Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-		Rate: &rate, Sold: sold, Commission: closings.Money("17.50")})
-	if err != nil || admitted.Commission != "17.50" || admitted.Rate == nil ||
-		*admitted.Rate != "12.50" || admitted.Sold != "140.00" {
+		Rate: &rate, Sold: sold, CommissionBase: base, Commission: closings.Money("12.50")})
+	if err != nil || admitted.Commission != "12.50" || admitted.Rate == nil ||
+		*admitted.Rate != "12.50" || admitted.Sold != "140.00" || admitted.CommissionBase != "100.00" {
 		t.Fatalf("a consistent commission must be published: %+v %v", admitted, err)
 	}
 }
@@ -1380,5 +1469,198 @@ func TestMetricsPeriodSelectorPublishesTheColumnInstants(t *testing.T) {
 				t.Fatalf("%s of %s is not the instant the column holds: %q", name, period.Kind, *bound)
 			}
 		}
+	}
+}
+
+// TestMetricsHTTPCurrentWindow proves the computed period over the route (S3-S7): a branch with two
+// closed settlements and no live one publishes the window first, answers it with the live origin, the
+// three accounts a settlement states as null and the money, the ranking and the total of its own sales;
+// a live settlement takes that entry away, because it already covers the same window as «En curso».
+func TestMetricsHTTPCurrentWindow(t *testing.T) {
+	f := metricsFixture(t)
+	first := f.closeSettlement(t, 3,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"arranque del período"}`)
+	// The branch sells one battery between the two closures, which the second acta states.
+	if _, err := f.prices.Write(f.ctx, auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}},
+		pricing.WriteInput{CatalogEntryID: 1, MinPrice: "85000.00", SuggestedPrice: "96000.00",
+			BranchIDs: []int64{3}}); err != nil {
+		t.Fatalf("the price of the battery could not be written: %v", err)
+	}
+	if w := f.serve(t, f.request(3, "POST", "/api/sales", saleBody(1, 1, "96000.00", 6))); w.Code != 201 {
+		t.Fatalf("the branch must sell between settlements: %d %s", w.Code, w.Body.String())
+	}
+	second := f.closeSettlement(t, 3,
+		`{"counted_cash":"96100.00","contributed_cash":"0.00","closing_cash":"96100.00","observation":"segundo corte"}`)
+	if first.ID >= second.ID {
+		t.Fatalf("the fixture must close two settlements in order: %d then %d", first.ID, second.ID)
+	}
+	// The window's own sale, after the last cut: two units and 192000.00 in cash.
+	if w := f.serve(t, f.request(3, "POST", "/api/sales", saleBody(1, 2, "96000.00", 6))); w.Code != 201 {
+		t.Fatalf("the branch must sell after the last cut: %d %s", w.Code, w.Body.String())
+	}
+	var cut time.Time
+	if err := f.p.QueryRow(f.ctx, `SELECT cut_at FROM branch_closings WHERE id=$1`,
+		second.ID).Scan(&cut); err != nil {
+		t.Fatalf("the cut of the last closed settlement could not be read: %v", err)
+	}
+
+	answer := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=current", "")), 200)
+	if answer.Source != "live" {
+		t.Fatalf("a computed window states the live origin, got %q", answer.Source)
+	}
+	// S4: the chosen period is the window the selector publishes: its kind, no settlement, no end and
+	// the exact words, starting at the cut of the last closed settlement.
+	window := answer.Period
+	if window.Kind != "current" || window.ClosingID != nil || window.To != nil ||
+		window.From == nil || window.Label != "Desde el último corte" {
+		t.Fatalf("the chosen period must be the computed window: %+v", window)
+	}
+	if want := cut.UTC().Format(time.RFC3339Nano); *window.From != want {
+		t.Fatalf("the window must start at %s and published %s", want, *window.From)
+	}
+	// S5: a window has no acta, so the three accounts a settlement states are null.
+	if answer.Cash != nil || answer.Fund != nil || answer.Materials != nil {
+		t.Fatalf("a window states no drawer, no envelope and no material: %+v %+v %+v",
+			answer.Cash, answer.Fund, answer.Materials)
+	}
+	// The money, the volume and the commission of the window: the sale after the last cut only. The
+	// window sold only batteries, so its share is the whole total (S2).
+	if answer.Sales.Total != "192000.00" || answer.Sales.Batteries != "192000.00" ||
+		answer.Sales.Cash != "192000.00" || answer.Sales.Card != "0.00" ||
+		answer.Sales.Sales != 1 || answer.Sales.Units != 2 {
+		t.Fatalf("the window counts only the sales after its cut: %+v", answer.Sales)
+	}
+	// S1-S4: the base is the battery sales of the window, which here are the whole sale of the window.
+	if answer.Today.Sold != answer.Sales.Total || answer.Today.Sold != "192000.00" ||
+		answer.Today.CommissionBase != "192000.00" ||
+		answer.Today.Commission != answer.Sales.Commission {
+		t.Fatalf("the window and today must state one money: %+v %+v", answer.Sales, answer.Today)
+	}
+	// The ranking is the one of the same window.
+	if len(answer.Top) != 1 || answer.Top[0].Units != 2 || answer.Top[0].Money != "192000.00" ||
+		answer.Top[0].Brand == nil || *answer.Top[0].Brand != "CAR" {
+		t.Fatalf("the ranking of the window must be its own sales: %+v", answer.Top)
+	}
+	// S4: the window is published first, then the settlements newest first, then the whole history.
+	if len(answer.Periods) != 4 || answer.Periods[0].Kind != "current" ||
+		answer.Periods[1].Kind != "settlement" || answer.Periods[2].Kind != "settlement" ||
+		answer.Periods[3].Kind != "all" {
+		t.Fatalf("the selector must publish the window and then the settlements: %+v", answer.Periods)
+	}
+	if answer.Periods[0].ClosingID != nil || answer.Periods[0].To != nil ||
+		answer.Periods[0].From == nil || *answer.Periods[0].From != *window.From ||
+		answer.Periods[0].Label != "Desde el último corte" {
+		t.Fatalf("the window must be published as the chosen period publishes it: %+v",
+			answer.Periods[0])
+	}
+	if answer.Periods[1].ClosingID == nil || *answer.Periods[1].ClosingID != second.ID ||
+		answer.Periods[1].From == nil || answer.Periods[1].To == nil ||
+		answer.Periods[2].ClosingID == nil || *answer.Periods[2].ClosingID != first.ID {
+		t.Fatalf("the settlements must descend newest first: %+v", answer.Periods)
+	}
+	// S3: reading the window creates, opens and proposes nothing.
+	stored := int64(0)
+	if err := f.p.QueryRow(f.ctx, `SELECT count(*) FROM branch_closings
+ WHERE branch_location_id=3`).Scan(&stored); err != nil || stored != 2 {
+		t.Fatalf("reading the window must not settle anything: %d %v", stored, err)
+	}
+
+	// S4: a live settlement covers that same window as «En curso», so the entry is not published and
+	// asking for it is a period the branch does not have (S7).
+	f.open(t, 3)
+	withLive := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=all", "")), 200)
+	if len(withLive.Periods) != 4 || withLive.Periods[2].Kind != "open" ||
+		withLive.Periods[3].Kind != "all" {
+		t.Fatalf("the selector must publish the live period: %+v", withLive.Periods)
+	}
+	for _, entry := range withLive.Periods {
+		if entry.Kind == "current" {
+			t.Fatalf("a live settlement takes the window away: %+v", withLive.Periods)
+		}
+	}
+	if w := f.serve(t, f.request(3, "GET", "/api/metrics?period=current", "")); w.Code != 404 ||
+		w.Body.String() != "{\"error\":\"not_found\"}\n" {
+		t.Fatalf("the window of a branch inside a settlement is not found: %d %s", w.Code,
+			w.Body.String())
+	}
+}
+
+// TestMetricsHTTPCurrentWindowRefusals proves the token obeys the selector's own rules (S4, S7): a
+// branch with no closed settlement has no window to offer, the token is judged exactly like the other
+// periods when the query is not the one this contract writes, and a refused read leaves the branch as
+// it was.
+func TestMetricsHTTPCurrentWindowIsPublishedOnEveryRead(t *testing.T) {
+	f := metricsFixture(t)
+	f.closeSettlement(t, 3,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"arranque del período"}`)
+	// The screen opens on the whole history, and that read is the one that has to publish the window:
+	// a period the branch can choose has to be offered by the read that publishes the selector (S4).
+	answer := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=all", "")), 200)
+	if answer.Period.Kind != "all" {
+		t.Fatalf("the whole history must still be the chosen period: %+v", answer.Period)
+	}
+	if len(answer.Periods) != 3 || answer.Periods[0].Kind != "current" ||
+		answer.Periods[1].Kind != "settlement" || answer.Periods[2].Kind != "all" {
+		t.Fatalf("the window must be published first on every read: %+v", answer.Periods)
+	}
+	if answer.Periods[0].Label != "Desde el último corte" || answer.Periods[0].ClosingID != nil ||
+		answer.Periods[0].To != nil || answer.Periods[0].From == nil {
+		t.Fatalf("the published window must name no settlement and no end: %+v", answer.Periods[0])
+	}
+	// The published entry is the period the contract then reads when it is chosen.
+	chosen := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=current", "")), 200)
+	if chosen.Period.Kind != "current" || chosen.Period.From == nil ||
+		*chosen.Period.From != *answer.Periods[0].From {
+		t.Fatalf("the chosen window must be the published one: %+v %+v", chosen.Period, answer.Periods[0])
+	}
+	// A settlement read publishes it too: the selector does not depend on what was asked for.
+	settlement := metricsAnswer(t, f.serve(t, f.request(3, "GET",
+		fmt.Sprintf("/api/metrics?period=%d", *answer.Periods[1].ClosingID), "")), 200)
+	if len(settlement.Periods) != 3 || settlement.Periods[0].Kind != "current" {
+		t.Fatalf("a settlement read must publish the window first too: %+v", settlement.Periods)
+	}
+}
+
+func TestMetricsHTTPCurrentWindowRefusals(t *testing.T) {
+	f := metricsFixture(t)
+	// The branch never closed a settlement: its selector is the whole history and it has no window.
+	answer := metricsAnswer(t, f.serve(t, f.request(2, "GET", "/api/metrics?period=all", "")), 200)
+	if len(answer.Periods) != 1 || answer.Periods[0].Kind != "all" {
+		t.Fatalf("a branch without settlements offers its history only: %+v", answer.Periods)
+	}
+	if w := f.serve(t, f.request(2, "GET", "/api/metrics?period=current", "")); w.Code != 404 ||
+		w.Body.String() != "{\"error\":\"not_found\"}\n" {
+		t.Fatalf("the window of a branch without a closed settlement is not found: %d %s", w.Code,
+			w.Body.String())
+	}
+	// Inside a live settlement there is still no cut to start from, and the live period is the one the
+	// selector offers.
+	f.open(t, 2)
+	answer = metricsAnswer(t, f.serve(t, f.request(2, "GET", "/api/metrics?period=all", "")), 200)
+	if len(answer.Periods) != 2 || answer.Periods[0].Kind != "open" ||
+		answer.Periods[1].Kind != "all" {
+		t.Fatalf("a branch inside a settlement offers it and the history: %+v", answer.Periods)
+	}
+	if w := f.serve(t, f.request(2, "GET", "/api/metrics?period=current", "")); w.Code != 404 ||
+		w.Body.String() != "{\"error\":\"not_found\"}\n" {
+		t.Fatalf("a branch inside a settlement has no window: %d %s", w.Code, w.Body.String())
+	}
+	// The token is a token of this selector and not a licence: the query is judged exactly like the
+	// other periods, so a repeated, foreign or bare key is a rejected request.
+	before := f.serve(t, f.request(2, "GET", "/api/metrics?period=all", "")).Body.String()
+	for name, query := range map[string]string{
+		"repeated token":  "period=current&period=current",
+		"foreign key":     "period=current&page=1",
+		"bare separator":  "period=current&",
+		"token and an id": "period=current&period=1",
+	} {
+		w := f.serve(t, f.request(2, "GET", "/api/metrics?"+query, ""))
+		if w.Code != 400 || w.Body.String() != "{\"error\":\"invalid_request\"}\n" {
+			t.Fatalf("%s must be an invalid request, got %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	// Nothing the refused reads asked for changed the answer of the branch.
+	if after := f.serve(t, f.request(2, "GET", "/api/metrics?period=all", "")).Body.String(); after != before {
+		t.Fatalf("a refused read changed the answer: %s want %s", after, before)
 	}
 }

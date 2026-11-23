@@ -1610,9 +1610,13 @@ type closingCorrectionDTO struct {
 // collected and never holds in its drawer (S13). The offer's own period is frozen, so the
 // drawer it states is published as it was offered and never recomputed against today's rates.
 type closingOfferDTO struct {
-	PeriodStart           string  `json:"period_start"`
-	CutAt                 string  `json:"cut_at"`
-	SalesTotal            string  `json:"sales_total"`
+	PeriodStart string `json:"period_start"`
+	CutAt       string `json:"cut_at"`
+	SalesTotal  string `json:"sales_total"`
+	// CommissionBase is the battery sales of the offer's period: the exact amount its commission was
+	// computed on, published beside a sales_total that keeps counting every line (S1-S4). It is null
+	// for an offer stored before that rule.
+	CommissionBase        *string `json:"commission_base"`
 	CommissionRatePercent string  `json:"commission_rate_percent"`
 	CommissionAmount      string  `json:"commission_amount"`
 	CashSales             string  `json:"cash_sales"`
@@ -1655,32 +1659,36 @@ type closingRoundDTO struct {
 // `cash_effective` and is never subtracted a second time. commission_amount and the electronic
 // collections are reported beside them and are added to none of them.
 type closingDTO struct {
-	ID                    int64                 `json:"id"`
-	BranchLocationID      int64                 `json:"branch_location_id"`
-	BranchName            string                `json:"branch_name"`
-	Status                string                `json:"status"`
-	PeriodStart           string                `json:"period_start"`
-	CutAt                 string                `json:"cut_at"`
-	ClosedAt              *string               `json:"closed_at"`
-	CommissionRatePercent *string               `json:"commission_rate_percent"`
-	OpeningCash           string                `json:"opening_cash"`
-	CashSales             string                `json:"cash_sales"`
-	CashExpenses          string                `json:"cash_expenses"`
-	CashEffective         string                `json:"cash_effective"`
-	ExpectedCash          string                `json:"expected_cash"`
-	CountedCash           *string               `json:"counted_cash"`
-	CashDifference        *string               `json:"cash_difference"`
-	ContributedCash       string                `json:"contributed_cash"`
-	ClosingCash           *string               `json:"closing_cash"`
-	TakenCash             *string               `json:"taken_cash"`
-	SalesTotal            string                `json:"sales_total"`
-	CommissionAmount      string                `json:"commission_amount"`
-	CardTotal             string                `json:"card_total"`
-	TransferTotal         string                `json:"transfer_total"`
-	QRTotal               string                `json:"qr_total"`
-	Observation           string                `json:"observation"`
-	OpenedByAccountID     int64                 `json:"opened_by_account_id"`
-	CountLines            []closingCountLineDTO `json:"count_lines"`
+	ID                    int64   `json:"id"`
+	BranchLocationID      int64   `json:"branch_location_id"`
+	BranchName            string  `json:"branch_name"`
+	Status                string  `json:"status"`
+	PeriodStart           string  `json:"period_start"`
+	CutAt                 string  `json:"cut_at"`
+	ClosedAt              *string `json:"closed_at"`
+	CommissionRatePercent *string `json:"commission_rate_percent"`
+	OpeningCash           string  `json:"opening_cash"`
+	CashSales             string  `json:"cash_sales"`
+	CashExpenses          string  `json:"cash_expenses"`
+	CashEffective         string  `json:"cash_effective"`
+	ExpectedCash          string  `json:"expected_cash"`
+	CountedCash           *string `json:"counted_cash"`
+	CashDifference        *string `json:"cash_difference"`
+	ContributedCash       string  `json:"contributed_cash"`
+	ClosingCash           *string `json:"closing_cash"`
+	TakenCash             *string `json:"taken_cash"`
+	SalesTotal            string  `json:"sales_total"`
+	// CommissionBase is the base the commission was computed on: the battery sales of the period, or
+	// null for an acta recorded before that rule, which keeps the commission it settled with instead of
+	// a backfilled number nobody multiplied (S5, S6).
+	CommissionBase    *string               `json:"commission_base"`
+	CommissionAmount  string                `json:"commission_amount"`
+	CardTotal         string                `json:"card_total"`
+	TransferTotal     string                `json:"transfer_total"`
+	QRTotal           string                `json:"qr_total"`
+	Observation       string                `json:"observation"`
+	OpenedByAccountID int64                 `json:"opened_by_account_id"`
+	CountLines        []closingCountLineDTO `json:"count_lines"`
 	// MaterialLines is the third account of the document (S7, S8, S9): what the period bought of every
 	// used model and of every scrap material, what the warehouse counted of it, the difference between
 	// the two and the quantity that goes to the warehouse. The expected quantity is the fact of the
@@ -2124,6 +2132,21 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 	if !ok {
 		return unavailable()
 	}
+	// The base is the amount the commission was computed on: null for an acta recorded before that
+	// rule (S6, S8), and -- when the document states it -- the one number the commission beside it must
+	// produce with the frozen rate, by the settlement's own single rounding (S3, S5). A document whose
+	// base and commission disagree is a shape this read could not have written, so it is never shown to
+	// an operator.
+	commissionBase, ok := closingOptionalAmountRecord(closing.CommissionBase)
+	if !ok {
+		return unavailable()
+	}
+	if closing.CommissionBase != nil && rate != nil {
+		settled, err := closings.Commission(*closing.CommissionBase, closings.Percent(*rate))
+		if err != nil || settled != closing.CommissionAmount {
+			return unavailable()
+		}
+	}
 	// The derived numbers are published as they are computed, and only from the facts that
 	// produce them: a stored shape that disagrees is never shown to an operator. The expectation is the
 	// drawer's ONE rule over this window -- opening, the cash its sales collected and the signed effect of
@@ -2320,8 +2343,9 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		CashExpenses: amounts[2], CashEffective: effectiveText, ExpectedCash: expectedText,
 		CountedCash:    countedCash,
 		CashDifference: differenceText, ContributedCash: amounts[8], ClosingCash: closingCash,
-		TakenCash: takenText, SalesTotal: amounts[3], CommissionAmount: amounts[4],
-		CardTotal: amounts[5], TransferTotal: amounts[6], QRTotal: amounts[7],
+		TakenCash: takenText, SalesTotal: amounts[3], CommissionBase: commissionBase,
+		CommissionAmount: amounts[4],
+		CardTotal:        amounts[5], TransferTotal: amounts[6], QRTotal: amounts[7],
 		Observation: closing.Observation, OpenedByAccountID: closing.OpenedByAccountID,
 		PurchaseFundOpening: purchaseFundOpening, PurchasesTotal: purchasesTotal,
 		PurchasesCash: purchasesCash, PurchaseFundExpected: purchaseFundExpectedText,
@@ -2525,7 +2549,14 @@ func closingOfferRecord(payload closings.ProposalPayload) (closingOfferDTO, bool
 	if err != nil || string(rate) != string(payload.CommissionRatePercent) {
 		return closingOfferDTO{}, false
 	}
-	commission, err := closings.Commission(payload.SalesTotal, rate)
+	// The commission is the frozen rate over the base the offer states: the batteries of the period
+	// when the offer records them (S1-S5), and the whole sale for an offer stored before this rule,
+	// which was computed that way and is never rewritten (S6, S8).
+	base := payload.SalesTotal
+	if payload.CommissionBase != nil {
+		base = *payload.CommissionBase
+	}
+	commission, err := closings.Commission(base, rate)
 	if err != nil || commission != payload.CommissionAmount {
 		return closingOfferDTO{}, false
 	}
@@ -2581,8 +2612,13 @@ func closingOfferRecord(payload closings.ProposalPayload) (closingOfferDTO, bool
 		lines = append(lines, closingOfferLineDTO{VariantID: line.VariantID,
 			ExpectedQuantity: line.ExpectedQuantity, CountedQuantity: line.CountedQuantity})
 	}
+	commissionBase, ok := closingOptionalAmountRecord(payload.CommissionBase)
+	if !ok {
+		return closingOfferDTO{}, false
+	}
 	return closingOfferDTO{PeriodStart: periodStart, CutAt: cutAt, SalesTotal: amounts[0],
-		CommissionRatePercent: string(rate), CommissionAmount: amounts[1], CashSales: amounts[2],
+		CommissionBase: commissionBase, CommissionRatePercent: string(rate),
+		CommissionAmount: amounts[1], CashSales: amounts[2],
 		CashExpenses: amounts[3], CardTotal: amounts[4], TransferTotal: amounts[5], QRTotal: qrTotal,
 		CountedCash: countedCash, ContributedCash: contributed, ClosingCash: closingCash,
 		PurchaseFundCounted: purchaseCounted, PurchaseFundCash: purchaseCash,

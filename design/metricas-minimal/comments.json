@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "comments": [
+    {
+      "id": "kkm2g118",
+      "file": "01-cuatro-cifras.html",
+      "selector": "body > div > div > main > section:nth-of-type(3)",
+      "excerpt": "RECAMBIO ENTREGADO Cobre 92,3 kg Aluminio 61,0 kg Plomo 45,7 kg Bronce 15,5 kg Total 214,5 kg",
+      "comment": "que es esto?",
+      "createdAt": "2026-11-23T14:17:37.736Z",
+      "status": "resolved",
+      "sentAt": "2026-11-23T14:17:37.770Z",
+      "resolvedAt": "2026-11-23T14:18:11.718Z",
+      "resolution": "Retitulé la tira: «Recambio entregado» era un rótulo falso (recambio es lo que el Almacén deja a la sucursal). Ahora dice «Chatarra entregada», que es el desglose en kg de los 214,5 kg de la cifra «Material entregado»."
+    },
+    {
+      "id": "c6l99wyk",
+      "file": "01-cuatro-cifras.html",
+      "selector": "body > div > div > main > div:nth-of-type(3)",
+      "excerpt": "Métricas 12/11 Plata del período $ 4.286.400 Caja entregada $ 1.877.800 Fondo que queda $ 200.000 Material entregado 78 u · 214,5 kg Efectivo en el cajón $ 241.900 Fondo disponible $ 200.000",
+      "comment": "esta seccion de aqui no es redundante?",
+      "createdAt": "2026-11-23T14:18:48.667Z",
+      "status": "resolved",
+      "sentAt": "2026-11-23T14:18:48.697Z",
+      "resolvedAt": "2026-11-23T14:19:44.209Z",
+      "resolution": "Sí, era la misma pantalla repetida como maqueta de celular. Saqué el marco de 390 px y lo reemplacé por reglas responsive reales: a ≤900 px la pantalla se apila sola (figuras, hoy, mix y ranking), verificado a 390 px sin scroll horizontal."
+    }
+  ]
+}

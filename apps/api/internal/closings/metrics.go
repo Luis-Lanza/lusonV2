@@ -20,17 +20,29 @@ import (
 // closing document itself, so the two screens can never disagree about the same act.
 
 // MetricsPeriod names the period a metrics read covers. A period is a settlement — closed or
-// live — named by its closing, or the whole history of the branch: never a calendar month.
+// live — named by its closing, the whole history of the branch, or the computed window from the cut
+// of its last closed settlement to the instant of the read: never a calendar month.
 type MetricsPeriod struct {
 	ClosingID *int64
 	History   bool
+	// Window is the computed period the selector publishes as «Desde el último corte» (S3): from the
+	// cut of the last closed settlement of the branch to the moment of the read. It names no document
+	// — reading it creates, opens and proposes nothing — and it is not a settlement, so it can never
+	// be combined with one.
+	Window bool
 }
 
 // MetricsSales is the money and the volume of the period: the collection by payment method, the
 // commission the branch earned, the number of sales that produced it and the batteries it sold.
 // Cash is the drawer's money; card, transfer and QR never entered it.
 type MetricsSales struct {
-	Total      Money
+	Total Money
+	// Batteries is the part of Total the period sold as batteries: the subtotal of the sale lines whose
+	// catalogue entry is of the battery kind, over the same window as Total. It is read from the sales
+	// themselves -- joined through the line's variant to its catalogue entry -- and never from the acta,
+	// so a closed settlement publishes the battery share of its own immutable stretch beside the money its
+	// acta froze, and the client states the rest as other products. It is never greater than Total (S2, S3).
+	Batteries  Money
 	Cash       Money
 	Card       Money
 	Transfer   Money
@@ -142,13 +154,17 @@ type MetricsToday struct {
 	// Rate is the commission the warehouse configured for this branch, or nil when it never gave it
 	// one: a rate that does not exist is stated as its absence and never as a zero percentage (S20).
 	Rate *Percent
-	// Sold is the total the branch sold since that cut, the exact term the commission is computed on,
-	// and Commission is that rate times that total rounded once -- the settlement's own rule (S18).
-	// Neither is money in a box: the commission is settled when the settlement is proposed and until
-	// then it is what the branch is earning, not what it holds (S19).
-	Sold       Money
-	Commission Money
-	Movements  []MetricsMovement
+	// Sold is the total the branch sold since that cut -- every sale of the window, batteries and other
+	// products alike -- and CommissionBase is the part of it the commission is paid on: the subtotal of
+	// the lines whose catalogue entry is a battery (S1, S2, S4). "la comision debe ser solamente de la
+	// venta de baterias, la venta de 'otros productos' como agua acidulada no cuentan para la comision"
+	// (S1). Commission is that rate times that base rounded once -- the settlement's own rule (S18).
+	// None of the three is money in a box: the commission is settled when the settlement is proposed
+	// and until then it is what the branch is earning, not what it holds (S19).
+	Sold           Money
+	CommissionBase Money
+	Commission     Money
+	Movements      []MetricsMovement
 }
 
 // MetricsFundToday is the purchase envelope of the branch as it stands today, stated whatever period
@@ -229,10 +245,18 @@ func (s *Store) Metrics(ctx context.Context, actor auth.Identity, period Metrics
 		return Metrics{}, ErrForbidden
 	}
 	if period.History {
-		if period.ClosingID != nil {
+		if period.ClosingID != nil || period.Window {
 			return Metrics{}, ErrInvalid
 		}
 		return s.historyMetrics(ctx, int64(actor.Location.ID))
+	}
+	if period.Window {
+		// The computed window is a stretch of time of the branch and never a document: a closing id
+		// beside it would be two periods in one request, which this read does not answer.
+		if period.ClosingID != nil {
+			return Metrics{}, ErrInvalid
+		}
+		return s.windowMetrics(ctx, int64(actor.Location.ID))
 	}
 	if period.ClosingID == nil || *period.ClosingID < 1 {
 		return Metrics{}, ErrInvalid
@@ -375,15 +399,90 @@ func (s *Store) historyMetrics(ctx context.Context, branch int64) (Metrics, erro
 		FundToday: fundToday}, nil
 }
 
+// windowMetrics reads the computed period of the branch: from the cut of its last closed settlement to
+// the instant of the read (S3). Reading it creates, opens and proposes nothing — a live settlement is a
+// document of its own and this read never touches it — and it states no drawer, no envelope and no
+// material, because a window has no acta to freeze them (S5). The money, the ranking, the shelf and the
+// two boxes of today are read inside one read-only repeatable snapshot, so the window and the drawer of
+// today describe one instant and the answer cannot contradict itself (S6).
+func (s *Store) windowMetrics(ctx context.Context, branch int64) (Metrics, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Metrics{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	// The window starts at the cut of the last closed settlement, which is the instant the drawer and
+	// the envelope of today start from: the same reader resolves it, so the three of them name one
+	// instant and never three.
+	today, err := todayMetrics(ctx, tx, branch)
+	if err != nil {
+		return Metrics{}, err
+	}
+	if today.Since == nil {
+		// A branch that never closed a settlement has no cut to start from: the window is not a period
+		// it has (S7).
+		return Metrics{}, ErrNotFound
+	}
+	from := *today.Since
+	sales, err := salesFacts(ctx, tx, branch, &from, nil)
+	if err != nil {
+		return Metrics{}, err
+	}
+	// The commission of the window is the one the branch is earning over it -- the rate it was
+	// configured times the total it sold, rounded once by the settlement's own rule -- and never a
+	// second arithmetic of the same money (S5, S18).
+	sales.Commission = today.Commission
+	if err := sales.valid(); err != nil {
+		return Metrics{}, err
+	}
+	// S6: the money of the window and the total the same answer says the branch sold since that cut
+	// are one reading of one window, so they agree or this read answers nothing.
+	if sales.Total != today.Sold {
+		return Metrics{}, ErrUnavailable
+	}
+	top, err := topModels(ctx, tx, branch, &from, nil)
+	if err != nil {
+		return Metrics{}, err
+	}
+	stock, err := stockUnits(ctx, tx, branch)
+	if err != nil {
+		return Metrics{}, err
+	}
+	fundToday, err := fundTodayMetrics(ctx, tx, branch)
+	if err != nil {
+		return Metrics{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Metrics{}, fail(ctx)
+	}
+	// A window has no acta, so no drawer, no envelope and no material sheet are stated: the three are
+	// null here instead of a zero somebody never counted (S5).
+	return Metrics{Source: metricsSourceLive, Sales: sales, Top: top, Stock: stock, Today: today,
+		FundToday: fundToday}, nil
+}
+
 // valid admits the money and the volume of a period as facts: a negative amount is not a
 // collection, and a negative count is not a sale.
 func (m MetricsSales) valid() error {
-	for _, amount := range []Money{m.Total, m.Cash, m.Card, m.Transfer, m.QR, m.Commission} {
+	for _, amount := range []Money{m.Total, m.Batteries, m.Cash, m.Card, m.Transfer, m.QR,
+		m.Commission} {
 		if _, ok := amountCents(amount); !ok {
 			return ErrUnavailable
 		}
 	}
 	if m.Sales < 0 || m.Units < 0 {
+		return ErrUnavailable
+	}
+	// The battery share is a part of the period and never a second total: a share above the total is a
+	// number the two readers of one period -- the sale lines and the acta -- could not have produced (S3).
+	total, _ := amountCents(m.Total)
+	batteries, _ := amountCents(m.Batteries)
+	if batteries > total {
 		return ErrUnavailable
 	}
 	return nil
@@ -395,24 +494,30 @@ func (m MetricsSales) valid() error {
 // it -- but the history has no closing to read, so the same statement answers for it.
 func salesFacts(ctx context.Context, q querier, branch int64, from, to *time.Time) (MetricsSales, error) {
 	where, args := windowOf(branch, from, to)
-	var total, cash, card, transfer, qr string
+	var total, batteries, cash, card, transfer, qr string
 	var sales, units int64
 	err := q.QueryRow(ctx, `SELECT
  coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
         WHERE `+where+`),0)::numeric(12,2)::text,
+ coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
+        JOIN catalog_variants variant ON variant.id=line.variant_id
+        JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
+        WHERE `+where+` AND entry.kind='battery'),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.cash_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.card_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.transfer_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.qr_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  (SELECT count(*) FROM sales sale WHERE `+where+`),
  coalesce((SELECT sum(line.quantity) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
-        WHERE `+where+`),0)`, args...).Scan(&total, &cash, &card, &transfer, &qr, &sales, &units)
+        WHERE `+where+`),0)`, args...).Scan(&total, &batteries, &cash, &card, &transfer, &qr,
+		&sales, &units)
 	if err != nil {
 		return MetricsSales{}, fail(ctx)
 	}
-	read := MetricsSales{Total: Money(total), Cash: Money(cash), Card: Money(card),
-		Transfer: Money(transfer), QR: Money(qr), Sales: sales, Units: units}
-	for _, amount := range []Money{read.Total, read.Cash, read.Card, read.Transfer, read.QR} {
+	read := MetricsSales{Total: Money(total), Batteries: Money(batteries), Cash: Money(cash),
+		Card: Money(card), Transfer: Money(transfer), QR: Money(qr), Sales: sales, Units: units}
+	for _, amount := range []Money{read.Total, read.Batteries, read.Cash, read.Card, read.Transfer,
+		read.QR} {
 		if _, ok := amountCents(amount); !ok {
 			return MetricsSales{}, ErrUnavailable
 		}
@@ -547,10 +652,16 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 		today.Opening, today.Since = opening, &cut
 	}
 	// The cash that reached the drawer, the NET expense paid out of it, the signed effect of every
-	// movement of the window that belongs to no settlement, and the total the branch sold: the last one
-	// is not a term of the drawer -- a card sale never enters it -- but it is the base the commission of
-	// the window is computed on, read over the same predicate as the others so they describe one window
-	// and not four (S18).
+	// movement of the window that belongs to no settlement, the total the branch sold and the part of it
+	// that earns a commission: the fourth is not a term of the drawer -- a card sale never enters it --
+	// and the fifth is not a collection either, because a commission is settled when the settlement is
+	// proposed. Both are read over the same predicate as the others so they describe one window and not
+	// five (S4, S18).
+	//
+	// The total counts every sale of the window, of either catalogue kind, which is the money the card
+	// states; the base counts only the lines whose entry is a battery, so a period that sold an other
+	// product -- agua acidulada, say -- earns no commission on it (S1, S2). Only the base is narrowed:
+	// every other reading of this window stays the sum of every sale (S4).
 	//
 	// The expenses and the effect are read from `branch_cash_ledger`, exactly as `periodTotals` reads
 	// them (S4, S13): the view states one signed effect per row, so the expense of the window is
@@ -559,7 +670,7 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 	// transfer rows a settlement writes are excluded by `closing_id IS NULL`: they are the acta's own
 	// facts, already stated by its `contributed_cash` and `taken_cash`, and counting them here as well
 	// would count the same money twice (S5).
-	var sales, expenses, effective, sold string
+	var sales, expenses, effective, sold, base string
 	if err := q.QueryRow(ctx, `SELECT
  coalesce((SELECT sum(sale.cash_amount) FROM sales sale
         WHERE sale.branch_location_id=$1
@@ -573,16 +684,24 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
           AND ($2::timestamptz IS NULL OR ledger.occurred_at >= $2)),0)::numeric(12,2)::text,
  coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
         WHERE sale.branch_location_id=$1
-          AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text`,
-		int16(branch), today.Since).Scan(&sales, &expenses, &effective, &sold); err != nil {
+          AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text,
+ coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
+        JOIN catalog_variants variant ON variant.id=line.variant_id
+        JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
+        WHERE sale.branch_location_id=$1
+          AND ($2::timestamptz IS NULL OR sale.created_at >= $2)
+          AND entry.kind='battery'),0)::numeric(12,2)::text`,
+		int16(branch), today.Since).Scan(&sales, &expenses, &effective, &sold, &base); err != nil {
 		return MetricsToday{}, fail(ctx)
 	}
-	today.Sales, today.Expenses, today.Sold = Money(sales), Money(expenses), Money(sold)
+	today.Sales, today.Expenses, today.Sold, today.CommissionBase =
+		Money(sales), Money(expenses), Money(sold), Money(base)
 	// The amounts are what the branch holds or spent, never a signed reading: anything else is a
 	// persisted state this answer could not have been produced from. The effect of the window is signed
 	// on purpose -- it is the net of aportes, recaudaciones and gastos, and a corrected row reverses one
 	// of them -- so it is judged by its own reading.
-	for _, amount := range []Money{today.Opening, today.Sales, today.Expenses, today.Sold} {
+	for _, amount := range []Money{today.Opening, today.Sales, today.Expenses, today.Sold,
+		today.CommissionBase} {
 		if _, ok := amountCents(amount); !ok {
 			return MetricsToday{}, ErrUnavailable
 		}
@@ -598,7 +717,7 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 		return MetricsToday{}, ErrUnavailable
 	}
 	today.Expected = expected
-	// What the branch is earning so far: the rate the warehouse froze for it times the total it sold
+	// What the branch is earning so far: the rate the warehouse froze for it times the batteries it sold
 	// in this window, rounded exactly once by the settlement's own rule, so the card and the acta of
 	// the period being lived cannot disagree on the arithmetic (S18). A branch the warehouse never
 	// gave a rate to states no rate and earns no commission -- an absence, never a zero percentage
@@ -610,7 +729,7 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 	case err != nil:
 		return MetricsToday{}, fail(ctx)
 	default:
-		commission, err := Commission(today.Sold, rate)
+		commission, err := Commission(today.CommissionBase, rate)
 		if err != nil {
 			return MetricsToday{}, ErrUnavailable
 		}
@@ -851,10 +970,15 @@ func signedQuantityMilli(text string) (int64, bool) {
 
 // windowOf builds the branch predicate of a read, with its window when the period has one. The
 // window is half-open -- [period_start, cut_at) -- exactly like the settlement it comes from, so
-// a sale made at the cut belongs to the next period and never to both.
+// a sale made at the cut belongs to the next period and never to both. A window that states only
+// its start is the computed one: it begins at the cut of the last closed settlement and ends at the
+// instant of the read, so there is no bound to state and no sale is left out (S3).
 func windowOf(branch int64, from, to *time.Time) (string, []any) {
-	if from == nil || to == nil {
+	if from == nil {
 		return "sale.branch_location_id=$1", []any{branch}
+	}
+	if to == nil {
+		return "sale.branch_location_id=$1 AND sale.created_at >= $2", []any{branch, *from}
 	}
 	return "sale.branch_location_id=$1 AND sale.created_at >= $2 AND sale.created_at < $3",
 		[]any{branch, *from, *to}

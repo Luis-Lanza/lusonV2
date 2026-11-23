@@ -40,9 +40,11 @@ export const metricsErrorMessages: Record<MetricsErrorCode, string> = {
 export type MetricsSource = 'settlement' | 'live' | 'history';
 const metricsSources: readonly MetricsSource[] = ['settlement', 'live', 'history'];
 
-/** A period of the selector: a closed settlement, the live one, or the whole history. */
-export type MetricsPeriodKind = 'settlement' | 'open' | 'all';
-const metricsPeriodKinds: readonly MetricsPeriodKind[] = ['settlement', 'open', 'all'];
+/** A period of the selector: the window since the last cut, a closed settlement, the live one, or
+ * the whole history. The window is not a settlement: it is computed from the last closed cut and
+ * never opens or freezes anything (S3, S4). */
+export type MetricsPeriodKind = 'current' | 'settlement' | 'open' | 'all';
+const metricsPeriodKinds: readonly MetricsPeriodKind[] = ['current', 'settlement', 'open', 'all'];
 
 export interface MetricsPeriod {
   readonly kind: MetricsPeriodKind;
@@ -55,6 +57,13 @@ export interface MetricsPeriod {
 /** The money of the period by source; the commission is reported beside the drawer, never inside it. */
 export interface MetricsSales {
   readonly total_cents: bigint;
+  /**
+   * The battery lines of the window, published by the server; every other line is the rest of the
+   * total. It is a reading of its own and never a third total (S1, S2).
+   */
+  readonly batteries_cents: bigint;
+  /** The other products of the window, `total − batteries`, derived here and never published (S3). */
+  readonly other_cents: bigint;
   readonly cash_cents: bigint;
   readonly card_cents: bigint;
   readonly transfer_cents: bigint;
@@ -176,8 +185,14 @@ export interface MetricsToday {
    * of a rate is a state of its own and never a zero percentage (S20).
    */
   readonly rate_percent: string | null;
-  /** The total the branch sold in that window: the base the commission is computed on (S18). */
+  /** The total the branch sold in that window: every line of it, batteries and other products (S4). */
   readonly sold_cents: bigint;
+  /**
+   * The base the commission is computed on: the battery lines of that same window. An other product is
+   * sold and collected but earns nothing, so the base is published beside the total instead of being
+   * assumed to be it (S1, S2, S18).
+   */
+  readonly commission_base_cents: bigint;
   /**
    * What the branch is earning so far, not what it holds: the amount is settled when the settlement is
    * proposed and never enters the drawer or the fund (S19).
@@ -380,6 +395,11 @@ function periodValue(value: unknown): MetricsPeriod {
     if (record.closing_id !== null || record.from !== null || record.to !== null) return invalidResponse();
     return Object.freeze({ kind, closing_id: null, from: null, to: null, label });
   }
+  if (kind === 'current') {
+    // The window since the last cut has no closing of its own and no end: it ends at the read (S3).
+    if (record.closing_id !== null || record.to !== null) return invalidResponse();
+    return Object.freeze({ kind, closing_id: null, from: timestamp(record.from), to: null, label });
+  }
   const closing_id = count(record.closing_id, Number.MAX_SAFE_INTEGER);
   if (closing_id < 1) return invalidResponse();
   const from = timestamp(record.from);
@@ -418,6 +438,9 @@ function periodsValue(value: unknown): readonly MetricsPeriod[] {
     if (seen.has(identity)) return invalidResponse();
     seen.add(identity);
     if (period.kind === 'all' && index !== periods.length - 1) return invalidResponse();
+    // The window since the last cut is the most recent stretch of the branch and is published once,
+    // before every settlement: anywhere else it is not a selector this server wrote (S4).
+    if (period.kind === 'current' && index !== 0) return invalidResponse();
     if (period.kind === 'settlement') {
       // The live settlement is the newest of the branch: a closed one after it, or an ascending
       // closing id, is not the history this server read.
@@ -438,7 +461,8 @@ function sourceValue(value: unknown, kind: MetricsPeriodKind): MetricsSource {
   }
   // The origin is decided by the period: frozen settlement, live settlement, whole history. An
   // answer that pairs them differently is describing another period than the one it names.
-  const expected: MetricsSource = kind === 'settlement' ? 'settlement' : kind === 'open' ? 'live' : 'history';
+  const expected: MetricsSource = kind === 'settlement' ? 'settlement'
+    : kind === 'all' ? 'history' : 'live';
   if (value !== expected) return invalidResponse();
   return expected;
 }
@@ -447,11 +471,19 @@ function sourceValue(value: unknown, kind: MetricsPeriodKind): MetricsSource {
 // The accounts of the period
 // ---------------------------------------------------------------------------------
 
+/**
+ * The money of the period: its total, the battery lines the server published beside it and the other
+ * products the client derives as the rest of that total. A battery money above the total would leave a
+ * negative part, which is no answer this server could have written, so the whole answer is refused (S3).
+ */
 function salesValue(value: unknown): MetricsSales {
-  const record = fields(value, ['total', 'cash', 'card', 'transfer', 'qr', 'commission',
+  const record = fields(value, ['total', 'batteries', 'cash', 'card', 'transfer', 'qr', 'commission',
     'sales', 'units']);
+  const total_cents = wireMoney(record.total, false);
+  const batteries_cents = wireMoney(record.batteries, false);
+  if (batteries_cents > total_cents) return invalidResponse();
   return Object.freeze({
-    total_cents: wireMoney(record.total, false),
+    total_cents, batteries_cents, other_cents: total_cents - batteries_cents,
     cash_cents: wireMoney(record.cash, false),
     card_cents: wireMoney(record.card, false),
     transfer_cents: wireMoney(record.transfer, false),
@@ -664,7 +696,7 @@ function movementValue(value: unknown): MetricsMovement {
  */
 function todayValue(value: unknown): MetricsToday {
   const record = fields(value, ['since', 'opening', 'sales', 'expenses', 'effective', 'expected',
-    'rate', 'sold', 'commission', 'movements']);
+    'rate', 'sold', 'commission_base', 'commission', 'movements']);
   const opening_cents = wireMoney(record.opening, false);
   const sales_cents = wireMoney(record.sales, false);
   const expenses_cents = wireMoney(record.expenses, false);
@@ -672,15 +704,16 @@ function todayValue(value: unknown): MetricsToday {
   const expected_cents = wireMoney(record.expected, true);
   if (expected_cents !== opening_cents + sales_cents + effective_cents) return invalidResponse();
   const sold_cents = wireMoney(record.sold, false);
+  const commission_base_cents = wireMoney(record.commission_base, false);
   const commission_cents = wireMoney(record.commission, false);
   const rate = record.rate === null ? null : wirePercent(record.rate);
-  // The commission is the rate times the total sold, rounded exactly once on that total: the mirror of
+  // The commission is the rate times the battery base, rounded exactly once on that base: the mirror of
   // the server's own arithmetic, so a card that does not add up is refused here instead of being shown
-  // as if someone had written it (S18). A branch without a rate earns nothing, and a commission with no
-  // rate behind it is not a reading this server could have produced (S20).
+  // as if someone had written it (S1, S3). A branch without a rate earns nothing, and a commission with
+  // no rate behind it is not a reading this server could have produced (S20).
   if (rate === null) {
     if (commission_cents !== 0n) return invalidResponse();
-  } else if (commission_cents !== (sold_cents * rate.hundredths + 5000n) / 10000n) {
+  } else if (commission_cents !== (commission_base_cents * rate.hundredths + 5000n) / 10000n) {
     return invalidResponse();
   }
   if (!Array.isArray(record.movements) || record.movements.length > metricsTodayMovements) {
@@ -698,7 +731,7 @@ function todayValue(value: unknown): MetricsToday {
     since: record.since === null ? null : timestamp(record.since),
     opening_cents, sales_cents, expenses_cents, effective_cents, expected_cents,
     rate_percent: rate === null ? null : rate.text,
-    sold_cents, commission_cents,
+    sold_cents, commission_base_cents, commission_cents,
     movements: Object.freeze(movements),
   });
 }
@@ -754,20 +787,24 @@ export function parseMetricsAnswer(raw: string): MetricsAnswer {
   const source = sourceValue(record.source, period.kind);
   const sales = salesValue(record.sales);
   const history = source === 'history';
-  // A drawer and an envelope are closed one settlement at a time: the accumulated history has
-  // nothing to state, and a settlement always states both (S9).
-  if (history !== (record.cash === null) || history !== (record.fund === null)) return invalidResponse();
+  // A drawer and an envelope are closed one settlement at a time: the accumulated history and the
+  // window since the last cut have nothing to state, and a settlement always states both (S9, S5).
+  const actaLess = history || period.kind === 'current';
+  if (actaLess !== (record.cash === null) || actaLess !== (record.fund === null)) return invalidResponse();
   const cash = record.cash === null ? null : cashValue(record.cash);
   const fund = record.fund === null ? null : fundValue(record.fund);
   // The material sheet is the third account: the history has none, and a settlement whose sheet was
   // never seeded publishes none either.
-  if (history && record.materials !== null) return invalidResponse();
+  if (actaLess && record.materials !== null) return invalidResponse();
   const materials = record.materials === null ? null : materialsValue(record.materials);
   const top_models = topModelsValue(record.top_models);
   const stock = stockValue(record.stock);
   // The drawer of today is stated by every source and is never null: it is the drawer of the branch,
   // not a total of the period, and it is the one reading a branch without a settlement open has.
   const today = todayValue(record.today);
+  // The window and the line of today are the same stretch of time: an answer whose two totals
+  // disagree is not describing one window (S6).
+  if (period.kind === 'current' && sales.total_cents !== today.sold_cents) return invalidResponse();
   // The purchase envelope of today is stated by every source too: it is the second money box of the
   // branch, and without an open settlement there is no other screen that states it (S15).
   const fund_today = fundTodayValue(record.fund_today);
@@ -779,9 +816,10 @@ export function parseMetricsAnswer(raw: string): MetricsAnswer {
 // Path and transport
 // ---------------------------------------------------------------------------------
 
-/** The period token this contract reads: the whole history or one positive closing id. */
+/** The period token this contract reads: the window since the last cut, the whole history or one
+ * positive closing id. */
 function metricsPeriodTokenIsValid(token: string): boolean {
-  if (token === 'all') return true;
+  if (token === 'all' || token === 'current') return true;
   return /^[1-9]\d*$/.test(token) && Number.isSafeInteger(Number(token));
 }
 

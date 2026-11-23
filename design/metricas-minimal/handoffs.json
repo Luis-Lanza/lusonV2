@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "01-cuatro-cifras.html",
+  "handoffs": {
+    "01-cuatro-cifras.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-23T14:19:53.990Z",
+      "startedAt": null,
+      "implementedAt": "2026-11-23T14:36:09.087Z",
+      "note": "Rama feat/metricas-minimal: 5 commits (4 de diseño, 1 de implementación). Servidor local-trial levantado en http://localhost:8081 sirviendo el bundle nuevo; la pantalla real ya es esta.",
+      "previewUrl": "http://localhost:8081/"
+    }
+  }
+}

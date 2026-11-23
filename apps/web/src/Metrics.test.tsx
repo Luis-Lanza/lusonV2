@@ -10,15 +10,21 @@ const closedPeriod = (id: number, from: string, to: string) =>
 const livePeriod = (id: number, from: string, to: string) =>
   ({ kind: 'open', closing_id: id, from, to, label: 'En curso' });
 const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
+// The window since the last closed cut: computed at the read, with no closing of its own (S3, S4).
+const currentPeriod = { kind: 'current', closing_id: null, from: '2026-11-01T12:00:00Z', to: null,
+  label: 'Desde el último corte' };
 const closed = closedPeriod(4, '2026-10-20T12:00:00Z', '2026-11-01T12:00:00Z');
 const older = closedPeriod(3, '2026-10-01T12:00:00Z', '2026-10-20T12:00:00Z');
 const live = livePeriod(5, '2026-11-01T12:00:00Z', '2026-11-12T12:00:00Z');
-// The selector the server publishes: the closed settlements newest first, the live one, the history.
-const periods = [closed, older, live, allPeriod];
+// The selector the server publishes for a branch that is not inside a settlement: the window since the
+// last cut first, then the closed settlements newest first, then the whole history (S4).
+const periods = [currentPeriod, closed, older, allPeriod];
+// A branch inside a live settlement has no window to publish: «En curso» covers that same stretch.
+const livePeriods = [closed, live, allPeriod];
 
 const sales = {
-  total: '4286400.00', cash: '1842300.00', card: '1486900.00', transfer: '612200.00',
-  qr: '345000.00', commission: '192888.00', sales: 63, units: 78,
+  total: '4286400.00', batteries: '2100000.00', cash: '1842300.00', card: '1486900.00',
+  transfer: '612200.00', qr: '345000.00', commission: '192888.00', sales: 63, units: 78,
 };
 const cash = {
   opening: '120000.00', sales: '1842300.00', expenses: '84500.00', expected: '1877800.00',
@@ -50,14 +56,14 @@ const topModels = [
 const productModel = { catalog_entry_id: 6, name: 'Agua acidulada', units: 3, money: '150000.00' };
 const stock = { units: 214 };
 
-// The drawer of today, published by every source: what the last cut left, the cash sales after it and
-// the signed movements of its window -- 500000 + 1842300 + (10000 − 2500 − 50000) = 2299800 -- with the
-// ledger rows beside it as the terms that sum is made of (S12, S4).
+// The drawer of today: what the last cut left, the cash sales after it and the signed movements of its
+// window -- 500000 + 1842300 + (10000 − 2500 − 50000) = 2299800 (S12).
 const today = {
   since: '2026-11-01T12:00:00Z', opening: '500000.00', sales: '1842300.00',
   expenses: '2500.00', effective: '-42500.00', expected: '2299800.00',
-  // What the branch is earning so far: 2100000.00 sold since the cut at 12.50% is 262500.00 (S18).
-  rate: '12.50', sold: '2100000.00', commission: '262500.00',
+  // What the branch is earning so far: the rate over the battery base of the window, 12.50% of
+  // 2100000.00 = 262500.00. The window sold no other product, so its base is its total (S3, S18).
+  rate: '12.50', sold: '2100000.00', commission_base: '2100000.00', commission: '262500.00',
   movements: [
     { kind: 'aporte', amount: '10000.00', effective: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
     { kind: 'gasto', amount: '2500.00', effective: '-2500.00', occurred_at: '2026-11-02T09:30:00Z' },
@@ -65,10 +71,8 @@ const today = {
   ],
 };
 
-// The purchase envelope of today, published by every source: what the last cut left in it, the signed
-// effect of the movements of its window and the balance of the book -- 480000 + (−120000) = 360000 -- with
-// the volume those same documents bought (S5, S15-S17). The effect and the cash of the purchases differ,
-// because the window also received an aporte: the card states both and adds up with the first one.
+// The purchase envelope of today: what the last cut left in it, the signed effect of the movements of
+// its window and the balance of the book -- 480000 + (−120000) = 360000 (S5, S15-S17).
 const fundToday = {
   since: '2026-11-01T12:00:00Z', opening: '480000.00', purchases: '150000.00',
   effective: '-120000.00', balance: '360000.00', documents: 4, used_units: 11, scrap_milli: 42500,
@@ -80,8 +84,8 @@ const settlementBody = (overrides: Record<string, unknown> = {}) => JSON.stringi
 });
 const olderBody = () => settlementBody({
   period: older,
-  sales: { ...sales, total: '1000000.00', cash: '1000000.00', card: '0.00', transfer: '0.00',
-    qr: '0.00', commission: '45000.00', sales: 10, units: 12 },
+  sales: { ...sales, total: '1000000.00', batteries: '600000.00', cash: '1000000.00', card: '0.00',
+    transfer: '0.00', qr: '0.00', commission: '45000.00', sales: 10, units: 12 },
   cash: { opening: '0.00', sales: '1000000.00', expenses: '0.00', expected: '1000000.00',
     counted: '1000000.00', difference: '0.00' },
   fund: { opening: '0.00', purchases: '0.00', expected: '0.00', counted: '0.00',
@@ -92,12 +96,22 @@ const olderBody = () => settlementBody({
     capacity_ah: '75', units: 12, money: '1000000.00' }],
 });
 const liveBody = () => JSON.stringify({
-  periods, period: live, source: 'live', sales,
+  periods: livePeriods, period: live, source: 'live', sales,
   cash: { ...cash, counted: null, difference: null },
   fund: { ...fund, counted: null, difference: null, replacement: null },
   materials: { used_units: 78, used_delivered_units: null, scrap_milli: 214500,
     scrap_delivered_milli: null, materials: scrapRows.map(row => ({ ...row, delivered_milli: null })) },
   top_models: topModels, stock, today, fund_today: fundToday,
+});
+// The window since the last cut: the money and the ranking of that stretch, and no acta, so the
+// three accounts are null and the figures say why (S5, S8).
+const currentBody = () => JSON.stringify({
+  periods: [currentPeriod, closed, older, allPeriod], period: currentPeriod, source: 'live', sales,
+  cash: null, fund: null, materials: null,
+  // One window, one total: the period collected what the line of today says was sold, and the battery
+  // base of that same window is the `batteries` the period states beside it (S2, S6).
+  today: { ...today, sold: sales.total },
+  top_models: topModels, stock, fund_today: fundToday,
 });
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   periods, period: allPeriod, source: 'history', sales, cash: null, fund: null, materials: null,
@@ -109,11 +123,18 @@ const defaultRoutes: Route = token => {
   if (token === '4') return json(settlementBody());
   if (token === '3') return json(olderBody());
   if (token === '5') return json(liveBody());
+  if (token === 'current') return json(currentBody());
   if (token === 'all') return json(historyBody());
   throw new Error('Unexpected mocked period: ' + token);
 };
 
-function setup(route: Route = defaultRoutes) {
+const notFound = () => new Response('{"error":"not_found"}',
+  { status: 404, headers: { 'Content-Type': 'application/json' } });
+
+// The screen opens on the window since the last cut (S10), so every branch is read for it first. A
+// route that does not answer it gets the base window; the tests of a branch without one (a live
+// settlement, or no closed settlement at all) pass `notFound` and the screen falls back to history.
+function setup(route: Route = defaultRoutes, current: Route = () => json(currentBody())) {
   const fetch = vi.fn<typeof globalThis.fetch>(async (input, init = {}) => {
     const url = String(input);
     const match = /^\/api\/metrics\?period=(.+)$/.exec(url);
@@ -121,7 +142,7 @@ function setup(route: Route = defaultRoutes) {
     // Reading metrics is a read: the screen never writes, whatever period is on screen.
     expect(init.method ?? 'GET').toBe('GET');
     expect(init.body).toBeUndefined();
-    return route(match[1]);
+    return match[1] === 'current' ? current(match[1]) : route(match[1]);
   });
   render(<Metrics branch="Sucursal A" fetcher={fetch} />);
   const calls = () => fetch.mock.calls.map(([url]) => String(url));
@@ -141,87 +162,182 @@ const panel = (name: string) => screen.getByRole('region', { name });
 afterEach(() => { vi.useRealTimers(); });
 
 describe('branch metrics screen', () => {
-  it('opens on the whole history and states the sales, the ranking and the band of a closed settlement', async () => {
+  it('opens on the window since the last cut and names where its numbers come from', async () => {
     const { calls } = setup();
-    // The screen starts on the only default this contract has: the whole history.
-    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=all']));
-    await selectPeriod('4');
-    expect(calls()).toEqual(['/api/metrics?period=all', '/api/metrics?period=4']);
+    // The screen starts on the window that moves with the branch today (S10).
+    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=current']));
+    expect(await screen.findByText(/se mueve con cada venta/)).toBeInTheDocument();
+    expect(screen.getByText(/Desde el corte del/)).toBeInTheDocument();
+    const first = screen.getByLabelText('Período') as HTMLSelectElement;
+    expect(first.value).toBe('current');
 
-    // Where the numbers come from, in words, beside the control (S6).
+    await selectPeriod('4');
+    expect(calls()).toEqual(['/api/metrics?period=current', '/api/metrics?period=4']);
+    // Where the numbers come from, in words, under the title (S6).
     expect(await screen.findByText(/Números al cierre del/)).toBeInTheDocument();
 
-    const band = panel('Lo que dejó el período');
-    expect(within(band).getByText('Bs 1.877.800,00')).toBeInTheDocument();
-    expect(within(band).getByText('Bs 200.000,00')).toBeInTheDocument();
-    expect(within(band).getByText('78 u · 214,500 kg')).toBeInTheDocument();
+    // Only a period this server published can be asked for, in the server's own order.
+    const select = screen.getByLabelText('Período') as HTMLSelectElement;
+    const offered = within(select).getAllByRole('option').map(option => (option as HTMLOptionElement).value);
+    expect(offered).toEqual(['current', '4', '3', 'all']);
+  });
 
-    const money = panel('Plata del período');
-    expect(within(money).getAllByText('Bs 4.286.400,00').length).toBeGreaterThan(0);
-    expect(within(money).getByText('en 63 ventas')).toBeInTheDocument();
-    expect(within(money).getByText(/Ticket promedio Bs 68\.038,10/)).toBeInTheDocument();
-    expect(within(money).getByText(/78 unidades vendidas/)).toBeInTheDocument();
-    // The collection by method with its share of the total; the commission is reported beside it.
-    expect(within(money).getByText('43,0 %')).toBeInTheDocument();
-    expect(within(money).getByText('34,7 %')).toBeInTheDocument();
-    expect(within(money).getByText(/Bs 192\.888,00/)).toBeInTheDocument();
+  it('opens on the whole history, with no error, when the branch has no window', async () => {
+    // A branch inside a live settlement, or one that never closed a settlement, has no window: the
+    // screen opens on its history instead of showing a fault (S10).
+    const { calls } = setup(defaultRoutes, notFound);
+    await waitFor(() => expect(calls())
+      .toEqual(['/api/metrics?period=current', '/api/metrics?period=all']));
+    expect(await screen.findByText('Todo el historial de la sucursal')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByLabelText('Período') as HTMLSelectElement).value).toBe('all');
+  });
 
-    const drawer = panel('Caja operativa');
-    expect(within(drawer).getByText('Debería haber')).toBeInTheDocument();
-    // The domain has no withdrawals: the row the artboard invented is not on this screen.
-    expect(within(drawer).queryByText('Retiros')).toBeNull();
-    expect(within(drawer).getAllByText('Sin diferencia').length).toBeGreaterThan(0);
+  it('states the period in four figures and keeps no prose of the acta', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
+    await selectPeriod('4');
 
-    const envelope = panel('Fondo de compras');
-    // The envelope closes: the expectation and its count are the same amount, shown twice.
-    expect(within(envelope).getAllByText('Bs 168.000,00').length).toBeGreaterThan(1);
-    expect(within(envelope).getByText('Recambio que dejó el Almacén')).toBeInTheDocument();
+    const figures = panel('Lo que dejó el período');
+    expect(within(figures).getByText('Bs 4.286.400,00')).toBeInTheDocument();
+    expect(within(figures).getByText('63 ventas')).toBeInTheDocument();
+    // The ticket of the period is not a reading of this screen: the figure states the sales only.
+    expect(within(figures).queryByText(/ticket/i)).toBeNull();
+    expect(within(figures).getByText('Bs 1.877.800,00')).toBeInTheDocument();
+    expect(within(figures).getByText('contada · sin diferencia')).toBeInTheDocument();
+    expect(within(figures).getByText('Bs 200.000,00')).toBeInTheDocument();
+    expect(within(figures).getByText('recambio del Almacén')).toBeInTheDocument();
+    expect(within(figures).getByText('78 u · 214,500 kg')).toBeInTheDocument();
+    expect(within(figures).getByText('baterías usadas y chatarra')).toBeInTheDocument();
 
-    // Top 5 by units with the money of each row as the secondary reading (S4).
-    const podium = panel('Más vendidos');
+    // The prose of the acta is gone: no footnote, no formula, no window sentence, no rate sentence.
+    expect(screen.queryByText(/Cómo leer estos números/)).toBeNull();
+    expect(screen.queryByText(/Lo que quedó en el cajón al cerrar el último corte/)).toBeNull();
+    expect(screen.queryByText(/La tasa que fijó el Almacén/)).toBeNull();
+    expect(screen.queryByText(/Cubre/)).toBeNull();
+    expect(screen.queryByText(/período de rendición, con la misma numeración/)).toBeNull();
+    // The ledger of the drawer and the breakdown of both boxes are not on this screen anymore.
+    expect(screen.queryByText(/Movimientos de caja desde el último corte/)).toBeNull();
+    expect(screen.queryByText('Debería haber')).toBeNull();
+    expect(screen.queryByText('Apertura declarada')).toBeNull();
+    expect(screen.queryByText('Recambio que dejó el Almacén')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Caja operativa' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Fondo de compras' })).toBeNull();
+  });
+
+  it('reads the collection of the period by method, with its amount and its share', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
+    await selectPeriod('4');
+    const mix = panel('Cómo se cobró');
+    // One row per method and only its own reading: the total is the figure above, never repeated here.
+    expect(within(mix).getAllByRole('listitem')).toHaveLength(4);
+    expect(within(mix).getByText('Efectivo')).toBeInTheDocument();
+    expect(within(mix).getByText('Bs 1.842.300,00')).toBeInTheDocument();
+    expect(within(mix).getByText('43,0 %')).toBeInTheDocument();
+    expect(within(mix).getByText('34,7 %')).toBeInTheDocument();
+    expect(within(mix).getByText('8,0 %')).toBeInTheDocument();
+    expect(within(mix).queryByText('Total')).toBeNull();
+    // The commission of the period is not a row of this screen: it is settled with the acta.
+    expect(within(mix).queryByText(/Bs 192\.888,00/)).toBeNull();
+  });
+
+  it('states what was sold by kind, with the total as the sum of the two readings', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
+    await selectPeriod('4');
+    const sold = panel('Qué se vendió');
+    // The three readings of the money sold, together and separated: the battery lines, the rest of the
+    // total and the total itself, which is their sum (S1, S4).
+    expect(within(sold).getByText('Baterías')).toBeInTheDocument();
+    expect(within(sold).getByText('Otros productos')).toBeInTheDocument();
+    expect(within(sold).getByText('Total')).toBeInTheDocument();
+    const readings = within(sold).getAllByRole('definition');
+    expect(readings).toHaveLength(3);
+    expect(readings[0]).toHaveTextContent('Bs 2.100.000,00');
+    expect(readings[1]).toHaveTextContent('Bs 2.186.400,00');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+  });
+
+  it('says the absence of battery sales in words and still states the others', async () => {    // A period that sold products and no battery: the row says it in words, never as a zero amount, and
+    // the other products and the total are still stated (S5).
+    setup(token => token === '4'
+      ? json(settlementBody({ sales: { ...sales, batteries: '0.00' } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const sold = panel('Qué se vendió');
+    const readings = within(sold).getAllByRole('definition');
+    expect(readings[0]).toHaveTextContent('Sin ventas');
+    expect(readings[1]).toHaveTextContent('Bs 4.286.400,00');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+    expect(within(sold).queryByText('Bs 0,00')).toBeNull();
+  });
+
+  it('derives the other products as the rest of the total', async () => {
+    // The screen subtracts the two readings it was handed: 4286400.00 − 1875000.00 = 2411400.00, a
+    // number the answer never published (S3).
+    setup(token => token === '4'
+      ? json(settlementBody({ sales: { ...sales, batteries: '1875000.00' } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const readings = within(panel('Qué se vendió')).getAllByRole('definition');
+    expect(readings[0]).toHaveTextContent('Bs 1.875.000,00');
+    expect(readings[1]).toHaveTextContent('Bs 2.411.400,00');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+  });
+
+  it('says a battery-only period sold no other product, without a zero amount', async () => {
+    setup(token => token === '4'
+      ? json(settlementBody({ sales: { ...sales, batteries: sales.total } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const sold = panel('Qué se vendió');
+    const readings = within(sold).getAllByRole('definition');
+    expect(readings[0]).toHaveTextContent('Bs 4.286.400,00');
+    expect(readings[1]).toHaveTextContent('Sin ventas');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+    expect(within(sold).queryByText('Bs 0,00')).toBeNull();
+  });
+
+  it('places what was sold under Cómo se cobró, in the left column of the bottom area', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
+    await selectPeriod('4');
+    const mix = panel('Cómo se cobró');
+    const sold = panel('Qué se vendió');
+    const ranking = panel('Más vendidas');
+    // The two readings of the money share the left column, the sold block under the mix, and the ranking
+    // keeps the right column it always had (S6).
+    expect(mix.parentElement).toBe(sold.parentElement);
+    expect(mix.parentElement?.parentElement).toBe(ranking.parentElement);
+    expect(mix.compareDocumentPosition(sold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sold.compareDocumentPosition(ranking) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('refuses a period whose battery money exceeds its total', async () => {
+    // The other products are the rest of the total, so a battery money above it is a payload the server
+    // could not have written: the whole answer is refused, not shown with a negative reading (S3).
+    setup(token => token === 'all'
+      ? json(historyBody({ sales: { ...sales, batteries: '4286400.01' } }))
+      : json(settlementBody()), notFound);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Respuesta inválida del servidor.');
+    expect(screen.queryByRole('region', { name: 'Qué se vendió' })).toBeNull();
+    expect(screen.queryByText('Bs 4.286.400,00')).toBeNull();
+  });
+
+  it('ranks the period by units with the money of each row and nothing else', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
+    await selectPeriod('4');
+    const podium = panel('Más vendidas');
     const rows = within(podium).getAllByRole('row');
     expect(rows).toHaveLength(6);
     expect(rows[1]).toHaveTextContent('Willard UB 12-75');
+    // A battery keeps the capacity the screen always composed, beside its name.
     expect(rows[1]).toHaveTextContent('75 Ah');
-    expect(within(rows[1]).getByText('28 %')).toBeInTheDocument();
+    expect(rows[1]).toHaveTextContent('22');
     expect(rows[1]).toHaveTextContent('Bs 1.221.000,00');
     expect(rows[5]).toHaveTextContent('Rocket 12-55');
-
-    const scrap = panel('Recambio');
-    expect(within(scrap).getByText('Cobre')).toBeInTheDocument();
-    expect(within(scrap).getByText('214 u')).toBeInTheDocument();
-  });
-
-  it('states the units of the period as units of every catalogue kind', async () => {
-    // The figure is the sum of every kind the period sold (S7), so the label says units and never
-    // batteries alone (S4, S6). The singular is the same label with its own number.
-    setup(token => json(token === 'all' ? historyBody()
-      : settlementBody({ sales: { ...sales, units: 1 } })));
-    const money = await screen.findByRole('region', { name: 'Plata del período' });
-    expect(within(money).getByText(/78 unidades vendidas/)).toBeInTheDocument();
-    await selectPeriod('4');
-    expect(await screen.findByText(/1 unidad vendida/)).toBeInTheDocument();
-    // The battery-only wording is gone from the label, in both its forms.
-    expect(screen.queryByText(/baterías vendidas/)).toBeNull();
-    expect(screen.queryByText(/1 batería vendida/)).toBeNull();
-  });
-
-  it('names the ranking and its empty state for both catalogue kinds', async () => {
-    // The period sold nothing: the panel says the period sold nothing, never that it sold no batteries,
-    // because a product is a sale of this catalogue like any other (S4, S6).
-    setup(token => json(token === 'all' ? historyBody({ top_models: [] })
-      : settlementBody({ top_models: [] })));
-    const empty = await screen.findByRole('region', { name: 'Más vendidos' });
-    expect(within(empty).getByText('El período no vendió nada: no hay ranking que mostrar.'))
-      .toBeInTheDocument();
-    await selectPeriod('4');
-    // The heading is the same one whether the period sold anything or not, and the battery-only wording
-    // is gone from both the title and the empty state.
-    const podium = await screen.findByRole('region', { name: 'Más vendidos' });
-    expect(within(podium).getByText('El período no vendió nada: no hay ranking que mostrar.'))
-      .toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Baterías más vendidas' })).toBeNull();
-    expect(screen.queryByText(/ninguna batería/)).toBeNull();
+    // The share bar of the old panel is gone; the volume it was computed from stays as one line.
+    expect(within(podium).queryByText('Parte')).toBeNull();
+    expect(within(podium).queryByText('28 %')).toBeNull();
+    expect(within(podium).getByText('63 de 78 unidades')).toBeInTheDocument();
   });
 
   it('renders a product row by its name and invents no capacity for it', async () => {
@@ -230,107 +346,75 @@ describe('branch metrics screen', () => {
     setup(token => json(token === 'all' ? historyBody(ranking) : settlementBody(ranking)));
     await selectPeriod('4');
 
-    const podium = await screen.findByRole('region', { name: 'Más vendidos' });
+    const podium = panel('Más vendidas');
     const rows = within(podium).getAllByRole('row');
     expect(rows).toHaveLength(4);
-    // A battery keeps the label the screen always composed, capacity included.
-    expect(rows[1]).toHaveTextContent('Willard UB 12-75');
-    expect(rows[1]).toHaveTextContent('75 Ah');
-    // The product is its name and nothing else: the row is the same row of the same table, keyed by its
-    // own catalogue entry, and it carries no "Ah" suffix because it has no capacity (S6).
     expect(rows[3]).toHaveTextContent('Agua acidulada');
     expect(rows[3]).toHaveTextContent('Bs 150.000,00');
     expect(rows[3]).not.toHaveTextContent('Ah');
     // The volume of the period is untouched by the ranking's kinds (S7).
-    expect(within(panel('Plata del período')).getByText(/78 unidades vendidas/)).toBeInTheDocument();
+    expect(within(panel('Lo que dejó el período')).getByText('63 ventas')).toBeInTheDocument();
   });
 
-  it('switches to another published period and refetches with that exact token', async () => {
-    const { calls } = setup();
+  it('names the empty ranking in words instead of an empty table', async () => {
+    setup(token => json(token === 'all' ? historyBody({ top_models: [] })
+      : settlementBody({ top_models: [] })));
     await selectPeriod('4');
-    const select = screen.getByLabelText('Período') as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: '3' } });
-    await waitFor(() => expect(calls()).toContain('/api/metrics?period=3'));
-    expect(await screen.findByText('en 10 ventas')).toBeInTheDocument();
-    // Only a period this server published can be asked for.
-    const offered = within(select).getAllByRole('option').map(option => (option as HTMLOptionElement).value);
-    expect(offered).toEqual(['4', '3', '5', 'all']);
-  });
-
-  it('says with words that the accumulated history has no drawer, and shows no zeros for it', async () => {
-    setup();
-    expect(await screen.findByText('El acumulado no tiene caja: la caja se cierra en cada rendición.'))
+    const podium = panel('Más vendidas');
+    expect(within(podium).getByText('El período no vendió nada: no hay ranking que mostrar.'))
       .toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: 'Caja operativa' })).toBeNull();
-    expect(screen.queryByRole('region', { name: 'Fondo de compras' })).toBeNull();
-    const band = panel('Lo que dejó el período');
-    expect(within(band).getByText('Sin caja')).toBeInTheDocument();
-    expect(within(band).getByText('Sin fondo')).toBeInTheDocument();
-    expect(within(band).getByText('Sin planilla')).toBeInTheDocument();
-    // The sales of the history are still a period of its own.
-    expect(within(panel('Plata del período')).getAllByText('Bs 4.286.400,00').length).toBeGreaterThan(0);
-    expect(screen.getByText('Todo el historial de la sucursal')).toBeInTheDocument();
-    expect(screen.queryByText('Bs 0,00')).toBeNull();
+    expect(within(podium).queryByRole('table')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Baterías más vendidas' })).toBeNull();
   });
 
-  it('derives the days without settling from the open period of the selector', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2026-11-12T12:00:00Z'));
-    setup();
-    await selectPeriod('5');
-    const band = panel('Lo que dejó el período');
-    expect(within(band).getByText('Días sin rendir')).toBeInTheDocument();
-    // The live period opened on 2026-11-01T12:00:00Z, eleven whole days before now.
-    expect(within(band).getByText('11 días')).toBeInTheDocument();
-    expect(screen.getByText('En vivo, se mueve con cada venta')).toBeInTheDocument();
-    // Nobody counted the drawer yet: it reads as an expectation, never as a counted zero.
-    expect(within(band).getByText('Bs 1.877.800,00')).toBeInTheDocument();
-    expect(within(band).getByText('Todavía no se contó: es la expectativa')).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Caja operativa' })).toBeInTheDocument();
-    expect(screen.getAllByText('Sin contar').length).toBeGreaterThan(0);
-  });
-
-  it('hides the days without settling when the selector publishes no open period', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2026-11-12T12:00:00Z'));
-    setup(token => token === 'all'
-      ? json(historyBody({ periods: [closed, older, allPeriod] }))
-      : json(settlementBody({ periods: [closed, older, allPeriod] })));
+  it('states the scrap the branch bought in the period, by material and in total', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
     await selectPeriod('4');
-    expect(await screen.findByText(/Números al cierre del/)).toBeInTheDocument();
-    expect(screen.queryByText('Días sin rendir')).toBeNull();
-    expect(within(panel('Lo que dejó el período')).queryByText(/días/)).toBeNull();
+    const scrap = panel('Chatarra comprada');
+    expect(within(scrap).getByText('Cobre')).toBeInTheDocument();
+    expect(within(scrap).getByText('92,300 kg')).toBeInTheDocument();
+    expect(within(scrap).getByText('Bronce')).toBeInTheDocument();
+    expect(within(scrap).getByText('214,500 kg')).toBeInTheDocument();
+    // What the branch bought, never what it delivered: there is no delivery reading on this strip.
+    expect(within(scrap).queryByText(/entregad/i)).toBeNull();
   });
 
-  it('says with words that the accumulated history publishes no cash, no fund and no sheet', async () => {
-    setup();
-    expect(await screen.findByText('El acumulado no tiene caja: la caja se cierra en cada rendición.'))
-      .toBeInTheDocument();
-    // The sheet is absent for the same reason: each settlement took its material with it, so a sum
-    // of sheets would be a number no settlement signed (S9).
-    const scrap = panel('Recambio');
-    expect(within(scrap).getByText(/no tiene planilla/)).toBeInTheDocument();
-    expect(within(scrap).queryByText('Bs 0,00')).toBeNull();
-    // What the history does state is still there: the sales, the ranking and the shelf of today.
-    const podium = panel('Más vendidos');
-    expect(within(podium).getAllByRole('row')).toHaveLength(6);
-    expect(within(scrap).getByText('214 u')).toBeInTheDocument();
-  });
-
-  it('renders a purchase net a counter-document left negative with its sign', async () => {
+  it('reads the bought kilos when the count and the purchase do not agree', async () => {
+    // The sheet counted more than the period bought: the strip keeps stating the purchase, because the
+    // delivery is the warehouse's reading and not this one.
+    const overRows = scrapRows.map(row => ({ ...row, delivered_milli: row.bought_milli + 375 }));
     setup(token => token === '4'
-      ? json(settlementBody({ fund: { ...fund, purchases: '-120000.00', expected: '600000.00',
-        counted: '600000.00', difference: '0.00' } }))
+      ? json(settlementBody({ materials: { used_units: 78, used_delivered_units: 80,
+        scrap_milli: 214500, scrap_delivered_milli: 216000, materials: overRows } }))
       : json(historyBody()));
     await selectPeriod('4');
-    const envelope = panel('Fondo de compras');
-    // The net of the window is negative: the row keeps the sign of the reversal it states (L7).
-    expect(within(envelope).getByText('+ Bs 120.000,00')).toBeInTheDocument();
-    // The envelope still closes: 480.000 − (−120.000) = 600.000.
-    expect(within(envelope).getAllByText('Bs 600.000,00').length).toBeGreaterThan(1);
+    const scrap = panel('Chatarra comprada');
+    expect(within(scrap).getByText('92,300 kg')).toBeInTheDocument();
+    expect(within(scrap).getByText('214,500 kg')).toBeInTheDocument();
+    expect(within(scrap).queryByText('92,675 kg')).toBeNull();
+    expect(within(scrap).queryByText('216,000 kg')).toBeNull();
   });
 
-  it('renders a settlement that counted more material than the period bought', async () => {
+  it('states the scrap a window bought even though it has no sheet yet', async () => {
+    const windowPeriods = [currentPeriod, closed, older, allPeriod];
+    setup(token => token === 'current' ? json(currentBody())
+      : json(historyBody({ periods: windowPeriods })));
+    await selectPeriod('current');
+    const scrap = panel('Chatarra comprada');
+    // The window has no material sheet: it states the kilos the branch bought since the cut.
+    expect(within(scrap).getByText('Comprada desde el corte')).toBeInTheDocument();
+    expect(within(scrap).getByText('42,500 kg')).toBeInTheDocument();
+  });
+
+  it('states a window without purchases in words instead of a zero', async () => {
+    setup(defaultRoutes, () => json(JSON.stringify({ ...JSON.parse(currentBody()),
+      fund_today: { ...fundToday, purchases: '0.00', effective: '0.00', balance: '480000.00',
+        documents: 0, used_units: 0, scrap_milli: 0 } })));
+    await selectPeriod('current');
+    expect(within(panel('Chatarra comprada')).getByText('Sin compras')).toBeInTheDocument();
+  });
+
+  it('reads a settlement that counted more material than the period bought', async () => {
     const overRows = scrapRows.map(row => ({ ...row, delivered_milli: row.bought_milli + 375 }));
     setup(token => token === '4'
       ? json(settlementBody({ materials: { used_units: 78, used_delivered_units: 80,
@@ -340,263 +424,172 @@ describe('branch metrics screen', () => {
     // The delivered quantity is the counted one, and it may exceed what the period bought (L7).
     expect(within(panel('Lo que dejó el período')).getByText('80 u · 216,000 kg'))
       .toBeInTheDocument();
-    const scrap = panel('Recambio');
-    expect(within(scrap).getByText('80 u')).toBeInTheDocument();
-    expect(within(scrap).getByText('216,000')).toBeInTheDocument();
-    expect(within(scrap).getByText('92,675')).toBeInTheDocument();
-    // The bought side never moves with the count.
-    expect(within(scrap).getAllByText('214,500').length).toBeGreaterThan(0);
+    // The figure counts the delivery; the strip keeps stating the purchase, which did not move.
+    const scrap = panel('Chatarra comprada');
+    expect(within(scrap).getByText('92,300 kg')).toBeInTheDocument();
+    expect(within(scrap).getByText('214,500 kg')).toBeInTheDocument();
   });
 
-  it('scopes the footnote to the accounts of the acta and never freezes the shelf', async () => {
-    setup();
-    await selectPeriod('4');
-    // What the settlement froze is the money and the counts, not what moves today (S6).
-    expect(await screen.findByText(/la plata y los conteos del cierre/)).toBeInTheDocument();
-    expect(screen.getByText(/la estantería es la de hoy/i)).toBeInTheDocument();
-    expect(screen.getByText(/el ranking es del período/)).toBeInTheDocument();
-    expect(screen.queryByText(/todo lo de arriba está congelado/)).toBeNull();
+  it('says with words that the accumulated history has no drawer, no fund and no sheet', async () => {
+    setup(defaultRoutes, notFound);
+    const figures = await screen.findByRole('region', { name: 'Lo que dejó el período' });
+    await waitFor(() => expect(within(figures).getByText('Sin caja')).toBeInTheDocument());
+    expect(within(figures).getByText('Sin fondo')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin planilla')).toBeInTheDocument();
+    // The history is still a period of its own: its sales are stated, and no zero stands for an absence.
+    expect(within(figures).getByText('Bs 4.286.400,00')).toBeInTheDocument();
+    expect(screen.queryByText('Bs 0,00')).toBeNull();
+    // The strip of the scrap says it with words too, and states no kilos it never had.
+    expect(within(panel('Chatarra comprada')).getByText(/no tiene planilla/)).toBeInTheDocument();
+  });
 
+  it('states the expectation of a live period and never a counted zero', async () => {
+    setup(token => json(token === 'all' ? historyBody({ periods: livePeriods }) : liveBody()), notFound);
     await selectPeriod('5');
-    await waitFor(() => expect(screen.getByText('En vivo, se mueve con cada venta'))
-      .toBeInTheDocument());
-    // The live period moves too, but the shelf is equally today's and the ranking its own.
-    expect(screen.getByText(/la estantería es la de hoy/i)).toBeInTheDocument();
-    expect(screen.getByText(/el ranking es del período/)).toBeInTheDocument();
+    const figures = panel('Lo que dejó el período');
+    // Nobody counted the drawer yet: the figure is the expectation and it says so.
+    expect(within(figures).getByText('Bs 1.877.800,00')).toBeInTheDocument();
+    expect(within(figures).getByText('todavía no se contó')).toBeInTheDocument();
+    // The warehouse declared no replacement yet, and the delivery has no count either.
+    expect(within(figures).getByText('Sin declarar')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin contar')).toBeInTheDocument();
+    expect(screen.getByText('En vivo, se mueve con cada venta')).toBeInTheDocument();
+    // The strip still states the purchase of the sheet: a delivery nobody counted does not hide it.
+    expect(within(panel('Chatarra comprada')).getByText('214,500 kg')).toBeInTheDocument();
   });
 
-  it('renders the cash of today with the movements of the window, above the period accounts', async () => {
+  it('reads the drawer, the envelope, the sales and the commission of today as four figures', async () => {
     setup(token => token === '4' ? json(settlementBody()) : json(historyBody()));
     await selectPeriod('4');
-    const card = panel('Caja de hoy');
-    // The expectation of the drawer as it stands today, with the identity that produces it (S12).
+    const card = panel('Hoy');
+    // The two money boxes of the branch as they stand, and the two readings of the live window (S12, S18).
     expect(within(card).getByText('Bs 2.299.800,00')).toBeInTheDocument();
-    expect(card).toHaveTextContent(/Lo que quedó en el cajón al cerrar el último corte/);
-    expect(card).toHaveTextContent(/ventas en efectivo/);
-    expect(card).toHaveTextContent(/gastos/);
-    // The window it covers, from the cut of the last closed settlement.
-    expect(card).toHaveTextContent(/Desde el corte del/);
-    expect(card).toHaveTextContent('01/11/2026 · 08:00 (hora Bolivia)');
-    expect(within(card).getByText('Bs 500.000,00')).toBeInTheDocument();
-    // The movements, with their kind, their amount and their moment (S13).
-    const rows = within(card).getAllByRole('row');
-    expect(rows).toHaveLength(4);
-    expect(rows[1]).toHaveTextContent('Aporte');
-    expect(rows[1]).toHaveTextContent('Bs 10.000,00');
-    expect(rows[1]).toHaveTextContent('01/11/2026 · 08:00');
-    expect(rows[2]).toHaveTextContent('Gasto');
-    expect(rows[2]).toHaveTextContent('Bs 2.500,00');
-    expect(rows[3]).toHaveTextContent('Recaudación');
-    expect(rows[3]).toHaveTextContent('Bs 50.000,00');
-    // The card is above the period accounts: it is the first region of the answer.
-    const regions = screen.getAllByRole('region').map(region => region.getAttribute('aria-labelledby'));
-    expect(regions.indexOf('metrics-today-title'))
-      .toBeLessThan(regions.indexOf('metrics-left-title'));
-  });
-
-  it('renders what the branch is earning today, with the rate and the base it applies to', async () => {
-    setup(token => token === '4' ? json(settlementBody()) : json(historyBody()));
-    await selectPeriod('4');
-    const card = panel('Comisión de hoy');
-    // The commission devengada, the rate the warehouse configured and the total it applies to (S18).
-    expect(within(card).getByText('Bs 262.500,00')).toBeInTheDocument();
-    expect(card).toHaveTextContent('12,50 %');
+    // The envelope is named for what it is: the branch's purchase fund (S15).
+    expect(within(card).getByText('Fondo de compras disponible')).toBeInTheDocument();
+    expect(within(card).getByText('Bs 360.000,00')).toBeInTheDocument();
     expect(within(card).getByText('Bs 2.100.000,00')).toBeInTheDocument();
-    // It is not money in a box: the card says so with words instead of leaving it to the figure (S19).
-    expect(card).toHaveTextContent(/no está liquidada/i);
-    expect(card).toHaveTextContent(/no entra en el cajón ni en el fondo/i);
-    // The window it covers is the same one the drawer states.
-    expect(card).toHaveTextContent(/Desde el corte del/);
+    expect(within(card).getByText('Bs 262.500,00')).toBeInTheDocument();
+    // The purchases of the window, because the envelope is what pays them (S15, S17).
+    expect(within(card).getByText('4 compras')).toBeInTheDocument();
+    expect(within(card).getByText('11 u · 42,500 kg')).toBeInTheDocument();
+    // The window those figures cover, from the cut of the last closed settlement.
+    expect(card).toHaveTextContent('desde el corte del 01/11/2026 · 08:00');
   });
 
-  it('states the absence of a rate and of earning with words, never with a zero', async () => {
-    // The band of today travels in every source, and an answer has to repeat the period that was asked
-    // for: the closed settlement is the period the card is read on.
+  it('reads the purchase of one used battery in the line of today', async () => {
+    // The case the operator checks by hand: one document paid from the envelope, one battery and no
+    // scrap. The line names the purchase, what it bought and the balance it left (S15, S17).
     setup(token => token === '4'
-      ? json(settlementBody({ today: { ...today, rate: null, sold: '0.00', commission: '0.00' } }))
+      ? json(settlementBody({ fund_today: { ...fundToday, purchases: '100.00', effective: '-100.00',
+        balance: '479900.00', documents: 1, used_units: 1, scrap_milli: 0 } }))
       : json(historyBody()));
     await selectPeriod('4');
-    const card = await screen.findByRole('region', { name: 'Comisión de hoy' });
-    expect(card).toHaveTextContent(/todavía no fijó una tasa/i);
-    expect(card).toHaveTextContent(/sin tasa no hay comisión que mostrar/i);
-    expect(within(card).queryByText('Bs 0,00')).toBeNull();
+    const card = panel('Hoy');
+    expect(within(card).getByText('1 compra')).toBeInTheDocument();
+    expect(within(card).getByText('1 u')).toBeInTheDocument();
+    expect(within(card).getByText('Bs 479.900,00')).toBeInTheDocument();
   });
 
-  it('states a window without sales as the start of the commission, not as a zero', async () => {
-    setup(token => token === '4'
-      ? json(settlementBody({ today: { ...today, sold: '0.00', commission: '0.00' } }))
-      : json(historyBody()));
-    await selectPeriod('4');
-    const card = await screen.findByRole('region', { name: 'Comisión de hoy' });
-    expect(card).toHaveTextContent(/todavía no hay ventas desde el corte/i);
-    expect(within(card).getByText('Sin comisión todavía')).toBeInTheDocument();
-  });
-
-  it('renders the purchase fund of today beside the drawer, with the breakdown of its window', async () => {
-    setup(token => token === '4' ? json(settlementBody()) : json(historyBody()));
-    await selectPeriod('4');
-    const card = panel('Fondo de compras de hoy');
-    // The balance is the protagonist, and it is the branch's book (S5).
-    expect(within(card).getAllByText('Bs 360.000,00')).toHaveLength(2);
-    expect(card).toHaveTextContent('Saldo del fondo');
-    expect(card).toHaveTextContent(/Lo que dejó el Almacén al cerrar el último corte/);
-    expect(card).toHaveTextContent(/movimientos que el libro registró desde ese corte/);
-    // The window it covers, from the cut of the last closed settlement.
-    expect(card).toHaveTextContent(/Desde el corte del/);
-    expect(card).toHaveTextContent('01/11/2026 · 08:00 (hora Bolivia)');
-    // The breakdown: what the warehouse left, the movements of the window that add up to the balance, and
-    // the cash of the documents beside them (S16, S17).
-    expect(within(card).getByText('Bs 480.000,00')).toBeInTheDocument();
-    expect(within(card).getByText('− Bs 120.000,00')).toBeInTheDocument();
-    expect(within(card).getByText('− Bs 150.000,00')).toBeInTheDocument();
-    expect(within(card).getByText('Saldo del libro del fondo')).toBeInTheDocument();
-    expect(within(card).getByText('4 documentos')).toBeInTheDocument();
-    // The volume of the window is the net of its documents, so it reads with its sign (S17).
-    expect(within(card).getByText('+11 u')).toBeInTheDocument();
-    expect(within(card).getByText('+42,500')).toBeInTheDocument();
-    // A balance that still pays is not a shortage: the card says nothing about buying.
-    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
-    // The drawer and the envelope read as a pair: one row of the same branch, side by side (S15).
-    const drawer = panel('Caja de hoy');
-    expect(drawer.parentElement).toBe(card.parentElement);
-    expect(drawer.parentElement?.className).toContain('metrics-today-pair');
-  });
-
-  it('states the fund a branch was founded with and does not warn it is empty', async () => {
-    // A branch created with 5.000,00 in its purchase fund that never closed a settlement used to read
-    // Bs 0,00 and the warning that the fund was empty. The fund is its book, so the card states 5.000,00
-    // and says nothing about buying (S5).
-    setup(() => json(historyBody({ fund_today: { since: null, opening: '0.00', purchases: '0.00',
-      effective: '5000.00', balance: '5000.00', documents: 0, used_units: 0, scrap_milli: 0 } })));
-    const card = await screen.findByRole('region', { name: 'Fondo de compras de hoy' });
-    expect(within(card).getAllByText('Bs 5.000,00')).toHaveLength(2);
-    expect(within(card).getByText('+ Bs 5.000,00')).toBeInTheDocument();
-    expect(within(card).queryByText(/El fondo quedó en cero/)).toBeNull();
-    expect(within(card).queryByText(/El fondo está en rojo/)).toBeNull();
-    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
-  });
-
-  it('adds the window effect to the opening and states the balance the book holds', async () => {
-    // A closure that left 2.000,00, an aporte of 1.000,00 inside the window and a purchase of 500,00: the
-    // breakdown must add up to the 2.500,00 the book holds (S5, S16).
-    setup(() => json(historyBody({ fund_today: { ...fundToday, opening: '2000.00', purchases: '500.00',
-      effective: '500.00', balance: '2500.00', documents: 1, used_units: 1, scrap_milli: 0 } })));
-    const card = await screen.findByRole('region', { name: 'Fondo de compras de hoy' });
-    expect(within(card).getAllByText('Bs 2.500,00')).toHaveLength(2);
-    expect(within(card).getByText('Bs 2.000,00')).toBeInTheDocument();
-    expect(within(card).getByText('+ Bs 500,00')).toBeInTheDocument();
-    expect(within(card).getByText('− Bs 500,00')).toBeInTheDocument();
-    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
-  });
-
-  it('says that the purchase fund of today starts at the beginning of the branch when there is no cut', async () => {
-    const noCut = { since: null, opening: '0.00', purchases: '0.00', effective: '0.00',
-      balance: '0.00', documents: 0, used_units: 0, scrap_milli: 0 };
-    setup(() => json(historyBody({ fund_today: noCut })));
-    const card = await screen.findByRole('region', { name: 'Fondo de compras de hoy' });
-    expect(within(card).getByText('Desde el comienzo de la sucursal')).toBeInTheDocument();
-    // Nothing was inherited and nothing moved, so the balance, the opening, the window's effect and the
-    // balance of the breakdown are the same zero the server wrote -- four stated numbers.
-    expect(within(card).getAllByText('Bs 0,00')).toHaveLength(4);
-    // Without a document the card says it with words and never with a row of zeros (S17).
-    expect(within(card).getByText('Sin compras en efectivo desde el último corte.')).toBeInTheDocument();
-    expect(within(card).queryByText('0 documentos')).toBeNull();
-    // A fund of zero is the end of the buying, said in words beside the figure.
-    expect(within(card).getByText(/El fondo quedó en cero/)).toBeInTheDocument();
-    expect(within(card).getByText(/hasta que el Almacén lo recargue/)).toBeInTheDocument();
-  });
-
-  it('renders a purchase fund of today in the red with the words that it cannot keep buying', async () => {
-    setup(token => token === '4'
-      ? json(settlementBody({ fund_today: { ...fundToday, opening: '0.00', purchases: '120500.00',
-        effective: '-120500.00', balance: '-120500.00', documents: 1, used_units: 2,
-        scrap_milli: 0 } }))
-      : json(historyBody()));
-    await selectPeriod('4');
-    const card = panel('Fondo de compras de hoy');
-    // A signed balance is published with its sign and never clamped to zero (S16): the figure, the
-    // window's effect, the balance of the breakdown and the cash of the documents are the same magnitude.
-    expect(within(card).getAllByText('− Bs 120.500,00')).toHaveLength(4);
-    expect(within(card).getByText(/El fondo está en rojo/)).toBeInTheDocument();
-    expect(within(card).getByText(/hasta que el Almacén lo recargue/)).toBeInTheDocument();
-    // The balance is never clamped to zero: what it holds is the signed reading the server wrote.
-    expect(within(card).queryByText('Bs 120.500,00')).toBeNull();
-  });
-
-  it('says with words that the purchase fund of today had no purchases instead of a zero row', async () => {
+  it('states a window without purchases with words instead of a zero', async () => {
     setup(token => token === '4'
       ? json(settlementBody({ fund_today: { ...fundToday, purchases: '0.00', effective: '0.00',
         balance: '480000.00', documents: 0, used_units: 0, scrap_milli: 0 } }))
       : json(historyBody()));
     await selectPeriod('4');
-    const card = panel('Fondo de compras de hoy');
-    expect(within(card).getByText('Sin compras en efectivo desde el último corte.')).toBeInTheDocument();
-    expect(within(card).queryByText('0 documentos')).toBeNull();
-    expect(within(card).queryByText('0 u')).toBeNull();
-    // The money it inherited is still stated, and the balance is the whole of it.
-    expect(within(card).getAllByText('Bs 480.000,00')).toHaveLength(3);
-    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
+    const card = panel('Hoy');
+    expect(within(card).getByText('Sin compras')).toBeInTheDocument();
+    expect(within(card).queryByText(/Sin unidades ni kilos/)).toBeNull();
+    expect(within(card).queryByText('0 compras')).toBeNull();
   });
 
-  it('says with words that today has no movements instead of a zero row', async () => {
+  it('states the absence of a rate and of a sale with words, never with a zero', async () => {
     setup(token => token === '4'
-      ? json(settlementBody({ today: { ...today, movements: [] } }))
+      ? json(settlementBody({ today: { ...today, rate: null, sold: '0.00', commission: '0.00' } }))
       : json(historyBody()));
     await selectPeriod('4');
-    const card = panel('Caja de hoy');
-    expect(within(card).getByText('Sin movimientos desde el último corte.')).toBeInTheDocument();
-    expect(within(card).queryByRole('table')).toBeNull();
+    const card = panel('Hoy');
+    expect(within(card).getByText('Sin tasa')).toBeInTheDocument();
+    expect(within(card).getByText('Sin ventas')).toBeInTheDocument();
     expect(within(card).queryByText('Bs 0,00')).toBeNull();
   });
 
+  it('states a window without sales as the start of the commission, not as a zero', async () => {
+    // A window that sold no battery has no base to multiply, so the commission it earned is zero (S7).
+    setup(token => token === '4'
+      ? json(settlementBody({ today: { ...today, sold: '0.00', commission_base: '0.00',
+        commission: '0.00' } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    expect(within(panel('Hoy')).getByText('Sin comisión todavía')).toBeInTheDocument();
+  });
+
   it('says that today starts at the beginning of the branch when there is no cut', async () => {
-    const noCut = { ...today, since: null, opening: '0.00', sales: '100.00', expenses: '20.00',
-      effective: '-20.00', expected: '80.00', movements: [{ kind: 'gasto', amount: '20.00',
-        effective: '-20.00', occurred_at: '2026-11-02T09:30:00Z' }] };
-    // The whole history is the period the screen opens on, and today is stated there too: a branch
-    // that never closed a settlement still has a drawer (S12).
-    setup(() => json(historyBody({ today: noCut })));
-    const card = await screen.findByRole('region', { name: 'Caja de hoy' });
-    expect(within(card).getByText('Bs 80,00')).toBeInTheDocument();
-    expect(within(card).getByText('Desde el comienzo de la sucursal')).toBeInTheDocument();
-    expect(within(card).getByText('Gasto')).toBeInTheDocument();
-    expect(within(card).getByText('Bs 20,00')).toBeInTheDocument();
-  });
-
-  it('renders the cash of today even when the period on screen is the history', async () => {
-    const noCut = { ...today, since: null, opening: '0.00', sales: '0.00', expenses: '0.00',
-      effective: '0.00', expected: '0.00', movements: [] };
-    setup(token => token === 'all' ? json(historyBody({ today: noCut })) : json(settlementBody()));
-    // The history has no drawer of its own and still shows today's drawer of the branch.
-    expect(await screen.findByText('El acumulado no tiene caja: la caja se cierra en cada rendición.'))
-      .toBeInTheDocument();
-    const card = panel('Caja de hoy');
-    expect(within(card).getByText('Desde el comienzo de la sucursal')).toBeInTheDocument();
-    expect(within(card).getByText('Sin movimientos desde el último corte.')).toBeInTheDocument();
-    // The line that says the period below counts the same drawer belongs to the live period only.
-    expect(within(card).queryByText(/Es el mismo cajón que cuenta el período de abajo/)).toBeNull();
-  });
-
-  it('says that today is the same drawer the live period below is counting', async () => {
-    setup();
-    await selectPeriod('5');
-    const card = panel('Caja de hoy');
-    expect(within(card).getByText(/Es el mismo cajón que cuenta el período de abajo/)).toBeInTheDocument();
+    const noCut = { ...today, since: null };
+    setup(() => json(historyBody({ today: noCut })), notFound);
+    const card = await screen.findByRole('region', { name: 'Hoy' });
+    expect(card).toHaveTextContent('desde el comienzo de la sucursal');
     expect(within(card).getByText('Bs 2.299.800,00')).toBeInTheDocument();
   });
 
+  it('switches to another published period and refetches with that exact token', async () => {
+    const { calls } = setup();
+    await selectPeriod('4');
+    const select = screen.getByLabelText('Período') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: '3' } });
+    await waitFor(() => expect(calls()).toContain('/api/metrics?period=3'));
+    expect(await screen.findByText('10 ventas')).toBeInTheDocument();
+  });
+
+  it('offers the window since the last cut first and reads it without an acta', async () => {
+    // This branch has no live settlement: its selector carries the window first, then the closed
+    // settlements, then the history — the same list every answer publishes (S4).
+    const windowPeriods = [currentPeriod, closed, older, allPeriod];
+    const { calls } = setup(token => {
+      if (token === 'current') return json(currentBody());
+      if (token === 'all') return json(historyBody({ periods: windowPeriods }));
+      return json(settlementBody({ periods: windowPeriods }));
+    });
+    await selectPeriod('current');
+    // The window is the first period the selector offers, and asking for it asks for `current`.
+    await waitFor(() => expect(calls()).toContain('/api/metrics?period=current'));
+    const select = screen.getByLabelText('Período') as HTMLSelectElement;
+    expect(within(select).getByRole('option', { name: 'Desde el último corte' })).toBeInTheDocument();
+    expect(within(select).getAllByRole('option').map(option => (option as HTMLOptionElement).value))
+      .toEqual(['current', '4', '3', 'all']);
+
+    // The money of the window, its ranking and its shelf; the accounts say the acta is missing (S8).
+    const figures = panel('Lo que dejó el período');
+    expect(within(figures).getByText('Bs 4.286.400,00')).toBeInTheDocument();
+    expect(within(figures).getByText('63 ventas')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin caja')).toBeInTheDocument();
+    expect(within(figures).getByText('se cuenta al rendir')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin fondo')).toBeInTheDocument();
+    expect(within(figures).getByText('lo declara el Almacén al rendir')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin planilla')).toBeInTheDocument();
+    expect(within(figures).getByText('se entrega al rendir')).toBeInTheDocument();
+    expect(within(panel('Más vendidas')).getAllByRole('row')).toHaveLength(6);
+
+    // The stamp says which cut the window starts at, and that it moves with every sale.
+    expect(await screen.findByText(/se mueve con cada venta/)).toBeInTheDocument();
+    expect(screen.getByText(/Desde el corte del/)).toBeInTheDocument();
+  });
+
   it('refuses a payload the server could not have written and offers the same retry', async () => {
+    // This branch has no window, so the screen falls back to the history, which is the answer that
+    // cannot be trusted.
     const { calls } = setup(token => {
       if (token !== 'all') throw new Error('Unexpected mocked period: ' + token);
       return json(historyBody({ sales: { ...sales, total: '4286400.0' } }));
-    });
+    }, notFound);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Respuesta inválida del servidor.');
     // A refused answer is not shown: no figure and no panel survive it.
-    expect(screen.queryByRole('region', { name: 'Plata del período' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Lo que dejó el período' })).toBeNull();
     expect(screen.queryByText('Bs 4.286.400,00')).toBeNull();
     fireEvent.click(within(alert).getByRole('button', { name: 'Reintentar' }));
-    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=all', '/api/metrics?period=all']));
+    // The window the branch does not have, the history that failed, and the retry of the history.
+    await waitFor(() => expect(calls()).toEqual(['/api/metrics?period=current',
+      '/api/metrics?period=all', '/api/metrics?period=all']));
     expect(await screen.findByRole('alert')).toHaveTextContent('Respuesta inválida del servidor.');
   });
 });

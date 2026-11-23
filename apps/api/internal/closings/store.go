@@ -1701,10 +1701,11 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	if err := checkFund(counted, draft.ContributedCash, fund); err != nil {
 		return Closing{}, err
 	}
-	// The money of the period is the ledgers', never the admin's reading: the sales total that
-	// is the commission base is the sum of the sold subtotals, the cash collected is the cash
-	// amount of those same sales, and the cash expenses are the ones the branch recorded as
-	// they happened (S8, S12). All of them over the same window, so they describe one period.
+	// The money of the period is the ledgers', never the admin's reading: the sales total that is the
+	// period's money is the sum of the sold subtotals, the base the commission is paid on is the sum of
+	// the subtotals of its battery lines, the cash collected is the cash amount of those same sales, and
+	// the cash expenses are the ones the branch recorded as they happened (S8, S12). All of them over the
+	// same window, so they describe one period.
 	totals, err := periodTotals(ctx, tx, branch, periodStart, cutAt)
 	if err != nil {
 		return Closing{}, err
@@ -1713,7 +1714,7 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	if err != nil {
 		return Closing{}, err
 	}
-	commission, err := Commission(totals.salesTotal, rate)
+	commission, err := Commission(totals.commissionBase, rate)
 	if err != nil {
 		return Closing{}, ErrUnavailable
 	}
@@ -1735,7 +1736,8 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	payload := ProposalPayload{
 		PeriodStart: periodStart, CutAt: cutAt,
 		SalesTotal: totals.salesTotal, CommissionRatePercent: rate, CommissionAmount: commission,
-		CashSales: totals.cash, CashExpenses: totals.expenses,
+		CommissionBase: &totals.commissionBase,
+		CashSales:      totals.cash, CashExpenses: totals.expenses,
 		CardTotal: totals.card, TransferTotal: totals.transfer, QRTotal: totals.qr,
 		CountedCash: draft.CountedCash, ContributedCash: draft.ContributedCash,
 		ClosingCash: draft.ClosingCash, Observation: draft.Observation,
@@ -1793,12 +1795,17 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	return closing, nil
 }
 
-// periodTotals reads the money of one period from the ledgers: the sales total that is the
-// commission base (the sum of the sold subtotals, S6), the cash the branch collected, the
+// periodTotals reads the money of one period from the ledgers: the sales total -- "Plata del
+// período", the sum of every sold subtotal, S6 --, the base the commission is paid on (the sum of
+// the subtotals of the battery lines of that same window, S1, S2), the cash the branch collected, the
 // card, transfer and QR amounts of the same sales (S13), the net cash expense the branch
 // recorded as it happened (S12) and the signed effect of every movement of the window (S4, S13).
 // One statement, so every number describes the same window of the same transaction, and both the
 // proposal and the closure call it, so an offered period can never differ from the closed one.
+//
+// Only the commission base is narrowed by the catalogue kind of the line: every other number here
+// keeps counting every sale of the window, which is the identity the metrics card cross-checks
+// against `today.sold` (S4).
 //
 // The expenses are the NET expense of the window, read from `branch_cash_ledger` (S4): the view
 // states one signed effect per row, so the period's expense is `-sum(effective)` over the rows
@@ -1815,13 +1822,18 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 // period expectation: counting them here as well would count the same money twice.
 func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Time) (periodTotalsResult, error) {
 	var result periodTotalsResult
-	var total, cash, card, transfer, qr, expenses, effective string
+	var total, base, cash, card, transfer, qr, expenses, effective string
 	err := q.QueryRow(ctx, `WITH settled AS (
     SELECT id,cash_amount,card_amount,transfer_amount,qr_amount FROM sales
     WHERE branch_location_id=$1 AND created_at >= $2 AND created_at < $3
 )
  SELECT coalesce((SELECT sum(line.subtotal) FROM sale_lines line
         JOIN settled sale ON sale.id=line.sale_id),0)::numeric(12,2)::text,
+       coalesce((SELECT sum(line.subtotal) FROM sale_lines line
+        JOIN settled sale ON sale.id=line.sale_id
+        JOIN catalog_variants variant ON variant.id=line.variant_id
+        JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
+        WHERE entry.kind='battery'),0)::numeric(12,2)::text,
        coalesce((SELECT sum(sale.cash_amount) FROM settled sale),0)::numeric(12,2)::text,
        coalesce((SELECT sum(sale.card_amount) FROM settled sale),0)::numeric(12,2)::text,
        coalesce((SELECT sum(sale.transfer_amount) FROM settled sale),0)::numeric(12,2)::text,
@@ -1833,14 +1845,15 @@ func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Ti
        coalesce((SELECT sum(ledger.effective) FROM branch_cash_ledger ledger
         WHERE ledger.branch_location_id=$1 AND ledger.closing_id IS NULL
           AND ledger.occurred_at >= $2 AND ledger.occurred_at < $3),0)::numeric(12,2)::text`,
-		branch, from, to).Scan(&total, &cash, &card, &transfer, &qr, &expenses, &effective)
+		branch, from, to).Scan(&total, &base, &cash, &card, &transfer, &qr, &expenses, &effective)
 	if err != nil {
 		return periodTotalsResult{}, fail(ctx)
 	}
-	result.salesTotal, result.cash, result.card, result.transfer, result.qr, result.expenses =
-		Money(total), Money(cash), Money(card), Money(transfer), Money(qr), Money(expenses)
-	for _, amount := range []Money{result.salesTotal, result.cash, result.card, result.transfer,
-		result.qr, result.expenses} {
+	result.salesTotal, result.commissionBase, result.cash, result.card, result.transfer, result.qr,
+		result.expenses = Money(total), Money(base), Money(cash), Money(card), Money(transfer),
+		Money(qr), Money(expenses)
+	for _, amount := range []Money{result.salesTotal, result.commissionBase, result.cash, result.card,
+		result.transfer, result.qr, result.expenses} {
 		if _, ok := amountCents(amount); !ok {
 			return periodTotalsResult{}, ErrUnavailable
 		}
@@ -1852,13 +1865,14 @@ func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Ti
 	return result, nil
 }
 
-// periodTotalsResult is the money of one settled period: the commission base, the collection
-// by payment method -- cash in the drawer, card, transfer and QR outside it --, the expenses the
-// branch paid out of the drawer and the signed effect of every movement of the window, which is the
-// term the drawer's expectation is built from.
+// periodTotalsResult is the money of one settled period: the total the period sold, the base its
+// commission is paid on -- the battery lines of the same window --, the collection by payment method
+// -- cash in the drawer, card, transfer and QR outside it --, the expenses the branch paid out of the
+// drawer and the signed effect of every movement of the window, which is the term the drawer's
+// expectation is built from.
 type periodTotalsResult struct {
-	salesTotal, cash, card, transfer, qr, expenses Money
-	effective                                      Signed
+	salesTotal, commissionBase, cash, card, transfer, qr, expenses Money
+	effective                                                      Signed
 }
 
 // configuredRate reads the rate the branch is configured with. A branch without one cannot
@@ -2206,7 +2220,8 @@ func (s *Store) DecideCorrection(ctx context.Context, actor auth.Identity, corre
 const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
   c.period_start,c.cut_at,c.closed_at,coalesce(c.commission_rate_percent::text,''),
   c.opening_cash::text,c.cash_sales::text,c.cash_expenses::text,c.sales_total::text,
-  c.commission_amount::text,c.card_total::text,c.transfer_total::text,c.qr_total::text,
+  c.commission_base::text,c.commission_amount::text,c.card_total::text,c.transfer_total::text,
+  c.qr_total::text,
   c.counted_cash::text,c.contributed_cash::text,c.closing_cash::text,c.observation,
   c.opened_by_account_id,c.purchase_fund_counted::text,c.purchase_fund_cash::text,
   coalesce((SELECT sum(effect.amount_delta) FROM closing_correction_effects effect
@@ -2254,13 +2269,14 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 	var closing Closing
 	var status, rate string
-	var counted, fund, purchaseCounted, purchaseCash *string
+	var counted, fund, purchaseCounted, purchaseCash, commissionBase *string
 	var countedDelta, fundDelta string
 	err := row.Scan(
 		&closing.ID, &closing.BranchID, &closing.BranchName, &status,
 		&closing.PeriodStart, &closing.CutAt, &closing.ClosedAt, &rate,
 		&closing.OpeningCash, &closing.CashSales, &closing.CashExpenses, &closing.SalesTotal,
-		&closing.CommissionAmount, &closing.CardTotal, &closing.TransferTotal, &closing.QRTotal,
+		&commissionBase, &closing.CommissionAmount, &closing.CardTotal, &closing.TransferTotal,
+		&closing.QRTotal,
 		&counted, &closing.ContributedCash, &fund, &closing.Observation,
 		&closing.OpenedByAccountID, &purchaseCounted, &purchaseCash, &countedDelta, &fundDelta)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -2286,6 +2302,16 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 			return Closing{}, ErrUnavailable
 		}
 		closing.CountedCash = &amount
+	}
+	// The base the commission was computed on is read as the database stores it: null for a
+	// settlement recorded before that rule, and the battery sales of its period for every one proposed
+	// after it (S5, S6).
+	if commissionBase != nil {
+		amount := Money(*commissionBase)
+		if _, ok := amountCents(amount); !ok {
+			return Closing{}, ErrUnavailable
+		}
+		closing.CommissionBase = &amount
 	}
 	if fund != nil {
 		amount := Money(*fund)
@@ -2530,7 +2556,7 @@ func settledPurchaseFund(ctx context.Context, q querier, branch int64,
 // configured rate otherwise -- which is what every open row is today, because the database
 // freezes the rate only on the proposal transition. The configured rate cannot disagree with the
 // offer: Propose freezes the very rate it reads from the same table at that instant, and both
-// sides apply it to the same period total with this package's one rounding (S6, S20), so the
+// sides apply it to the same battery base with this package's one rounding (S6, S20), so the
 // draft is a preview of exactly the amount a proposal made now would freeze.
 func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
 	branch := int16(closing.BranchID)
@@ -2540,6 +2566,10 @@ func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
 	}
 	closing.SalesTotal, closing.CashSales, closing.CashExpenses = totals.salesTotal, totals.cash,
 		totals.expenses
+	// The base is a fact of the window whatever the rate is, so it is published before the rate is
+	// resolved: a branch without a configured rate still states what it sold in batteries (S2, S4).
+	base := totals.commissionBase
+	closing.CommissionBase = &base
 	closing.CardTotal, closing.TransferTotal, closing.QRTotal = totals.card, totals.transfer, totals.qr
 	rate := closing.CommissionRatePercent
 	if rate == nil {
@@ -2555,7 +2585,7 @@ func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
 		}
 		rate = &configured
 	}
-	commission, err := Commission(totals.salesTotal, *rate)
+	commission, err := Commission(totals.commissionBase, *rate)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -2920,7 +2950,7 @@ func decodePayload(stored string) (ProposalPayload, error) {
 		}
 	}
 	for _, amount := range []*Money{payload.CountedCash, payload.ClosingCash, payload.PurchaseFundCounted,
-		payload.PurchaseFundCash} {
+		payload.PurchaseFundCash, payload.CommissionBase} {
 		if amount != nil {
 			if _, ok := amountCents(*amount); !ok {
 				return ProposalPayload{}, ErrUnavailable

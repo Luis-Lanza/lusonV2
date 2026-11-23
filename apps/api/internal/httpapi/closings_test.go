@@ -447,6 +447,9 @@ func TestClosingDecoders(t *testing.T) {
 func closingValue() closings.Closing {
 	rate := closings.Percent("10.00")
 	counted := closings.Money("96000.00")
+	// The base is the battery sales of the period: here it is the whole sale, because the period sold
+	// batteries only, and the 10.00% over it is the 9600.00 of commission the document states.
+	base := closings.Money("96000.00")
 	fund := closings.Money("6000.00")
 	difference := closings.Signed("0.00")
 	taken := closings.Signed("90000.00")
@@ -462,7 +465,8 @@ func closingValue() closings.Closing {
 		PeriodStart: time.Date(2026, 2, 23, 18, 0, 0, 0, time.UTC), CutAt: closed,
 		ClosedAt: &closed, CommissionRatePercent: &rate, OpeningCash: "0.00",
 		CashSales: "96000.00", CashExpenses: "0.00", CashEffective: "0.00", SalesTotal: "96000.00",
-		CommissionAmount: "9600.00", CardTotal: "0.00", TransferTotal: "0.00", QRTotal: "0.00",
+		CommissionBase: &base, CommissionAmount: "9600.00", CardTotal: "0.00",
+		TransferTotal: "0.00", QRTotal: "0.00",
 		CountedCash: &counted, ContributedCash: "0.00", ClosingCash: &fund,
 		OpenedByAccountID: 1, ExpectedCash: "96000.00", CashDifference: &difference,
 		TakenCash:           &taken,
@@ -477,8 +481,9 @@ func closingValue() closings.Closing {
 			Payload: closings.ProposalPayload{
 				PeriodStart: time.Date(2026, 2, 23, 18, 0, 0, 0, time.UTC), CutAt: closed,
 				SalesTotal: "96000.00", CommissionRatePercent: "10.00",
-				CommissionAmount: "9600.00", CashSales: "96000.00", CashExpenses: "0.00",
-				CardTotal: "0.00", TransferTotal: "0.00", QRTotal: "0.00",
+				CommissionBase: &base, CommissionAmount: "9600.00", CashSales: "96000.00",
+				CashExpenses: "0.00",
+				CardTotal:    "0.00", TransferTotal: "0.00", QRTotal: "0.00",
 				CountedCash: &counted, ContributedCash: "0.00", ClosingCash: &fund,
 				PurchaseFundCounted: &purchaseCounted, PurchaseFundCash: &purchaseCash,
 				CountLines: []closings.ProposalCountLine{{VariantID: 3, ExpectedQuantity: 12,
@@ -497,7 +502,8 @@ func TestClosingRecord(t *testing.T) {
 	if record.ID != 1 || record.BranchLocationID != 2 || record.Status != "closed" ||
 		record.ExpectedCash != "96000.00" || record.CashDifference == nil ||
 		*record.CashDifference != "0.00" || record.TakenCash == nil || *record.TakenCash != "90000.00" ||
-		record.CommissionAmount != "9600.00" || record.CommissionRatePercent == nil ||
+		record.CommissionAmount != "9600.00" || record.CommissionBase == nil ||
+		*record.CommissionBase != "96000.00" || record.CommissionRatePercent == nil ||
 		*record.CommissionRatePercent != "10.00" || record.ClosedAt == nil ||
 		len(record.CountLines) != 1 || len(record.Rounds) != 1 {
 		t.Fatalf("the settlement does not match the published contract: %+v", record)
@@ -510,7 +516,8 @@ func TestClosingRecord(t *testing.T) {
 		t.Fatalf("the drawer of the settlement changed: %+v", record)
 	}
 	if offer := record.Rounds[0].Offer; offer.CommissionAmount != "9600.00" ||
-		offer.SalesTotal != "96000.00" || offer.QRTotal != "0.00" || len(offer.CountLines) != 1 {
+		offer.SalesTotal != "96000.00" || offer.CommissionBase == nil ||
+		*offer.CommissionBase != "96000.00" || offer.QRTotal != "0.00" || len(offer.CountLines) != 1 {
 		t.Fatalf("the round must publish the offer it was answered with: %+v", offer)
 	}
 	// The purchase fund is the second envelope: it publishes its opening, the purchases of its
@@ -667,6 +674,20 @@ func TestClosingRecord(t *testing.T) {
 		"round_pending_decided": mutate(func(v *closings.Closing) { v.Rounds[0].Decision = "" }),
 		"offer_stale_commission": mutate(func(v *closings.Closing) {
 			v.Rounds[0].Payload.CommissionAmount = "1.00"
+		}),
+		// The base is the number the commission was computed on: one that is not money, or that
+		// does not produce the commission beside it, is a document this read never wrote (S3, S5).
+		"commission_base_short": mutate(func(v *closings.Closing) {
+			base := closings.Money("96000.0")
+			v.CommissionBase = &base
+		}),
+		"commission_base_stale": mutate(func(v *closings.Closing) {
+			base := closings.Money("1.00")
+			v.CommissionBase = &base
+		}),
+		"offer_base_stale": mutate(func(v *closings.Closing) {
+			base := closings.Money("1.00")
+			v.Rounds[0].Payload.CommissionBase = &base
 		}),
 		"offer_no_drawer": mutate(func(v *closings.Closing) { v.Rounds[0].Payload.CountedCash = nil }),
 		"offer_line_order": mutate(func(v *closings.Closing) {
@@ -1305,6 +1326,7 @@ type closingWireRecord struct {
 	ClosingCash           *string `json:"closing_cash"`
 	TakenCash             *string `json:"taken_cash"`
 	SalesTotal            string  `json:"sales_total"`
+	CommissionBase        *string `json:"commission_base"`
 	CommissionAmount      string  `json:"commission_amount"`
 	CardTotal             string  `json:"card_total"`
 	TransferTotal         string  `json:"transfer_total"`
@@ -1340,6 +1362,7 @@ type closingWireRecord struct {
 		DecisionReason string `json:"decision_reason"`
 		Offer          struct {
 			SalesTotal            string  `json:"sales_total"`
+			CommissionBase        *string `json:"commission_base"`
 			CommissionRatePercent string  `json:"commission_rate_percent"`
 			CommissionAmount      string  `json:"commission_amount"`
 			CashSales             string  `json:"cash_sales"`
@@ -1357,7 +1380,8 @@ type closingWireRecord struct {
 var closingWireKeys = []string{"id", "branch_location_id", "branch_name", "status", "period_start",
 	"cut_at", "closed_at", "commission_rate_percent", "opening_cash", "cash_sales", "cash_expenses",
 	"cash_effective", "expected_cash", "counted_cash", "cash_difference", "contributed_cash", "closing_cash",
-	"taken_cash", "sales_total", "commission_amount", "card_total", "transfer_total", "qr_total",
+	"taken_cash", "sales_total", "commission_base", "commission_amount", "card_total",
+	"transfer_total", "qr_total",
 	"observation", "opened_by_account_id", "purchase_fund_opening", "purchases_total",
 	"purchases_cash", "purchase_fund_expected", "purchase_fund_counted", "purchase_fund_difference",
 	"purchase_fund_cash", "count_lines", "material_lines", "rounds", "expenses", "corrections"}
@@ -1795,6 +1819,7 @@ func TestClosingsDraftAndDerivedMoney(t *testing.T) {
 		fmt.Sprintf("/api/closings/%d/propose", id), "")), 200)
 	if proposed.Status != "proposed" || proposed.CommissionRatePercent == nil ||
 		*proposed.CommissionRatePercent != "10.00" || proposed.SalesTotal != "96000.00" ||
+		proposed.CommissionBase == nil || *proposed.CommissionBase != "96000.00" ||
 		proposed.CommissionAmount != "9600.00" || proposed.CashSales != "96000.00" ||
 		proposed.CardTotal != "0.00" || proposed.TransferTotal != "0.00" || proposed.QRTotal != "0.00" {
 		t.Fatalf("the offer must state the period and its commission: %+v", proposed)
@@ -1820,6 +1845,9 @@ func TestClosingsDraftAndDerivedMoney(t *testing.T) {
 		fmt.Sprintf("/api/closings/%d/decision", id), `{"decision":"accepted"}`)), 200)
 	if closed.Status != "closed" || closed.ClosedAt == nil || len(closed.Rounds) != 1 ||
 		closed.Rounds[0].Decision != "accepted" || closed.Rounds[0].Offer.CommissionAmount != "9600.00" ||
+		closed.Rounds[0].Offer.CommissionBase == nil ||
+		*closed.Rounds[0].Offer.CommissionBase != "96000.00" ||
+		closed.CommissionBase == nil || *closed.CommissionBase != "96000.00" ||
 		closed.Rounds[0].Offer.CashSales != "96000.00" || closed.Rounds[0].Offer.CashExpenses != "0.00" ||
 		closed.Rounds[0].Offer.SalesTotal != "96000.00" {
 		t.Fatalf("the closure must publish the accepted offer: %+v", closed)

@@ -662,13 +662,13 @@ func TestMetricsTodayFollowsTheSettlementFormula(t *testing.T) {
 }
 
 // TestMetricsTodayPublishesTheCommissionTheBranchIsEarning pins S18 on the read: the drawer of today
-// states what the branch is earning so far -- the rate the warehouse froze for it, the total it sold
-// since the last cut and the commission those two produce, rounded once -- and it states it whatever
-// period the screen is showing, because the branch is inside exactly one window of its own.
+// states what the branch is earning so far -- the rate the warehouse froze for it, the batteries it
+// sold since the last cut and the commission those two produce, rounded once -- and it states it
+// whatever period the screen is showing, because the branch is inside exactly one window of its own.
 func TestMetricsTodayPublishesTheCommissionTheBranchIsEarning(t *testing.T) {
 	e := fixture(t)
 	first := e.closeFirstSettlement(t, "500.00")
-	// One cash sale and one by card: the commission is on the total sold, not on what reached the
+	// One cash sale and one by card: the commission is on the batteries sold, not on what reached the
 	// drawer, so the second one is a term of this reading even though the drawer never sees it.
 	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
 	e.sell(t, 1, 1, "40.00", sales.PaymentCard)
@@ -689,13 +689,75 @@ func TestMetricsTodayPublishesTheCommissionTheBranchIsEarning(t *testing.T) {
 	}
 	for _, source := range []string{"settlement", "history", "live"} {
 		today := read(source)
-		// 140.00 sold since the cut, at the 12.50% the fixture configures: 17.50 of commission.
+		// 140.00 of batteries sold since the cut, at the 12.50% the fixture configures: 17.50 of
+		// commission. The base is the battery line, which here is the whole sale.
 		if today.Rate == nil || *today.Rate != "12.50" {
 			t.Fatalf("%s: today must state the rate the warehouse configured: %+v", source, today.Rate)
 		}
-		if today.Sold != "140.00" || today.Commission != "17.50" {
+		if today.Sold != "140.00" || today.CommissionBase != "140.00" || today.Commission != "17.50" {
 			t.Fatalf("%s: today must state the base and the commission it produces: %+v", source, today)
 		}
+	}
+}
+
+// TestMetricsTodayComputesTheCommissionOnBatteriesOnly is the whole point of this change (S1-S4): a
+// window that sells a battery and an other product counts both in `sold` and only the battery in
+// `commission_base`, so the commission is the frozen rate times the batteries and never the rate over
+// the whole sale. "la comision debe ser solamente de la venta de baterias, la venta de 'otros
+// productos' como agua acidulada no cuentan para la comision" (S1).
+func TestMetricsTodayComputesTheCommissionOnBatteriesOnly(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// 200.00 of batteries and 15.00 of an other product, both in cash: the whole sale is 215.00 and
+	// the base is the battery line alone.
+	battery := variantOfEntry(t, e, 1)
+	e.sell(t, battery, 2, "100.00", sales.PaymentCash)
+	_, product := e.productOf(t, "Agua acidulada", 5)
+	e.sellProduct(t, product, 3, "5.00")
+
+	// The card reads the same window whatever period is on screen, so the drawer of today is read by
+	// the history, by the live settlement and by the computed window of the branch.
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	window, err := e.store.Metrics(e.ctx, identity(2), closings.MetricsPeriod{Window: true})
+	if err != nil {
+		t.Fatalf("the computed window could not be read: %v", err)
+	}
+	for _, today := range []closings.MetricsToday{historyOf(t, e).Today, metricsOf(t, e, opened.ID).Today,
+		window.Today} {
+		if today.Sold != "215.00" {
+			t.Fatalf("`sold` counts every sale of the window, of both kinds: %+v", today)
+		}
+		if today.CommissionBase != "200.00" {
+			t.Fatalf("only the battery line is the commission base: %+v", today)
+		}
+		// 12.50% of 200.00 is 25.00; over the whole sale it would have been 26.88.
+		if today.Rate == nil || *today.Rate != "12.50" || today.Commission != "25.00" {
+			t.Fatalf("the commission is the rate times the battery base: %+v", today)
+		}
+	}
+	// S4: the window still cross-checks its own money against `sold`, which counts both kinds, and
+	// the commission it publishes is the one the drawer of today is earning over the same window.
+	if window.Sales.Total != "215.00" || window.Sales.Total != window.Today.Sold ||
+		window.Sales.Commission != "25.00" || window.Sales.Commission != window.Today.Commission {
+		t.Fatalf("the window and the drawer of today must state one money: %+v %+v", window.Sales,
+			window.Today)
+	}
+}
+
+// TestMetricsTodayEarnsNothingWithoutBatterySales pins S7 on the card: a window that sold an other
+// product and no battery states that sale in `sold` and a base of 0.00, so the commission it earns is
+// zero and the screen has a number to say «Sin comisión todavía» with.
+func TestMetricsTodayEarnsNothingWithoutBatterySales(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	_, product := e.productOf(t, "Agua acidulada", 10)
+	e.sellProduct(t, product, 3, "5.00")
+	today := historyOf(t, e).Today
+	if today.Sold != "15.00" || today.CommissionBase != "0.00" || today.Commission != "0.00" {
+		t.Fatalf("a period without batteries sells and earns nothing: %+v", today)
 	}
 }
 
@@ -714,7 +776,7 @@ func TestMetricsTodayStatesNoCommissionWithoutAConfiguredRate(t *testing.T) {
 		t.Fatalf("a branch without a configured rate states no rate: %+v", *today.Rate)
 	}
 	// The base is a fact of the window whether or not a rate exists; the commission is not.
-	if today.Sold != "100.00" || today.Commission != "0.00" {
+	if today.Sold != "100.00" || today.CommissionBase != "100.00" || today.Commission != "0.00" {
 		t.Fatalf("today must state the base and a commission of zero: %+v", today)
 	}
 }
@@ -1251,4 +1313,213 @@ func TestMetricsFundTodayPublishesZeroForAnEmptyBook(t *testing.T) {
 	if book := e.fundBook(t, 3); string(fund.Balance) != book {
 		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
 	}
+}
+
+// windowOfBranch reads the computed window of branch 2: the period from the cut of its last closed
+// settlement to the instant of the read.
+func windowOfBranch(t *testing.T, e *env) closings.Metrics {
+	t.Helper()
+	metrics, err := e.store.Metrics(e.ctx, identity(2), closings.MetricsPeriod{Window: true})
+	if err != nil {
+		t.Fatalf("the metrics of the computed window could not be read: %v", err)
+	}
+	return metrics
+}
+
+// TestMetricsCurrentWindowStartsAtTheLastCut pins S3, S5 and S6 at the store: the computed period is
+// the window from the cut of the last closed settlement to the read, so it counts the sale after that
+// cut and none of the ones a closed settlement already states; it publishes the money, the ranking and
+// the shelf of that window with no drawer, no envelope and no material, because a window has no acta;
+// and its total is the very total the same answer says the branch sold.
+func TestMetricsCurrentWindowStartsAtTheLastCut(t *testing.T) {
+	e := fixture(t)
+	// One sale before the closing belongs to the closed period and never to the window.
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	closed := e.closeFirstSettlement(t, "500.00")
+	// Two units sold after the cut: the window is exactly this sale.
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+
+	window := windowOfBranch(t, e)
+	if window.Source != "live" {
+		t.Fatalf("a computed window states the live origin, got %q", window.Source)
+	}
+	// S5: a window has no acta, so the three accounts a settlement states are null and never a zero.
+	if window.Cash != nil || window.Fund != nil || window.Materials != nil {
+		t.Fatalf("a window states no drawer, no envelope and no material: %+v %+v %+v",
+			window.Cash, window.Fund, window.Materials)
+	}
+	// The money and the volume of the window: the sale after the cut and nothing of the closed one.
+	if window.Sales.Total != "200.00" || window.Sales.Cash != "200.00" ||
+		window.Sales.Card != "0.00" || window.Sales.Transfer != "0.00" ||
+		window.Sales.QR != "0.00" || window.Sales.Sales != 1 || window.Sales.Units != 2 {
+		t.Fatalf("the window counts only the sales after its cut: %+v", window.Sales)
+	}
+	// S6: the total of the window is the total the same answer says the branch sold since that cut,
+	// and the commission is the one the drawer of today is earning over the same window.
+	if window.Today.Sold != "200.00" || window.Sales.Total != window.Today.Sold {
+		t.Fatalf("the window and today must state one total: %+v %+v", window.Sales, window.Today)
+	}
+	if window.Today.Commission != "25.00" || window.Sales.Commission != window.Today.Commission {
+		t.Fatalf("the window and today must state one commission: %+v %+v", window.Sales, window.Today)
+	}
+	// The window starts where the closed settlement ended, and not where it was closed.
+	if cut := e.cutOf(t, closed); window.Today.Since == nil || !window.Today.Since.Equal(cut) {
+		t.Fatalf("the window starts at the cut %v of the last closed settlement: %v", cut,
+			window.Today.Since)
+	}
+	if window.Today.Opening != "500.00" {
+		t.Fatalf("the window inherits what the closing left: %+v", window.Today)
+	}
+	// The ranking is the one of the same window: one model, its two units and their money.
+	if len(window.Top) != 1 {
+		t.Fatalf("the window sold one model: %+v", window.Top)
+	}
+	if model := window.Top[0]; model.Brand != "CAR" || model.Model != "NS40ZL" ||
+		model.Capacity != "35" || model.Units != 2 || model.Money != "200.00" {
+		t.Fatalf("the ranking of the window must be its own sales: %+v", model)
+	}
+	// S3: reading the window creates, opens and proposes nothing, so the branch is not frozen by it.
+	if settled := e.scalar(t, `SELECT count(*) FROM branch_closings WHERE branch_location_id=2`); settled != 1 {
+		t.Fatalf("reading the window must not settle anything, got %d settlements", settled)
+	}
+	// The closed settlement still publishes its own period: the window is a second read of the same
+	// branch and never a second calculation of that acta.
+	if frozen := metricsOf(t, e, closed); frozen.Sales.Sales != 1 || frozen.Sales.Total != "100.00" {
+		t.Fatalf("the closed period must keep its own window: %+v", frozen.Sales)
+	}
+}
+
+// TestMetricsCurrentWindowIsAPeriodTheBranchHas pins S7 and the shape of the period at the store: a
+// branch that never closed a settlement has no cut to start the window from, the window is one period
+// and never two, and the warehouse owns no drawer to read here.
+func TestMetricsCurrentWindowIsAPeriodTheBranchHas(t *testing.T) {
+	e := fixture(t)
+	// Branch 2 never closed a settlement and branch 3 has no history at all: neither has a window.
+	for _, branch := range []int{2, 3} {
+		_, err := e.store.Metrics(e.ctx, identity(branch), closings.MetricsPeriod{Window: true})
+		refused(t, err, closings.ErrNotFound)
+	}
+	_, err := e.store.Metrics(e.ctx, warehouse(), closings.MetricsPeriod{Window: true})
+	refused(t, err, closings.ErrForbidden)
+	// A closing id or the whole history beside the window is two periods in one request.
+	id := e.closeFirstSettlement(t, "500.00")
+	for _, period := range []closings.MetricsPeriod{
+		{Window: true, ClosingID: &id},
+		{Window: true, History: true},
+	} {
+		_, err := e.store.Metrics(e.ctx, identity(2), period)
+		refused(t, err, closings.ErrInvalid)
+	}
+	// The branch that closed the settlement reads its own window, which is now an empty one.
+	window := windowOfBranch(t, e)
+	if window.Source != "live" || window.Today.Since == nil || window.Sales.Sales != 0 ||
+		window.Sales.Total != "0.00" || window.Top == nil || len(window.Top) != 0 {
+		t.Fatalf("the branch reads its own window: %+v", window)
+	}
+}
+
+// TestMetricsSplitsTheBatterySalesOfThePeriod pins S2 on a live period: the money of the period sums
+// both catalogue kinds and its battery share is the battery line alone, so the client can state the
+// rest as other products. The commission keeps running on the battery share, never on the product.
+func TestMetricsSplitsTheBatterySalesOfThePeriod(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// The product sells out before the period opens, so the count sheet of the period is the one the
+	// other vertical reads: batteries only.
+	_, product := e.productOf(t, "Agua acidulada", 3)
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+	e.sellProduct(t, product, 3, "5.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+
+	metrics := metricsOf(t, e, opened.ID)
+	if metrics.Sales.Total != "215.00" || metrics.Sales.Batteries != "200.00" ||
+		metrics.Sales.Units != 5 || metrics.Sales.Sales != 2 {
+		t.Fatalf("the period must split the battery sale from the rest: %+v", metrics.Sales)
+	}
+	// 12.50% of the 200.00 of batteries: the product earns no commission.
+	if metrics.Sales.Commission != "25.00" {
+		t.Fatalf("the commission must stay on the battery share: %+v", metrics.Sales)
+	}
+}
+
+// TestMetricsClosedSettlementPublishesTheBatteryShareOfItsSales pins S2 on a closed settlement and on
+// the whole history: a settlement's money comes from its acta, but the battery share of that same
+// immutable stretch comes from the sales, so the two readers of one period state the split.
+func TestMetricsClosedSettlementPublishesTheBatteryShareOfItsSales(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	_, product := e.productOf(t, "Agua acidulada", 3)
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+	e.sellProduct(t, product, 3, "5.00")
+	id := e.closeWindow(t, drawerOf("715.00"))
+
+	closed := metricsOf(t, e, id)
+	if closed.Sales.Total != "215.00" || closed.Sales.Batteries != "200.00" ||
+		closed.Sales.Units != 5 || closed.Sales.Sales != 2 {
+		t.Fatalf("a closed settlement must state the split of its own window: %+v", closed.Sales)
+	}
+	// A product sold after the cut belongs to the history and not to the closed period, and the
+	// battery share keeps counting only the battery lines of every sale.
+	_, after := e.productOf(t, "Agua acidulada extra", 1)
+	e.sellProduct(t, after, 1, "5.00")
+	history := historyOf(t, e)
+	if history.Sales.Total != "220.00" || history.Sales.Batteries != "200.00" ||
+		history.Sales.Units != 6 || history.Sales.Sales != 3 {
+		t.Fatalf("the whole history must state the split of every sale: %+v", history.Sales)
+	}
+}
+
+// TestMetricsPeriodWithoutBatterySalesStatesZero pins the honest absence of S2: a period that sold only
+// other products publishes its money as the total and a battery share of zero, never the total again.
+func TestMetricsPeriodWithoutBatterySalesStatesZero(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	_, product := e.productOf(t, "Agua acidulada", 2)
+	e.sellProduct(t, product, 2, "5.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+
+	metrics := metricsOf(t, e, opened.ID)
+	if metrics.Sales.Total != "10.00" || metrics.Sales.Batteries != "0.00" ||
+		metrics.Sales.Units != 2 || metrics.Sales.Sales != 1 {
+		t.Fatalf("a period without battery sales states a zero share: %+v", metrics.Sales)
+	}
+}
+
+// TestMetricsRefusesABatteryShareAboveThePeriodTotal pins S3 at the refusal: the battery share is a
+// part of the period, so a settlement whose stated total is below the batteries its own window sold is
+// an answer this read could not have produced and it answers nothing at all.
+func TestMetricsRefusesABatteryShareAboveThePeriodTotal(t *testing.T) {
+	e := fixture(t)
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+	// A settlement of the past is written with the database's replica role, exactly like the fixture
+	// that seeds one: its frozen total is below the 200.00 of batteries its window covers, which the
+	// offer of a real settlement can never write.
+	tx, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("the settlement of the past could not be written: %v", err)
+	}
+	defer func() { _ = tx.Rollback(e.ctx) }()
+	if _, err := tx.Exec(e.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatalf("the guards could not be stepped around: %v", err)
+	}
+	var id int64
+	if err := tx.QueryRow(e.ctx, `INSERT INTO branch_closings(branch_location_id,status,
+ period_start,cut_at,closed_at,commission_rate_percent,counted_cash,contributed_cash,closing_cash,
+ sales_total,opened_by_account_id)
+ VALUES(2,'closed',now()-interval '1 hour',now()+interval '1 hour',now(),12.50,0.00,0.00,0.00,
+ 100.00,1) RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("the settlement of the past could not be written: %v", err)
+	}
+	if err := tx.Commit(e.ctx); err != nil {
+		t.Fatalf("the settlement of the past could not be committed: %v", err)
+	}
+
+	_, err = e.store.Metrics(e.ctx, identity(2), closings.MetricsPeriod{ClosingID: &id})
+	refused(t, err, closings.ErrUnavailable)
 }
