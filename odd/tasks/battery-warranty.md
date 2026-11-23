@@ -2,6 +2,8 @@
 
 Feature: `feat/battery-warranty` · Base: `8e3d39b` (master) · Risk: item 1 (migraciones nuevas y cambio en el sembrado de `closing_material_lines`) y item 3 (contrato del sembrado de usadas que ya consumen las rendiciones)
 
+Entrega: una rama de feature con un commit por tarea, revisión por slice. Slice 0 —documento, sincronización del sistema de diseño y artboards— en `35efdc0` y `c9a6178`. Slice 1 —T2, la migración y su schema test— en `57d69b6`: 1 187 líneas de SQL y prueba de esquema que se revisan solas, sin código Go. Los slices 2 a 8 empiezan en T3.
+
 Una batería fuera de servicio —devuelta por un cliente con garantía o hallada fallada en stock— entra en un caso que sigue su viaje hasta la sucursal, el Almacén, la fábrica y la vuelta, con el préstamo de una usada al cliente para que nunca quede sin batería.
 
 ## Specs
@@ -50,14 +52,16 @@ S21. Sin regresiones. Ventas, precios, mínimos, comisiones, transferencias, ing
 
 S22. Verificación. Migraciones probadas contra PostgreSQL real, stores y HTTP con tests, frontend con tests de modelo y componentes, typecheck y build, PDF del comprobante validado estructuralmente, y verificación funcional del artboard elegido.
 
+S23. Vocabulario congelado, para que la migración, el backend y el frontend se construyan por separado. `origin`: `warranty_claim` | `stock_defect`. `phase`: `received` | `in_transit` | `at_warehouse` | `at_factory` | `resolved` | `closed`. `verdict`: nulo o `repaired` | `replaced` | `unrepairable` | `not_covered` | `lost` | `refused_at_warehouse`. Destino por unidad: nulo o `customer` | `stock` | `scrap` | `retained_by_factory`. Desenlace del préstamo: `open` | `returned` | `kept_by_customer` | `failed` | `lost`. Los códigos de error de esta vertical usan el prefijo `LW`, que este repositorio no usa, y nunca repiten un número. Check: un valor fuera de esas listas es rechazado por la base y no por la aplicación solamente.
+
 ## Tasks
 
 T1 [S1–S22] Documento y direcciones visuales, canvas abierto y artboard elegido — route inline (diseño); done: `design/battery-warranty/` con manifest y artboards.
-T2 [S1,S2,S5,S6,S7,S9,S11,S14,S20] Migración: caso, eventos append-only, préstamos, numeración por sucursal y guardas — route delegated; pendiente.
+T2 [S1,S2,S5,S6,S7,S9,S11,S14,S20] Migración: caso, eventos append-only, préstamos, numeración por sucursal y guardas — route delegated (worker); done: `apps/api/migrations/065_warranty_cases.sql` y `warranty_cases_schema_test.go`, commit `57d69b6`; 4/4 en PostgreSQL real y el paquete de migraciones completo en verde.
 T3 [S16,S17] Migración del sembrado de usadas en `closing_material_lines`, con cierres históricos intactos — route delegated; pendiente; riesgo item 1 y 3.
 T4 [S1,S2,S11,S16] Paquete Go del caso: validación de serial y plazo, alta de las dos entradas, transiciones y matriz de resolución — route delegated; pendiente.
 T5 [S3,S8,S14,S19,S20] Store y HTTP: rutas del caso, comprobante PDF y guardas de actor — route delegated; pendiente.
-T6 [S4,S5,S6,S7] UI sucursal: registrar el canje, elegir el préstamo y emitir el comprobante — route delegated; pendiente.
+T6 [S4,S5,S6,S7] UI sucursal: registrar el canje, elegir el préstamo y emitir el comprobante — route delegated; artboard elegido `design/battery-warranty/02-bandeja-de-casos.html` (handoff en curso); pendiente.
 T7 [S9,S10,S13,S14,S15] UI Almacén: mesa de casos, legajo, custodia y liberación — route delegated; pendiente.
 T8 [S12,S15,S17,S18] Colas de trabajo y lectura del pool de usadas — route delegated; pendiente.
 T9 [S21,S22] Verificación integral y cierre con evidencia — route inline; pendiente.
@@ -105,3 +109,15 @@ L9. Exploración (evidencia, no requerimiento): `purchase_used_lines` registra u
 L10. Diseño: `design/battery-warranty/` con cinco artboards — `01-mostrador-canje.html` (el canje en una pantalla), `02-bandeja-de-casos.html` (cola primero, detalle al costado), `03-riel-de-etapas.html` (riel de fases y las tres unidades del caso), `04-comprobante-prestamo.html` (A4 que el cliente se lleva) y `05-mesa-almacen.html` (mesa de fábrica). El artboard elegido para implementar queda pendiente de la revisión del usuario; los otros son alternativas.
 
 L11. Sistema de diseño: `design/system.md` re-sincronizado el 2026-11-23 sobre las 17 hojas (3 313 líneas). El token layer no cambió: 6 custom properties, 69 colores, 16 tamaños, 10 radios, 10 sombras. `system.html` no requirió cambios.
+
+L12. User: "okey me parece bien, entonconces comencemos pa". Artboard elegido: `02-bandeja-de-casos.html` — cola primero con el detalle al costado, que era la recomendación. Los otros cuatro quedan como alternativas. Handoff de implementación abierto; el registro del canje entra como acción desde la bandeja.
+
+L13. Arranque del slice 1: T2, la migración del caso, sus eventos append-only y sus préstamos, delegada. Se congeló el vocabulario en S23 para que backend y frontend avancen por separado.
+
+L14. T2 cerrada y commiteada (`57d69b6`). Evidencia del worker, que condiciona T4:
+
+- (a) `stock_adjustments` exige una razón libre de 1 a 500 caracteres (`022:15`) pero es sólo del Almacén: `022:44-45` rechaza toda sucursal con `LS005`, y `stock_entries` hace lo mismo (`021:38`). No existe ningún catálogo de motivos de stock en el repositorio, y ningún motivo existente sirve para "batería que sale de la sucursal a reparación".
+- (b) Los únicos documentos que hoy escriben `inventory_balances` son `stock_entries`, `stock_adjustments`, las transferencias y las ventas (`021:96`, `022:106`, `007:72`, `008:183`, `025:143`). El caso no toca ninguno.
+- (c) Brechas que quedan para T4/T5: el grafo de transiciones (S9 hoy sólo exige que la fase cambie dentro del vocabulario congelado), la unicidad del reclamo por serial (se permite un caso nuevo si una batería ya reparada vuelve a fallar; lo que no se repite es el reclamo, y eso lo resuelve el store), y la compuerta aviso→liberación con el reparto de actores de S14/S19.
+- (d) El número persistido es `C-<location>-<correlativo>`; la forma con letra del mockup es una etiqueta de sucursal que la base no posee. La UI imprime el número persistido.
+- (e) TDD: la migración se escribió antes que su test, así que no hay RED observado en el primer paso. Sí hubo dos fallos reales durante el ciclo —un `RAISE` con `DETAIL` nulo y un código de error esperado distinto— corregidos y verificados en el fixture.
