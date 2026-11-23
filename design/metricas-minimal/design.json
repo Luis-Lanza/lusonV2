@@ -1,0 +1,27 @@
+{
+  "title": "Métricas de la sucursal, sin texto de más",
+  "brief": "Rediseño de la pantalla de Métricas para el encargado: la misma información del período y de la caja de hoy, sin prosa, sin números repetidos y con una sola jerarquía por pantalla. Tres direcciones estructurales distintas.",
+  "artboards": [
+    {
+      "file": "01-cuatro-cifras.html",
+      "title": "Cuatro cifras",
+      "tradeoff": "Cuatro cifras grandes y una línea de 'hoy' resuelven la pantalla sin cajas ni notas; el detalle que se corta (apertura, gastos, diferencia de la caja, kilos por material) ya no está a la vista y hay que ir a Rendición para verlo. En angosto la misma pantalla se apila sola, sin estado aparte.",
+      "width": 1440,
+      "height": 880
+    },
+    {
+      "file": "02-dos-tiempos.html",
+      "title": "Hoy y el período",
+      "tradeoff": "Separa las dos preguntas reales —qué tengo en el cajón ahora y qué dejó el período cerrado— en dos columnas que se leen de arriba abajo; gana acción pero pierde la lectura instantánea de un vistazo único y el ranking queda al pie.",
+      "width": 1440,
+      "height": 1560
+    },
+    {
+      "file": "03-una-vista.html",
+      "title": "Una vista a la vez",
+      "tradeoff": "El conmutador deja cuatro renglones en pantalla: es la dirección con menos texto simultáneo y la más corta de escanear; a cambio, comparar hoy con el período exige cambiar de vista y el detalle por medio de pago queda en una línea de porcentajes.",
+      "width": 1440,
+      "height": 1270
+    }
+  ]
+}

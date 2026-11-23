@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chosen": "01-cuatro-cifras.html",
+  "handoffs": {
+    "01-cuatro-cifras.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-23T14:19:53.990Z",
+      "startedAt": null,
+      "implementedAt": "2026-11-23T14:31:27.430Z",
+      "note": "Implementado en apps/web/src/Metrics.tsx + el bloque .metrics-* de style.css: cuatro cifras, línea de Hoy, mix, ranking y tira de chatarra; sin prosa, sin tablas de desglose y sin pie. 16 tests nuevos en verde, suite completa 4553 pasados, tsc limpio."
+    }
+  }
+}
