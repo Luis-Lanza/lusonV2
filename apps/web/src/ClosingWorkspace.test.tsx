@@ -192,6 +192,7 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       closing_cash: fund,
       taken_cash: taken,
       sales_total: !bootstrap && opened ? '32480.00' : '0.00',
+      commission_base: !bootstrap && opened ? '32480.00' : '0.00',
       commission_amount: !bootstrap && opened ? '1461.60' : '0.00',
       card_total: !bootstrap && opened ? '3240.00' : '0.00',
       transfer_total: !bootstrap && opened ? '1180.00' : '0.00',
@@ -693,22 +694,23 @@ describe('the numbers rail (S8, S9, S13)', () => {
     expect(within(aside).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 7.015,00');
     expect(within(aside).getByText('Comisión').parentElement).toHaveTextContent('Bs 1.461,60');
     expect(within(aside).getByText('Porcentaje congelado').parentElement).toHaveTextContent('4,50 %');
-    expect(within(aside).getByText('Ventas sobre precio de venta').parentElement).toHaveTextContent('Bs 32.480,00');
+    expect(within(aside).getByText('Ventas del período').parentElement).toHaveTextContent('Bs 32.480,00');
     // The commission base is every sale of the period, so the electronic collection is inside it:
     // the note states it where the warehouse reads the commission (S13).
     expect(within(aside).getByText(/también lo cobrado por QR/)).toBeInTheDocument();
     expect(aside).not.toHaveTextContent('8.476,60');
   });
 
-  it('never claims the commission is batteries only now that the base is the whole catalogue (S4)', async () => {
+  it('states that only the batteries of the period pay the commission', async () => {
     const h = server({ status: 'proposed', product: true });
     await ready(h);
     await screen.findByRole('heading', { name: 'Rendición de cuentas · Sopocachi' });
     const commission = within(rail()).getByText('Comisión del período').closest('.closing-group')!;
-    // The base of the commission is everything sold in the period, of both kinds of the catalogue:
-    // the note stops claiming batteries only, right before saying the base is all of it.
-    expect(commission).not.toHaveTextContent(/sólo baterías/i);
-    expect(commission).toHaveTextContent(/baterías y productos/i);
+    // The commission is paid on the battery lines of the settled window, so the acta states that base
+    // on a line of its own and the note never claims the whole sale pays again (S1, S5).
+    expect(commission).toHaveTextContent(/Sólo las baterías pagan comisión/i);
+    expect(commission).not.toHaveTextContent(/La base es todo lo vendido/i);
+    expect(within(commission as HTMLElement).getByText('Baterías del período (base)')).toBeInTheDocument();
     // The rest of the note is the one it already stated: the QR money is inside the base and the
     // commission is reported apart from the drawer.
     expect(commission).toHaveTextContent(/también lo cobrado por QR/);
@@ -1187,7 +1189,7 @@ describe('the contribution the Admin declares (S10, S11)', () => {
     // It is not cash sales, it is not in the expected drawer and it is in no commission (S9, S10).
     expect(within(aside).getByText('Ventas en efectivo').parentElement).toHaveTextContent('Bs 0,00');
     expect(within(aside).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 0,00');
-    expect(within(aside).getByText('Ventas sobre precio de venta').parentElement).toHaveTextContent('Bs 0,00');
+    expect(within(aside).getByText('Ventas del período').parentElement).toHaveTextContent('Bs 0,00');
     expect(within(aside).getByText('Comisión').parentElement).toHaveTextContent('Bs 0,00');
     // Bs 0,00 counted + Bs 500,00 put in − Bs 500,00 left behind: nothing is taken out.
     expect(within(aside).getByText('Te llevás al Almacén').parentElement).toHaveTextContent('Bs 0,00');

@@ -808,11 +808,13 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             <div className="closing-group">
               <h2>Comisión del período</h2>
               <dl className="closing-summary">
-                <div><dt>Ventas sobre precio de venta</dt><dd>{closingMoneyText(rail.sales_total_cents)}</dd></div>
+                <div><dt>Ventas del período</dt><dd>{closingMoneyText(rail.sales_total_cents)}</dd></div>
+                <div><dt>Baterías del período (base)</dt><dd>{rail.commission_base_cents === null
+                  ? 'Sin base registrada' : closingMoneyText(rail.commission_base_cents)}</dd></div>
                 <div><dt>Porcentaje congelado</dt><dd>{closingRateText(rail.rate_percent)}</dd></div>
                 <div className="total"><dt>Comisión</dt><dd>{closingMoneyText(rail.commission_cents)}</dd></div>
               </dl>
-              <small className="closing-muted">Baterías y productos del catálogo. La base es todo lo vendido en el período, también lo cobrado por QR: la comisión no depende de cómo se pagó. Se informa aparte: no se descuenta de la caja.</small>
+              <small className="closing-muted">Sólo las baterías pagan comisión: los demás productos del catálogo no. No depende de cómo se cobró, también lo cobrado por QR, y se informa aparte: no se descuenta de la caja.</small>
             </div>
 
             <div className="closing-group">

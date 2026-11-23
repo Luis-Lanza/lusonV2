@@ -451,6 +451,11 @@ export interface ClosingRail {
   readonly taken_cents: bigint | null;
   readonly rate_percent: string | null;
   readonly sales_total_cents: bigint;
+  /**
+   * The base the commission was multiplied on: the battery lines of the settled window. `null` on an
+   * acta recorded before the rule, which states no base instead of inventing one (S6).
+   */
+  readonly commission_base_cents: bigint | null;
   readonly commission_cents: bigint;
   readonly card_cents: bigint;
   readonly transfer_cents: bigint;
@@ -483,6 +488,7 @@ export function closingRail(closing: Closing): ClosingRail {
     taken_cents,
     rate_percent: closing.commission_rate_percent,
     sales_total_cents: closing.sales_total_cents,
+    commission_base_cents: closing.commission_base_cents ?? null,
     commission_cents: closing.commission_amount_cents,
     card_cents: closing.card_total_cents,
     transfer_cents: closing.transfer_total_cents,
@@ -1756,6 +1762,7 @@ export function closingOfferRail(closing: Closing, offer: ClosingOffer): Closing
     taken_cents: offer.counted_cash_cents + offer.contributed_cash_cents - offer.closing_cash_cents,
     rate_percent: offer.commission_rate_percent,
     sales_total_cents: offer.sales_total_cents,
+    commission_base_cents: offer.commission_base_cents ?? null,
     commission_cents: offer.commission_amount_cents,
     card_cents: offer.card_total_cents,
     transfer_cents: offer.transfer_total_cents,
