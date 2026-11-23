@@ -1417,3 +1417,109 @@ func TestMetricsCurrentWindowIsAPeriodTheBranchHas(t *testing.T) {
 		t.Fatalf("the branch reads its own window: %+v", window)
 	}
 }
+
+// TestMetricsSplitsTheBatterySalesOfThePeriod pins S2 on a live period: the money of the period sums
+// both catalogue kinds and its battery share is the battery line alone, so the client can state the
+// rest as other products. The commission keeps running on the battery share, never on the product.
+func TestMetricsSplitsTheBatterySalesOfThePeriod(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// The product sells out before the period opens, so the count sheet of the period is the one the
+	// other vertical reads: batteries only.
+	_, product := e.productOf(t, "Agua acidulada", 3)
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+	e.sellProduct(t, product, 3, "5.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+
+	metrics := metricsOf(t, e, opened.ID)
+	if metrics.Sales.Total != "215.00" || metrics.Sales.Batteries != "200.00" ||
+		metrics.Sales.Units != 5 || metrics.Sales.Sales != 2 {
+		t.Fatalf("the period must split the battery sale from the rest: %+v", metrics.Sales)
+	}
+	// 12.50% of the 200.00 of batteries: the product earns no commission.
+	if metrics.Sales.Commission != "25.00" {
+		t.Fatalf("the commission must stay on the battery share: %+v", metrics.Sales)
+	}
+}
+
+// TestMetricsClosedSettlementPublishesTheBatteryShareOfItsSales pins S2 on a closed settlement and on
+// the whole history: a settlement's money comes from its acta, but the battery share of that same
+// immutable stretch comes from the sales, so the two readers of one period state the split.
+func TestMetricsClosedSettlementPublishesTheBatteryShareOfItsSales(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	_, product := e.productOf(t, "Agua acidulada", 3)
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+	e.sellProduct(t, product, 3, "5.00")
+	id := e.closeWindow(t, drawerOf("715.00"))
+
+	closed := metricsOf(t, e, id)
+	if closed.Sales.Total != "215.00" || closed.Sales.Batteries != "200.00" ||
+		closed.Sales.Units != 5 || closed.Sales.Sales != 2 {
+		t.Fatalf("a closed settlement must state the split of its own window: %+v", closed.Sales)
+	}
+	// A product sold after the cut belongs to the history and not to the closed period, and the
+	// battery share keeps counting only the battery lines of every sale.
+	_, after := e.productOf(t, "Agua acidulada extra", 1)
+	e.sellProduct(t, after, 1, "5.00")
+	history := historyOf(t, e)
+	if history.Sales.Total != "220.00" || history.Sales.Batteries != "200.00" ||
+		history.Sales.Units != 6 || history.Sales.Sales != 3 {
+		t.Fatalf("the whole history must state the split of every sale: %+v", history.Sales)
+	}
+}
+
+// TestMetricsPeriodWithoutBatterySalesStatesZero pins the honest absence of S2: a period that sold only
+// other products publishes its money as the total and a battery share of zero, never the total again.
+func TestMetricsPeriodWithoutBatterySalesStatesZero(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	_, product := e.productOf(t, "Agua acidulada", 2)
+	e.sellProduct(t, product, 2, "5.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+
+	metrics := metricsOf(t, e, opened.ID)
+	if metrics.Sales.Total != "10.00" || metrics.Sales.Batteries != "0.00" ||
+		metrics.Sales.Units != 2 || metrics.Sales.Sales != 1 {
+		t.Fatalf("a period without battery sales states a zero share: %+v", metrics.Sales)
+	}
+}
+
+// TestMetricsRefusesABatteryShareAboveThePeriodTotal pins S3 at the refusal: the battery share is a
+// part of the period, so a settlement whose stated total is below the batteries its own window sold is
+// an answer this read could not have produced and it answers nothing at all.
+func TestMetricsRefusesABatteryShareAboveThePeriodTotal(t *testing.T) {
+	e := fixture(t)
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+	// A settlement of the past is written with the database's replica role, exactly like the fixture
+	// that seeds one: its frozen total is below the 200.00 of batteries its window covers, which the
+	// offer of a real settlement can never write.
+	tx, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("the settlement of the past could not be written: %v", err)
+	}
+	defer func() { _ = tx.Rollback(e.ctx) }()
+	if _, err := tx.Exec(e.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatalf("the guards could not be stepped around: %v", err)
+	}
+	var id int64
+	if err := tx.QueryRow(e.ctx, `INSERT INTO branch_closings(branch_location_id,status,
+ period_start,cut_at,closed_at,commission_rate_percent,counted_cash,contributed_cash,closing_cash,
+ sales_total,opened_by_account_id)
+ VALUES(2,'closed',now()-interval '1 hour',now()+interval '1 hour',now(),12.50,0.00,0.00,0.00,
+ 100.00,1) RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("the settlement of the past could not be written: %v", err)
+	}
+	if err := tx.Commit(e.ctx); err != nil {
+		t.Fatalf("the settlement of the past could not be committed: %v", err)
+	}
+
+	_, err = e.store.Metrics(e.ctx, identity(2), closings.MetricsPeriod{ClosingID: &id})
+	refused(t, err, closings.ErrUnavailable)
+}

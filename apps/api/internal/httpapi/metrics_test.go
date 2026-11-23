@@ -28,7 +28,7 @@ import (
 // metricsWireKeys is the frozen key set of the answer, and the key sets of the objects it carries.
 var (
 	metricsWireKeys          = []string{"periods", "period", "source", "sales", "cash", "fund", "materials", "top_models", "stock", "today", "fund_today"}
-	metricsSalesWireKeys     = []string{"total", "cash", "card", "transfer", "qr", "commission", "sales", "units"}
+	metricsSalesWireKeys     = []string{"total", "batteries", "cash", "card", "transfer", "qr", "commission", "sales", "units"}
 	metricsCashWireKeys      = []string{"opening", "sales", "expenses", "expected", "counted", "difference"}
 	metricsFundWireKeys      = []string{"opening", "purchases", "expected", "counted", "difference", "replacement"}
 	metricsMaterialsWireKeys = []string{"used_units", "used_delivered_units", "scrap_milli", "scrap_delivered_milli", "materials"}
@@ -137,6 +137,7 @@ type metricsAnswerWire struct {
 	Source  string              `json:"source"`
 	Sales   struct {
 		Total      string `json:"total"`
+		Batteries  string `json:"batteries"`
 		Cash       string `json:"cash"`
 		Card       string `json:"card"`
 		Transfer   string `json:"transfer"`
@@ -274,8 +275,8 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 	if json.Unmarshal(w.Body.Bytes(), &answer) != nil {
 		t.Fatalf("metrics answer is not decodable: %s", w.Body.String())
 	}
-	for _, money := range []string{answer.Sales.Total, answer.Sales.Cash, answer.Sales.Card,
-		answer.Sales.Transfer, answer.Sales.QR, answer.Sales.Commission} {
+	for _, money := range []string{answer.Sales.Total, answer.Sales.Batteries, answer.Sales.Cash,
+		answer.Sales.Card, answer.Sales.Transfer, answer.Sales.QR, answer.Sales.Commission} {
 		if !metricsMoneyWire.MatchString(money) {
 			t.Fatalf("sales money %q is not canonical: %s", money, w.Body.String())
 		}
@@ -399,8 +400,10 @@ func TestMetricsHTTPAnswer(t *testing.T) {
 	}
 	// The period of the settlement sold nothing and bought nothing: zero is a fact, and the ranking
 	// and the material sheet are empty lists instead of nulls.
-	if answer.Sales.Total != "0.00" || answer.Sales.Sales != 0 || answer.Sales.Units != 0 ||
-		len(answer.Top) != 0 {
+	// S2-S3: the period of the settlement sold nothing, so its total and its battery share are the
+	// zero of a period nobody sold to.
+	if answer.Sales.Total != "0.00" || answer.Sales.Batteries != "0.00" ||
+		answer.Sales.Sales != 0 || answer.Sales.Units != 0 || len(answer.Top) != 0 {
 		t.Fatalf("the closed period states its own volume: %+v", answer.Sales)
 	}
 	if answer.Cash == nil || answer.Cash.Counted == nil || *answer.Cash.Counted != "0.00" ||
@@ -518,8 +521,10 @@ func TestMetricsHTTPPublishesAProductPeriod(t *testing.T) {
 	if row.Brand != nil || row.Model != nil || row.Capacity != nil {
 		t.Fatalf("a product row must not publish a battery column: %+v", row)
 	}
-	// S7: the volume of the period is the sum of every kind it sold.
-	if answer.Sales.Units != 3 || answer.Sales.Sales != 1 || answer.Sales.Total != "5700.00" {
+	// S7: the volume of the period is the sum of every kind it sold, and the battery share of it is
+	// the zero of a period that sold no battery (S2).
+	if answer.Sales.Units != 3 || answer.Sales.Sales != 1 || answer.Sales.Total != "5700.00" ||
+		answer.Sales.Batteries != "0.00" {
 		t.Fatalf("the volume of the period must sum both kinds: %+v", answer.Sales)
 	}
 }
@@ -666,7 +671,7 @@ func validMetrics() closings.Metrics {
 	fundCut := metricsTodayMoment()
 	return closings.Metrics{
 		Source: "settlement",
-		Sales: closings.MetricsSales{Total: "10.00", Cash: "10.00", Card: "0.00",
+		Sales: closings.MetricsSales{Total: "10.00", Batteries: "10.00", Cash: "10.00", Card: "0.00",
 			Transfer: "0.00", QR: "0.00", Commission: "1.00", Sales: 1, Units: 2},
 		Cash: &closings.MetricsCash{Opening: "0.00", Sales: "10.00", Expenses: "0.00",
 			Expected: expected, Counted: &counted, Difference: &expected},
@@ -925,11 +930,13 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 	}
 	// Every account of the answer is admitted by its own guards.
 	for name, breakIt := range map[string]func(*closings.Metrics){
-		"sales total is not canonical":  func(m *closings.Metrics) { m.Sales.Total = "10" },
-		"sales cash has three decimals": func(m *closings.Metrics) { m.Sales.Cash = "10.000" },
-		"negative commission":           func(m *closings.Metrics) { m.Sales.Commission = "-1.00" },
-		"negative sales count":          func(m *closings.Metrics) { m.Sales.Sales = -1 },
-		"negative units":                func(m *closings.Metrics) { m.Sales.Units = -1 },
+		"sales total is not canonical":      func(m *closings.Metrics) { m.Sales.Total = "10" },
+		"sales batteries are not canonical": func(m *closings.Metrics) { m.Sales.Batteries = "10" },
+		"sales batteries exceed the total":  func(m *closings.Metrics) { m.Sales.Batteries = "11.00" },
+		"sales cash has three decimals":     func(m *closings.Metrics) { m.Sales.Cash = "10.000" },
+		"negative commission":               func(m *closings.Metrics) { m.Sales.Commission = "-1.00" },
+		"negative sales count":              func(m *closings.Metrics) { m.Sales.Sales = -1 },
+		"negative units":                    func(m *closings.Metrics) { m.Sales.Units = -1 },
 		"drawer expectation is text": func(m *closings.Metrics) {
 			m.Cash.Expected = "expected"
 		},
@@ -1516,9 +1523,11 @@ func TestMetricsHTTPCurrentWindow(t *testing.T) {
 		t.Fatalf("a window states no drawer, no envelope and no material: %+v %+v %+v",
 			answer.Cash, answer.Fund, answer.Materials)
 	}
-	// The money, the volume and the commission of the window: the sale after the last cut only.
-	if answer.Sales.Total != "192000.00" || answer.Sales.Cash != "192000.00" ||
-		answer.Sales.Card != "0.00" || answer.Sales.Sales != 1 || answer.Sales.Units != 2 {
+	// The money, the volume and the commission of the window: the sale after the last cut only. The
+	// window sold only batteries, so its share is the whole total (S2).
+	if answer.Sales.Total != "192000.00" || answer.Sales.Batteries != "192000.00" ||
+		answer.Sales.Cash != "192000.00" || answer.Sales.Card != "0.00" ||
+		answer.Sales.Sales != 1 || answer.Sales.Units != 2 {
 		t.Fatalf("the window counts only the sales after its cut: %+v", answer.Sales)
 	}
 	// S1-S4: the base is the battery sales of the window, which here are the whole sale of the window.

@@ -36,7 +36,13 @@ type MetricsPeriod struct {
 // commission the branch earned, the number of sales that produced it and the batteries it sold.
 // Cash is the drawer's money; card, transfer and QR never entered it.
 type MetricsSales struct {
-	Total      Money
+	Total Money
+	// Batteries is the part of Total the period sold as batteries: the subtotal of the sale lines whose
+	// catalogue entry is of the battery kind, over the same window as Total. It is read from the sales
+	// themselves -- joined through the line's variant to its catalogue entry -- and never from the acta,
+	// so a closed settlement publishes the battery share of its own immutable stretch beside the money its
+	// acta froze, and the client states the rest as other products. It is never greater than Total (S2, S3).
+	Batteries  Money
 	Cash       Money
 	Card       Money
 	Transfer   Money
@@ -463,12 +469,20 @@ func (s *Store) windowMetrics(ctx context.Context, branch int64) (Metrics, error
 // valid admits the money and the volume of a period as facts: a negative amount is not a
 // collection, and a negative count is not a sale.
 func (m MetricsSales) valid() error {
-	for _, amount := range []Money{m.Total, m.Cash, m.Card, m.Transfer, m.QR, m.Commission} {
+	for _, amount := range []Money{m.Total, m.Batteries, m.Cash, m.Card, m.Transfer, m.QR,
+		m.Commission} {
 		if _, ok := amountCents(amount); !ok {
 			return ErrUnavailable
 		}
 	}
 	if m.Sales < 0 || m.Units < 0 {
+		return ErrUnavailable
+	}
+	// The battery share is a part of the period and never a second total: a share above the total is a
+	// number the two readers of one period -- the sale lines and the acta -- could not have produced (S3).
+	total, _ := amountCents(m.Total)
+	batteries, _ := amountCents(m.Batteries)
+	if batteries > total {
 		return ErrUnavailable
 	}
 	return nil
@@ -480,24 +494,30 @@ func (m MetricsSales) valid() error {
 // it -- but the history has no closing to read, so the same statement answers for it.
 func salesFacts(ctx context.Context, q querier, branch int64, from, to *time.Time) (MetricsSales, error) {
 	where, args := windowOf(branch, from, to)
-	var total, cash, card, transfer, qr string
+	var total, batteries, cash, card, transfer, qr string
 	var sales, units int64
 	err := q.QueryRow(ctx, `SELECT
  coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
         WHERE `+where+`),0)::numeric(12,2)::text,
+ coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
+        JOIN catalog_variants variant ON variant.id=line.variant_id
+        JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
+        WHERE `+where+` AND entry.kind='battery'),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.cash_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.card_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.transfer_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  coalesce((SELECT sum(sale.qr_amount) FROM sales sale WHERE `+where+`),0)::numeric(12,2)::text,
  (SELECT count(*) FROM sales sale WHERE `+where+`),
  coalesce((SELECT sum(line.quantity) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
-        WHERE `+where+`),0)`, args...).Scan(&total, &cash, &card, &transfer, &qr, &sales, &units)
+        WHERE `+where+`),0)`, args...).Scan(&total, &batteries, &cash, &card, &transfer, &qr,
+		&sales, &units)
 	if err != nil {
 		return MetricsSales{}, fail(ctx)
 	}
-	read := MetricsSales{Total: Money(total), Cash: Money(cash), Card: Money(card),
-		Transfer: Money(transfer), QR: Money(qr), Sales: sales, Units: units}
-	for _, amount := range []Money{read.Total, read.Cash, read.Card, read.Transfer, read.QR} {
+	read := MetricsSales{Total: Money(total), Batteries: Money(batteries), Cash: Money(cash),
+		Card: Money(card), Transfer: Money(transfer), QR: Money(qr), Sales: sales, Units: units}
+	for _, amount := range []Money{read.Total, read.Batteries, read.Cash, read.Card, read.Transfer,
+		read.QR} {
 		if _, ok := amountCents(amount); !ok {
 			return MetricsSales{}, ErrUnavailable
 		}

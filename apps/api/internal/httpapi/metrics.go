@@ -293,7 +293,10 @@ type metricsFundTodayDTO struct {
 }
 
 type metricsSalesDTO struct {
-	Total      string `json:"total"`
+	Total string `json:"total"`
+	// Batteries is the part of Total the period sold as batteries, and never the total itself: the client
+	// states the rest as other products (S2, S3).
+	Batteries  string `json:"batteries"`
 	Cash       string `json:"cash"`
 	Card       string `json:"card"`
 	Transfer   string `json:"transfer"`
@@ -540,8 +543,8 @@ func metricsSourceValid(source string) bool {
 // metricsSalesRecord renders the money and the volume of a period, admitting only canonical text
 // and non-negative counts.
 func metricsSalesRecord(sales closings.MetricsSales) (metricsSalesDTO, error) {
-	amounts := []closings.Money{sales.Total, sales.Cash, sales.Card, sales.Transfer, sales.QR,
-		sales.Commission}
+	amounts := []closings.Money{sales.Total, sales.Batteries, sales.Cash, sales.Card, sales.Transfer,
+		sales.QR, sales.Commission}
 	for _, amount := range amounts {
 		if !metricsMoneyPattern.MatchString(string(amount)) {
 			return metricsSalesDTO{}, closings.ErrUnavailable
@@ -550,9 +553,17 @@ func metricsSalesRecord(sales closings.MetricsSales) (metricsSalesDTO, error) {
 	if sales.Sales < 0 || sales.Units < 0 {
 		return metricsSalesDTO{}, closings.ErrUnavailable
 	}
-	return metricsSalesDTO{Total: string(sales.Total), Cash: string(sales.Cash),
-		Card: string(sales.Card), Transfer: string(sales.Transfer), QR: string(sales.QR),
-		Commission: string(sales.Commission), Sales: sales.Sales, Units: sales.Units}, nil
+	// The battery share is a part of the period: a share above the total is a number this read could not
+	// have produced, so the whole answer fails closed instead of publishing it (S3).
+	total, okTotal := metricsSignedCents(closings.Signed(sales.Total))
+	batteries, okBatteries := metricsSignedCents(closings.Signed(sales.Batteries))
+	if !okTotal || !okBatteries || batteries > total {
+		return metricsSalesDTO{}, closings.ErrUnavailable
+	}
+	return metricsSalesDTO{Total: string(sales.Total), Batteries: string(sales.Batteries),
+		Cash: string(sales.Cash), Card: string(sales.Card), Transfer: string(sales.Transfer),
+		QR: string(sales.QR), Commission: string(sales.Commission), Sales: sales.Sales,
+		Units: sales.Units}, nil
 }
 
 func metricsCashRecord(cash closings.MetricsCash) (metricsCashDTO, error) {
