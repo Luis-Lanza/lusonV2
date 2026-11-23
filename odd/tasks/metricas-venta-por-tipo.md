@@ -18,7 +18,13 @@ Base: `feat/metricas-minimal`.
 - [x] **T1** Go: `MetricsSales.Batteries`, suma filtrada por tipo en la ventana del período (también para rendiciones y para el historial), validación y cruce `batteries <= total`. Tests. · S2, S3
 - [x] **T2** `httpapi`: publicar `sales.batteries`; tests de claves. · S2
 - [x] **T3** Web: `metricsAPI` con `batteries` validado y `otros` derivado; `Metrics.tsx` con el bloque `Qué se vendió` y su CSS. Tests. · S3, S4, S5, S6
-- [ ] **T4** Suites, `tsc`, build, servidores y commit.
+- [x] **T4** Suites, `tsc`, build, servidores y commit.
+  - Go: `./internal/closings` 87s y `./internal/httpapi` 259s con Postgres efímero; `go vet` limpio.
+  - Web: `tsc --noEmit` limpio, suite completa **4582 pasados / 1 skip**.
+  - Docs: `apps/api/docs/metrics.md` con `sales.batteries` y `today.commission_base`.
+  - Commits: `ae4e7ed` (API), `c5cf787` (web), `2190238` (docs).
+  - Servidores locales 8080 y 8081 con `index-mx2CcwUD.js`.
+  - Sin verificación en navegador: el bloque se comprobó por estructura y tests, no por captura.
 
 ## Log
 
