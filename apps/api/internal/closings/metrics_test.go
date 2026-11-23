@@ -1252,3 +1252,106 @@ func TestMetricsFundTodayPublishesZeroForAnEmptyBook(t *testing.T) {
 		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
 	}
 }
+
+// windowOfBranch reads the computed window of branch 2: the period from the cut of its last closed
+// settlement to the instant of the read.
+func windowOfBranch(t *testing.T, e *env) closings.Metrics {
+	t.Helper()
+	metrics, err := e.store.Metrics(e.ctx, identity(2), closings.MetricsPeriod{Window: true})
+	if err != nil {
+		t.Fatalf("the metrics of the computed window could not be read: %v", err)
+	}
+	return metrics
+}
+
+// TestMetricsCurrentWindowStartsAtTheLastCut pins S3, S5 and S6 at the store: the computed period is
+// the window from the cut of the last closed settlement to the read, so it counts the sale after that
+// cut and none of the ones a closed settlement already states; it publishes the money, the ranking and
+// the shelf of that window with no drawer, no envelope and no material, because a window has no acta;
+// and its total is the very total the same answer says the branch sold.
+func TestMetricsCurrentWindowStartsAtTheLastCut(t *testing.T) {
+	e := fixture(t)
+	// One sale before the closing belongs to the closed period and never to the window.
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	closed := e.closeFirstSettlement(t, "500.00")
+	// Two units sold after the cut: the window is exactly this sale.
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+
+	window := windowOfBranch(t, e)
+	if window.Source != "live" {
+		t.Fatalf("a computed window states the live origin, got %q", window.Source)
+	}
+	// S5: a window has no acta, so the three accounts a settlement states are null and never a zero.
+	if window.Cash != nil || window.Fund != nil || window.Materials != nil {
+		t.Fatalf("a window states no drawer, no envelope and no material: %+v %+v %+v",
+			window.Cash, window.Fund, window.Materials)
+	}
+	// The money and the volume of the window: the sale after the cut and nothing of the closed one.
+	if window.Sales.Total != "200.00" || window.Sales.Cash != "200.00" ||
+		window.Sales.Card != "0.00" || window.Sales.Transfer != "0.00" ||
+		window.Sales.QR != "0.00" || window.Sales.Sales != 1 || window.Sales.Units != 2 {
+		t.Fatalf("the window counts only the sales after its cut: %+v", window.Sales)
+	}
+	// S6: the total of the window is the total the same answer says the branch sold since that cut,
+	// and the commission is the one the drawer of today is earning over the same window.
+	if window.Today.Sold != "200.00" || window.Sales.Total != window.Today.Sold {
+		t.Fatalf("the window and today must state one total: %+v %+v", window.Sales, window.Today)
+	}
+	if window.Today.Commission != "25.00" || window.Sales.Commission != window.Today.Commission {
+		t.Fatalf("the window and today must state one commission: %+v %+v", window.Sales, window.Today)
+	}
+	// The window starts where the closed settlement ended, and not where it was closed.
+	if cut := e.cutOf(t, closed); window.Today.Since == nil || !window.Today.Since.Equal(cut) {
+		t.Fatalf("the window starts at the cut %v of the last closed settlement: %v", cut,
+			window.Today.Since)
+	}
+	if window.Today.Opening != "500.00" {
+		t.Fatalf("the window inherits what the closing left: %+v", window.Today)
+	}
+	// The ranking is the one of the same window: one model, its two units and their money.
+	if len(window.Top) != 1 {
+		t.Fatalf("the window sold one model: %+v", window.Top)
+	}
+	if model := window.Top[0]; model.Brand != "CAR" || model.Model != "NS40ZL" ||
+		model.Capacity != "35" || model.Units != 2 || model.Money != "200.00" {
+		t.Fatalf("the ranking of the window must be its own sales: %+v", model)
+	}
+	// S3: reading the window creates, opens and proposes nothing, so the branch is not frozen by it.
+	if settled := e.scalar(t, `SELECT count(*) FROM branch_closings WHERE branch_location_id=2`); settled != 1 {
+		t.Fatalf("reading the window must not settle anything, got %d settlements", settled)
+	}
+	// The closed settlement still publishes its own period: the window is a second read of the same
+	// branch and never a second calculation of that acta.
+	if frozen := metricsOf(t, e, closed); frozen.Sales.Sales != 1 || frozen.Sales.Total != "100.00" {
+		t.Fatalf("the closed period must keep its own window: %+v", frozen.Sales)
+	}
+}
+
+// TestMetricsCurrentWindowIsAPeriodTheBranchHas pins S7 and the shape of the period at the store: a
+// branch that never closed a settlement has no cut to start the window from, the window is one period
+// and never two, and the warehouse owns no drawer to read here.
+func TestMetricsCurrentWindowIsAPeriodTheBranchHas(t *testing.T) {
+	e := fixture(t)
+	// Branch 2 never closed a settlement and branch 3 has no history at all: neither has a window.
+	for _, branch := range []int{2, 3} {
+		_, err := e.store.Metrics(e.ctx, identity(branch), closings.MetricsPeriod{Window: true})
+		refused(t, err, closings.ErrNotFound)
+	}
+	_, err := e.store.Metrics(e.ctx, warehouse(), closings.MetricsPeriod{Window: true})
+	refused(t, err, closings.ErrForbidden)
+	// A closing id or the whole history beside the window is two periods in one request.
+	id := e.closeFirstSettlement(t, "500.00")
+	for _, period := range []closings.MetricsPeriod{
+		{Window: true, ClosingID: &id},
+		{Window: true, History: true},
+	} {
+		_, err := e.store.Metrics(e.ctx, identity(2), period)
+		refused(t, err, closings.ErrInvalid)
+	}
+	// The branch that closed the settlement reads its own window, which is now an empty one.
+	window := windowOfBranch(t, e)
+	if window.Source != "live" || window.Today.Since == nil || window.Sales.Sales != 0 ||
+		window.Sales.Total != "0.00" || window.Top == nil || len(window.Top) != 0 {
+		t.Fatalf("the branch reads its own window: %+v", window)
+	}
+}

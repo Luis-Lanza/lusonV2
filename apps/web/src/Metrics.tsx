@@ -4,7 +4,8 @@ import TransferDate from './shared/TransferDate';
 import {
   createMetricsAPI, metricsErrorMessages, metricsPeriodToken, MetricsAPIError,
   metricsUnavailable, type MetricsAnswer, type MetricsFundToday, type MetricsMaterials,
-  type MetricsModel, type MetricsPeriod, type MetricsSource, type MetricsToday,
+  type MetricsModel, type MetricsPeriod, type MetricsPeriodKind, type MetricsSource,
+  type MetricsToday,
 } from './metricsAPI';
 
 export interface MetricsProps {
@@ -52,6 +53,10 @@ function mixWidth(part: bigint, whole: bigint): string {
 
 /** The origin of the numbers, under the title, always in words (S6). */
 function provenance(source: MetricsSource, period: MetricsPeriod): ReactNode {
+  // The window is not a settlement: it starts at the last closed cut and moves with every sale.
+  if (period.kind === 'current') {
+    return <>Desde el corte del <TransferDate value={period.from ?? ''} /> · se mueve con cada venta</>;
+  }
   if (source === 'settlement') {
     return <>Números al cierre del <TransferDate value={period.to} /></>;
   }
@@ -69,8 +74,13 @@ function Figure({ title, value, note }: { title: string; value: ReactNode; note:
 }
 
 /** What the drawer of the period states: the count when there is one, the expectation when there is not. */
-function cashReading(cash: MetricsAnswer['cash']): { value: ReactNode; note: string } {
-  if (cash === null) return { value: 'Sin caja', note: 'el acumulado no tiene caja' };
+function cashReading(
+  cash: MetricsAnswer['cash'], kind: MetricsPeriodKind,
+): { value: ReactNode; note: string } {
+  if (cash === null) {
+    return { value: 'Sin caja', note: kind === 'current'
+      ? 'se cuenta al rendir' : 'el acumulado no tiene caja' };
+  }
   const difference = cash.difference_cents;
   if (cash.counted_cents === null) {
     return { value: money(cash.expected_cents), note: 'todavía no se contó' };
@@ -82,8 +92,13 @@ function cashReading(cash: MetricsAnswer['cash']): { value: ReactNode; note: str
 }
 
 /** What the warehouse leaves in the envelope: the next opening, or the words of its absence. */
-function fundReading(fund: MetricsAnswer['fund']): { value: ReactNode; note: string } {
-  if (fund === null) return { value: 'Sin fondo', note: 'el acumulado no tiene fondo' };
+function fundReading(
+  fund: MetricsAnswer['fund'], kind: MetricsPeriodKind,
+): { value: ReactNode; note: string } {
+  if (fund === null) {
+    return { value: 'Sin fondo', note: kind === 'current'
+      ? 'lo declara el Almacén al rendir' : 'el acumulado no tiene fondo' };
+  }
   if (fund.replacement_cents === null) {
     return { value: 'Sin declarar', note: 'el Almacén todavía no lo declaró' };
   }
@@ -92,12 +107,13 @@ function fundReading(fund: MetricsAnswer['fund']): { value: ReactNode; note: str
 
 /** The delivery of the period: the counted units and kilos, never a zero nobody counted. */
 function materialReading(
-  materials: MetricsMaterials | null, history: boolean,
+  materials: MetricsMaterials | null, kind: MetricsPeriodKind,
 ): { value: ReactNode; note: string } {
   if (materials === null) {
     return {
       value: 'Sin planilla',
-      note: history ? 'el acumulado no tiene planilla' : 'este período no tiene planilla',
+      note: kind === 'current' ? 'se entrega al rendir'
+        : kind === 'all' ? 'el acumulado no tiene planilla' : 'este período no tiene planilla',
     };
   }
   const note = 'baterías usadas y chatarra';
@@ -117,9 +133,9 @@ function materialReading(
  */
 function PeriodFigures({ answer }: { answer: MetricsAnswer }) {
   const { sales } = answer;
-  const cash = cashReading(answer.cash);
-  const fund = fundReading(answer.fund);
-  const materials = materialReading(answer.materials, answer.source === 'history');
+  const cash = cashReading(answer.cash, answer.period.kind);
+  const fund = fundReading(answer.fund, answer.period.kind);
+  const materials = materialReading(answer.materials, answer.period.kind);
   return <section className="metrics-figures" aria-label="Lo que dejó el período">
     <dl>
       <Figure title="Plata del período" value={money(sales.total_cents)}

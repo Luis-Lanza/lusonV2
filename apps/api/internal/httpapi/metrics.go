@@ -20,6 +20,17 @@ import (
 // cannot be asked for someone else's numbers.
 const metricsCollectionPath = "/api/metrics"
 
+// The computed period this read publishes first: the window from the cut of the last closed
+// settlement of the branch to the instant of the read (S3, S4). Its kind and its token are the same
+// word, and it is this contract's own period -- never a fourth kind of the Compras selector, which
+// keeps its three exactly as they are (S9).
+const (
+	metricsCurrentKind  purchases.PeriodKind = "current"
+	metricsCurrentToken                      = "current"
+	// metricsCurrentLabel is the exact words the selector and the chosen period state for it (S4).
+	metricsCurrentLabel = "Desde el último corte"
+)
+
 // metricsMoneyPattern and metricsSignedPattern admit the canonical money and difference text this
 // contract publishes: exactly two decimals for an amount, with an optional sign only where a
 // difference states one. Anything else is a shape this server never wrote.
@@ -75,6 +86,13 @@ func (a *API) metrics(purchaseStore *purchases.Store, store *closings.Store) htt
 			metricsFailure(w, err)
 			return
 		}
+		// The computed window is this contract's own period and names no settlement, so it is resolved
+		// before the Compras selector is asked (S3): the selector is read for the list the branch already
+		// has and the window is placed in front of it.
+		window := selection.Kind == metricsCurrentKind
+		if window {
+			selection = purchases.PeriodSelection{Kind: purchases.PeriodAll}
+		}
 		periods, period, err := purchaseStore.ResolvePeriod(r.Context(), actor, selection)
 		if err != nil {
 			metricsFailure(w, err)
@@ -86,10 +104,17 @@ func (a *API) metrics(purchaseStore *purchases.Store, store *closings.Store) htt
 			failure(w, 400, "invalid_request")
 			return
 		}
-		result, err := store.Metrics(r.Context(), actor, closings.MetricsPeriod{
-			ClosingID: period.ClosingID,
-			History:   period.Kind == purchases.PeriodAll,
-		})
+		chosen := closings.MetricsPeriod{ClosingID: period.ClosingID,
+			History: period.Kind == purchases.PeriodAll}
+		if window {
+			periods, period, err = metricsCurrentPeriod(periods)
+			if err != nil {
+				metricsFailure(w, err)
+				return
+			}
+			chosen = closings.MetricsPeriod{Window: true}
+		}
+		result, err := store.Metrics(r.Context(), actor, chosen)
 		if err != nil {
 			metricsFailure(w, err)
 			return
@@ -103,10 +128,11 @@ func (a *API) metrics(purchaseStore *purchases.Store, store *closings.Store) htt
 	}
 }
 
-// metricsPeriodQuery reads the period of the wire: the same tokens the Compras contract reads,
-// with nothing else admitted. A bare separator is an ambiguous framing, never the default period,
-// a query without a period reads the whole history, and every part of the query is judged -- a
-// repeated or foreign key is a rejection, never the first one that happens to be a period.
+// metricsPeriodQuery reads the period of the wire: the same tokens the Compras contract reads plus the
+// one computed window of this read, with nothing else admitted. A bare separator is an ambiguous
+// framing, never the default period, a query without a period reads the whole history, and every part
+// of the query is judged -- a repeated or foreign key is a rejection, never the first one that happens
+// to be a period.
 func metricsPeriodQuery(raw string) (purchases.PeriodSelection, error) {
 	selection := purchases.PeriodSelection{Kind: purchases.PeriodAll}
 	if raw == "" {
@@ -121,7 +147,7 @@ func metricsPeriodQuery(raw string) (purchases.PeriodSelection, error) {
 		if !ok || key != "period" || value == "" || seen {
 			return purchases.PeriodSelection{}, purchases.ErrInvalid
 		}
-		read, err := purchasePeriodQuery(value)
+		read, err := metricsPeriodToken(value)
 		if err != nil {
 			return purchases.PeriodSelection{}, err
 		}
@@ -131,6 +157,41 @@ func metricsPeriodQuery(raw string) (purchases.PeriodSelection, error) {
 		return purchases.PeriodSelection{}, purchases.ErrInvalid
 	}
 	return selection, nil
+}
+
+// metricsPeriodToken reads one period token: the computed window is this contract's own and every
+// other token is judged by the Compras contract's own parser, so the two selectors can never admit a
+// different set of settlements.
+func metricsPeriodToken(value string) (purchases.PeriodSelection, error) {
+	if value == metricsCurrentToken {
+		return purchases.PeriodSelection{Kind: metricsCurrentKind}, nil
+	}
+	return purchasePeriodQuery(value)
+}
+
+// metricsCurrentPeriod places the computed window in front of the selector the branch already has and
+// returns it as the chosen period (S4). The window is published only when the branch has a closed
+// settlement to start from and no live one: a live settlement already covers that same stretch of time
+// as «En curso», and offering both would be the same number twice. Otherwise it is not published at all
+// and asking for it is a period the branch does not have (S4, S7).
+func metricsCurrentPeriod(periods []purchases.Period) ([]purchases.Period, purchases.Period, error) {
+	var cut *time.Time
+	for _, period := range periods {
+		switch {
+		case period.Kind == purchases.PeriodOpen:
+			return nil, purchases.Period{}, closings.ErrNotFound
+		case period.Kind == purchases.PeriodSettlement && cut == nil:
+			// The selector is newest first, so the first closed settlement is the last one of the branch
+			// and its cut is where the window starts.
+			cut = period.To
+		}
+	}
+	if cut == nil || cut.IsZero() {
+		return nil, purchases.Period{}, closings.ErrNotFound
+	}
+	from := *cut
+	window := purchases.Period{Kind: metricsCurrentKind, From: &from, Label: metricsCurrentLabel}
+	return append([]purchases.Period{window}, periods...), window, nil
 }
 
 // metricsFailure publishes the domain's own decision: an invalid request names the request, a
@@ -297,7 +358,7 @@ func metricsRecord(periods []purchases.Period, chosen purchases.Period,
 	if err != nil {
 		return metricsDTO{}, err
 	}
-	period, err := purchasePeriodRecord(chosen)
+	period, err := metricsPeriodEntry(chosen)
 	if err != nil {
 		return metricsDTO{}, err
 	}
@@ -309,6 +370,14 @@ func metricsRecord(periods []purchases.Period, chosen purchases.Period,
 		}
 	}
 	if !offered || !metricsSourceValid(metrics.Source) {
+		return metricsDTO{}, closings.ErrUnavailable
+	}
+	// The computed window is a period without an acta and it is never a frozen one: its origin is the
+	// live read, the three accounts a closure states are null, and the money it publishes is the total
+	// the same answer says the branch sold since the last cut, so the screen cannot contradict itself
+	// (S5, S6).
+	if chosen.Kind == metricsCurrentKind && (metrics.Source != "live" || metrics.Cash != nil ||
+		metrics.Fund != nil || metrics.Materials != nil || metrics.Sales.Total != metrics.Today.Sold) {
 		return metricsDTO{}, closings.ErrUnavailable
 	}
 	sales, err := metricsSalesRecord(metrics.Sales)
@@ -360,27 +429,35 @@ func metricsRecord(periods []purchases.Period, chosen purchases.Period,
 	return record, nil
 }
 
-// metricsPeriodsRecord publishes the selector of the metrics read: every closed settlement newest
-// first, then the live one, then the whole history. The pending balance is left out because it is
-// not a period, and a list that repeats an entry is not a selector this domain wrote. The frozen
-// order is checked here and not assumed: the settlements descend strictly by their own id, the
-// live period comes after every settlement and at most once, and the whole history closes the
-// list, so a screen can never offer a period beside the one it is showing.
+// metricsPeriodsRecord publishes the selector of the metrics read: the computed window when the branch
+// can publish it, then every closed settlement newest first, then the live one, then the whole history.
+// The pending balance is left out because it is not a period, and a list that repeats an entry is not a
+// selector this domain wrote. The frozen order is checked here and not assumed: the window is published
+// first and only beside a closed settlement with no live one covering it (S4), the settlements descend
+// strictly by their own id, the live period comes after every settlement and at most once, and the whole
+// history closes the list, so a screen can never offer a period beside the one it is showing.
 func metricsPeriodsRecord(periods []purchases.Period) ([]purchasePeriodDTO, error) {
 	unavailable := func() ([]purchasePeriodDTO, error) { return nil, purchases.ErrUnavailable }
 	published := make([]purchasePeriodDTO, 0, len(periods))
 	seen := make(map[purchasePeriodKey]bool, len(periods))
 	previousSettlement := int64(math.MaxInt64)
-	open := false
+	open, windowed, settled := false, false, false
 	for i, period := range periods {
 		if period.Kind == purchases.PeriodPending {
 			continue
 		}
-		record, err := purchasePeriodRecord(period)
+		record, err := metricsPeriodEntry(period)
 		if err != nil {
 			return unavailable()
 		}
 		switch period.Kind {
+		case metricsCurrentKind:
+			// The computed window is the first entry of the selector and it is published once: nothing
+			// is offered before it, because it is the window the branch is living (S4).
+			if windowed || len(published) != 0 {
+				return unavailable()
+			}
+			windowed = true
 		case purchases.PeriodSettlement:
 			// The selector is ordered by the cut, which is also the order of the ids: a
 			// settlement that does not descend is not a history this domain wrote, and neither
@@ -388,7 +465,7 @@ func metricsPeriodsRecord(periods []purchases.Period) ([]purchasePeriodDTO, erro
 			if open || *record.ClosingID >= previousSettlement {
 				return unavailable()
 			}
-			previousSettlement = *record.ClosingID
+			previousSettlement, settled = *record.ClosingID, true
 		case purchases.PeriodOpen:
 			// The branch is inside one settlement at a time, so a second live period is not a
 			// state this domain wrote.
@@ -412,7 +489,40 @@ func metricsPeriodsRecord(periods []purchases.Period) ([]purchasePeriodDTO, erro
 	if len(published) == 0 || published[len(published)-1].Kind != string(purchases.PeriodAll) {
 		return unavailable()
 	}
+	// The window is offered only when it exists: a branch with no closed settlement has no cut to start
+	// from, and a live settlement already covers that same window as «En curso» (S4).
+	if windowed && (open || !settled) {
+		return unavailable()
+	}
 	return published, nil
+}
+
+// metricsPeriodEntry admits one period of the selector and renders it: the computed window is this
+// read's own kind and every settlement is the Compras contract's, judged by its own record.
+func metricsPeriodEntry(period purchases.Period) (purchasePeriodDTO, error) {
+	if period.Kind == metricsCurrentKind {
+		return metricsCurrentPeriodRecord(period)
+	}
+	return purchasePeriodRecord(period)
+}
+
+// metricsCurrentPeriodRecord publishes the computed window (S4): the exact words the selector states for
+// it, where it starts -- the cut of the last closed settlement -- and no end, because it ends at the
+// instant of the read. It names no settlement, so it states no closing id and no `to`; a window that
+// names a document is a period this read never offered.
+func metricsCurrentPeriodRecord(period purchases.Period) (purchasePeriodDTO, error) {
+	unavailable := func() (purchasePeriodDTO, error) {
+		return purchasePeriodDTO{}, purchases.ErrUnavailable
+	}
+	if period.Label != metricsCurrentLabel || period.ClosingID != nil || period.From == nil ||
+		period.To != nil || period.From.IsZero() {
+		return unavailable()
+	}
+	from, ok := purchaseMoment(*period.From)
+	if !ok {
+		return unavailable()
+	}
+	return purchasePeriodDTO{Kind: string(metricsCurrentKind), From: &from, Label: period.Label}, nil
 }
 
 // metricsSourceValid admits the three origins the read can state.

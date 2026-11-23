@@ -20,10 +20,16 @@ import (
 // closing document itself, so the two screens can never disagree about the same act.
 
 // MetricsPeriod names the period a metrics read covers. A period is a settlement — closed or
-// live — named by its closing, or the whole history of the branch: never a calendar month.
+// live — named by its closing, the whole history of the branch, or the computed window from the cut
+// of its last closed settlement to the instant of the read: never a calendar month.
 type MetricsPeriod struct {
 	ClosingID *int64
 	History   bool
+	// Window is the computed period the selector publishes as «Desde el último corte» (S3): from the
+	// cut of the last closed settlement of the branch to the moment of the read. It names no document
+	// — reading it creates, opens and proposes nothing — and it is not a settlement, so it can never
+	// be combined with one.
+	Window bool
 }
 
 // MetricsSales is the money and the volume of the period: the collection by payment method, the
@@ -229,10 +235,18 @@ func (s *Store) Metrics(ctx context.Context, actor auth.Identity, period Metrics
 		return Metrics{}, ErrForbidden
 	}
 	if period.History {
-		if period.ClosingID != nil {
+		if period.ClosingID != nil || period.Window {
 			return Metrics{}, ErrInvalid
 		}
 		return s.historyMetrics(ctx, int64(actor.Location.ID))
+	}
+	if period.Window {
+		// The computed window is a stretch of time of the branch and never a document: a closing id
+		// beside it would be two periods in one request, which this read does not answer.
+		if period.ClosingID != nil {
+			return Metrics{}, ErrInvalid
+		}
+		return s.windowMetrics(ctx, int64(actor.Location.ID))
 	}
 	if period.ClosingID == nil || *period.ClosingID < 1 {
 		return Metrics{}, ErrInvalid
@@ -372,6 +386,73 @@ func (s *Store) historyMetrics(ctx context.Context, branch int64) (Metrics, erro
 		return Metrics{}, fail(ctx)
 	}
 	return Metrics{Source: metricsSourceHistory, Sales: sales, Top: top, Stock: stock, Today: today,
+		FundToday: fundToday}, nil
+}
+
+// windowMetrics reads the computed period of the branch: from the cut of its last closed settlement to
+// the instant of the read (S3). Reading it creates, opens and proposes nothing — a live settlement is a
+// document of its own and this read never touches it — and it states no drawer, no envelope and no
+// material, because a window has no acta to freeze them (S5). The money, the ranking, the shelf and the
+// two boxes of today are read inside one read-only repeatable snapshot, so the window and the drawer of
+// today describe one instant and the answer cannot contradict itself (S6).
+func (s *Store) windowMetrics(ctx context.Context, branch int64) (Metrics, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Metrics{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	// The window starts at the cut of the last closed settlement, which is the instant the drawer and
+	// the envelope of today start from: the same reader resolves it, so the three of them name one
+	// instant and never three.
+	today, err := todayMetrics(ctx, tx, branch)
+	if err != nil {
+		return Metrics{}, err
+	}
+	if today.Since == nil {
+		// A branch that never closed a settlement has no cut to start from: the window is not a period
+		// it has (S7).
+		return Metrics{}, ErrNotFound
+	}
+	from := *today.Since
+	sales, err := salesFacts(ctx, tx, branch, &from, nil)
+	if err != nil {
+		return Metrics{}, err
+	}
+	// The commission of the window is the one the branch is earning over it -- the rate it was
+	// configured times the total it sold, rounded once by the settlement's own rule -- and never a
+	// second arithmetic of the same money (S5, S18).
+	sales.Commission = today.Commission
+	if err := sales.valid(); err != nil {
+		return Metrics{}, err
+	}
+	// S6: the money of the window and the total the same answer says the branch sold since that cut
+	// are one reading of one window, so they agree or this read answers nothing.
+	if sales.Total != today.Sold {
+		return Metrics{}, ErrUnavailable
+	}
+	top, err := topModels(ctx, tx, branch, &from, nil)
+	if err != nil {
+		return Metrics{}, err
+	}
+	stock, err := stockUnits(ctx, tx, branch)
+	if err != nil {
+		return Metrics{}, err
+	}
+	fundToday, err := fundTodayMetrics(ctx, tx, branch)
+	if err != nil {
+		return Metrics{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Metrics{}, fail(ctx)
+	}
+	// A window has no acta, so no drawer, no envelope and no material sheet are stated: the three are
+	// null here instead of a zero somebody never counted (S5).
+	return Metrics{Source: metricsSourceLive, Sales: sales, Top: top, Stock: stock, Today: today,
 		FundToday: fundToday}, nil
 }
 
@@ -851,10 +932,15 @@ func signedQuantityMilli(text string) (int64, bool) {
 
 // windowOf builds the branch predicate of a read, with its window when the period has one. The
 // window is half-open -- [period_start, cut_at) -- exactly like the settlement it comes from, so
-// a sale made at the cut belongs to the next period and never to both.
+// a sale made at the cut belongs to the next period and never to both. A window that states only
+// its start is the computed one: it begins at the cut of the last closed settlement and ends at the
+// instant of the read, so there is no bound to state and no sale is left out (S3).
 func windowOf(branch int64, from, to *time.Time) (string, []any) {
-	if from == nil || to == nil {
+	if from == nil {
 		return "sale.branch_location_id=$1", []any{branch}
+	}
+	if to == nil {
+		return "sale.branch_location_id=$1 AND sale.created_at >= $2", []any{branch, *from}
 	}
 	return "sale.branch_location_id=$1 AND sale.created_at >= $2 AND sale.created_at < $3",
 		[]any{branch, *from, *to}

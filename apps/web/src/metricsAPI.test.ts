@@ -10,6 +10,9 @@ const closedPeriod = (id: number, from: string, to: string) =>
 const livePeriod = (id: number, from: string, to: string) =>
   ({ kind: 'open', closing_id: id, from, to, label: 'En curso' });
 const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
+// The window since the last closed cut: no closing of its own, no end, computed at the read (S3, S4).
+const currentPeriod = { kind: 'current', closing_id: null, from: '2026-11-01T12:00:00Z', to: null,
+  label: 'Desde el último corte' };
 const closed = closedPeriod(4, '2026-10-20T12:00:00Z', '2026-11-01T12:00:00Z');
 const live = livePeriod(5, '2026-11-01T12:00:00Z', '2026-11-12T12:00:00Z');
 const periods = [closed, live, allPeriod];
@@ -93,6 +96,15 @@ const liveBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     scrap_delivered_milli: null, materials: scrapRows.map(row => ({ ...row, delivered_milli: null })) },
   top_models: topModels, stock, today, fund_today: fundToday, ...overrides,
 });
+// The window since the last cut: the money and the ranking of that stretch, and no acta to read a
+// drawer, an envelope or a sheet from (S5).
+const windowBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+  periods: [currentPeriod, closed, allPeriod], period: currentPeriod, source: 'live', sales,
+  cash: null, fund: null, materials: null,
+  // One window, one total: what the period collected is what the line of today says was sold.
+  today: { ...today, sold: sales.total, commission: '535800.00' },
+  top_models: topModels, stock, fund_today: fundToday, ...overrides,
+});
 // The accumulated history: sales, catalogue and scrap, and no drawer at all (S9). The drawer of
 // today is still stated: it is the drawer of the branch, not a total of the period (S12).
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -162,6 +174,45 @@ describe('metrics wire contract', () => {
     expect(open.materials?.used_delivered_units).toBeNull();
     expect(open.materials?.scrap_delivered_milli).toBeNull();
     expect(open.materials?.materials.every(row => row.delivered_milli === null)).toBe(true);
+  });
+
+  it('reads the window since the last cut as a period without an acta', () => {
+    const answer = parseMetricsAnswer(windowBody());
+    expect(answer.period).toEqual(currentPeriod);
+    expect(metricsPeriodToken(answer.period)).toBe('current');
+    // It moves with every sale, and it states no drawer, no envelope and no sheet (S5).
+    expect(answer.source).toBe('live');
+    expect(answer.cash).toBeNull();
+    expect(answer.fund).toBeNull();
+    expect(answer.materials).toBeNull();
+    expect(answer.sales.total_cents).toBe(428640000n);
+    expect(answer.top_models).toHaveLength(5);
+    // It is published once and first, before every settlement (S4).
+    expect(answer.periods.map(period => period.kind)).toEqual(['current', 'settlement', 'all']);
+  });
+
+  it('refuses a window that is not the first period, or that names a closing or an end', () => {
+    const notFirst = JSON.parse(windowBody()) as Record<string, unknown>;
+    notFirst.periods = [closed, currentPeriod, allPeriod];
+    expect(() => parseMetricsAnswer(JSON.stringify(notFirst))).toThrow(metricsInvalidResponseMessage);
+
+    const withClosing = JSON.parse(windowBody()) as Record<string, unknown>;
+    withClosing.periods = [{ ...currentPeriod, closing_id: 4 }, closed, allPeriod];
+    withClosing.period = { ...currentPeriod, closing_id: 4 };
+    expect(() => parseMetricsAnswer(JSON.stringify(withClosing))).toThrow(metricsInvalidResponseMessage);
+
+    const withEnd = JSON.parse(windowBody()) as Record<string, unknown>;
+    withEnd.periods = [{ ...currentPeriod, to: '2026-11-12T12:00:00Z' }, closed, allPeriod];
+    withEnd.period = { ...currentPeriod, to: '2026-11-12T12:00:00Z' };
+    expect(() => parseMetricsAnswer(JSON.stringify(withEnd))).toThrow(metricsInvalidResponseMessage);
+
+    // A window is not an acta: a frozen origin beside it describes another period.
+    expect(() => parseMetricsAnswer(windowBody({ source: 'settlement' })))
+      .toThrow(metricsInvalidResponseMessage);
+
+    // One window, one total: a period that collected something else than what today sold is not it.
+    expect(() => parseMetricsAnswer(windowBody({ today: { ...today, sold: '100.00' } })))
+      .toThrow(metricsInvalidResponseMessage);
   });
 
   it('admits a purchase net a counter-document left negative, with its sign', () => {

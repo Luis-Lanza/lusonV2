@@ -10,6 +10,9 @@ const closedPeriod = (id: number, from: string, to: string) =>
 const livePeriod = (id: number, from: string, to: string) =>
   ({ kind: 'open', closing_id: id, from, to, label: 'En curso' });
 const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
+// The window since the last closed cut: computed at the read, with no closing of its own (S3, S4).
+const currentPeriod = { kind: 'current', closing_id: null, from: '2026-11-01T12:00:00Z', to: null,
+  label: 'Desde el último corte' };
 const closed = closedPeriod(4, '2026-10-20T12:00:00Z', '2026-11-01T12:00:00Z');
 const older = closedPeriod(3, '2026-10-01T12:00:00Z', '2026-10-20T12:00:00Z');
 const live = livePeriod(5, '2026-11-01T12:00:00Z', '2026-11-12T12:00:00Z');
@@ -96,6 +99,15 @@ const liveBody = () => JSON.stringify({
     scrap_delivered_milli: null, materials: scrapRows.map(row => ({ ...row, delivered_milli: null })) },
   top_models: topModels, stock, today, fund_today: fundToday,
 });
+// The window since the last cut: the money and the ranking of that stretch, and no acta, so the
+// three accounts are null and the figures say why (S5, S8).
+const currentBody = () => JSON.stringify({
+  periods: [currentPeriod, closed, older, allPeriod], period: currentPeriod, source: 'live', sales,
+  cash: null, fund: null, materials: null,
+  // One window, one total: the period collected what the line of today says was sold (S6).
+  today: { ...today, sold: sales.total, commission: '535800.00' },
+  top_models: topModels, stock, fund_today: fundToday,
+});
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   periods, period: allPeriod, source: 'history', sales, cash: null, fund: null, materials: null,
   top_models: topModels, stock, today, fund_today: fundToday, ...overrides,
@@ -106,6 +118,7 @@ const defaultRoutes: Route = token => {
   if (token === '4') return json(settlementBody());
   if (token === '3') return json(olderBody());
   if (token === '5') return json(liveBody());
+  if (token === 'current') return json(currentBody());
   if (token === 'all') return json(historyBody());
   throw new Error('Unexpected mocked period: ' + token);
 };
@@ -375,6 +388,40 @@ describe('branch metrics screen', () => {
     fireEvent.change(select, { target: { value: '3' } });
     await waitFor(() => expect(calls()).toContain('/api/metrics?period=3'));
     expect(await screen.findByText('10 ventas')).toBeInTheDocument();
+  });
+
+  it('offers the window since the last cut first and reads it without an acta', async () => {
+    // This branch has no live settlement: its selector carries the window first, then the closed
+    // settlements, then the history — the same list every answer publishes (S4).
+    const windowPeriods = [currentPeriod, closed, older, allPeriod];
+    const { calls } = setup(token => {
+      if (token === 'current') return json(currentBody());
+      if (token === 'all') return json(historyBody({ periods: windowPeriods }));
+      return json(settlementBody({ periods: windowPeriods }));
+    });
+    await selectPeriod('current');
+    // The window is the first period the selector offers, and asking for it asks for `current`.
+    await waitFor(() => expect(calls()).toContain('/api/metrics?period=current'));
+    const select = screen.getByLabelText('Período') as HTMLSelectElement;
+    expect(within(select).getByRole('option', { name: 'Desde el último corte' })).toBeInTheDocument();
+    expect(within(select).getAllByRole('option').map(option => (option as HTMLOptionElement).value))
+      .toEqual(['current', '4', '3', 'all']);
+
+    // The money of the window, its ranking and its shelf; the accounts say the acta is missing (S8).
+    const figures = panel('Lo que dejó el período');
+    expect(within(figures).getByText('Bs 4.286.400,00')).toBeInTheDocument();
+    expect(within(figures).getByText('63 ventas')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin caja')).toBeInTheDocument();
+    expect(within(figures).getByText('se cuenta al rendir')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin fondo')).toBeInTheDocument();
+    expect(within(figures).getByText('lo declara el Almacén al rendir')).toBeInTheDocument();
+    expect(within(figures).getByText('Sin planilla')).toBeInTheDocument();
+    expect(within(figures).getByText('se entrega al rendir')).toBeInTheDocument();
+    expect(within(panel('Más vendidas')).getAllByRole('row')).toHaveLength(6);
+
+    // The stamp says which cut the window starts at, and that it moves with every sale.
+    expect(await screen.findByText(/se mueve con cada venta/)).toBeInTheDocument();
+    expect(screen.getByText(/Desde el corte del/)).toBeInTheDocument();
   });
 
   it('refuses a payload the server could not have written and offers the same retry', async () => {

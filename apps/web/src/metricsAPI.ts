@@ -40,9 +40,11 @@ export const metricsErrorMessages: Record<MetricsErrorCode, string> = {
 export type MetricsSource = 'settlement' | 'live' | 'history';
 const metricsSources: readonly MetricsSource[] = ['settlement', 'live', 'history'];
 
-/** A period of the selector: a closed settlement, the live one, or the whole history. */
-export type MetricsPeriodKind = 'settlement' | 'open' | 'all';
-const metricsPeriodKinds: readonly MetricsPeriodKind[] = ['settlement', 'open', 'all'];
+/** A period of the selector: the window since the last cut, a closed settlement, the live one, or
+ * the whole history. The window is not a settlement: it is computed from the last closed cut and
+ * never opens or freezes anything (S3, S4). */
+export type MetricsPeriodKind = 'current' | 'settlement' | 'open' | 'all';
+const metricsPeriodKinds: readonly MetricsPeriodKind[] = ['current', 'settlement', 'open', 'all'];
 
 export interface MetricsPeriod {
   readonly kind: MetricsPeriodKind;
@@ -380,6 +382,11 @@ function periodValue(value: unknown): MetricsPeriod {
     if (record.closing_id !== null || record.from !== null || record.to !== null) return invalidResponse();
     return Object.freeze({ kind, closing_id: null, from: null, to: null, label });
   }
+  if (kind === 'current') {
+    // The window since the last cut has no closing of its own and no end: it ends at the read (S3).
+    if (record.closing_id !== null || record.to !== null) return invalidResponse();
+    return Object.freeze({ kind, closing_id: null, from: timestamp(record.from), to: null, label });
+  }
   const closing_id = count(record.closing_id, Number.MAX_SAFE_INTEGER);
   if (closing_id < 1) return invalidResponse();
   const from = timestamp(record.from);
@@ -418,6 +425,9 @@ function periodsValue(value: unknown): readonly MetricsPeriod[] {
     if (seen.has(identity)) return invalidResponse();
     seen.add(identity);
     if (period.kind === 'all' && index !== periods.length - 1) return invalidResponse();
+    // The window since the last cut is the most recent stretch of the branch and is published once,
+    // before every settlement: anywhere else it is not a selector this server wrote (S4).
+    if (period.kind === 'current' && index !== 0) return invalidResponse();
     if (period.kind === 'settlement') {
       // The live settlement is the newest of the branch: a closed one after it, or an ascending
       // closing id, is not the history this server read.
@@ -438,7 +448,8 @@ function sourceValue(value: unknown, kind: MetricsPeriodKind): MetricsSource {
   }
   // The origin is decided by the period: frozen settlement, live settlement, whole history. An
   // answer that pairs them differently is describing another period than the one it names.
-  const expected: MetricsSource = kind === 'settlement' ? 'settlement' : kind === 'open' ? 'live' : 'history';
+  const expected: MetricsSource = kind === 'settlement' ? 'settlement'
+    : kind === 'all' ? 'history' : 'live';
   if (value !== expected) return invalidResponse();
   return expected;
 }
@@ -754,20 +765,24 @@ export function parseMetricsAnswer(raw: string): MetricsAnswer {
   const source = sourceValue(record.source, period.kind);
   const sales = salesValue(record.sales);
   const history = source === 'history';
-  // A drawer and an envelope are closed one settlement at a time: the accumulated history has
-  // nothing to state, and a settlement always states both (S9).
-  if (history !== (record.cash === null) || history !== (record.fund === null)) return invalidResponse();
+  // A drawer and an envelope are closed one settlement at a time: the accumulated history and the
+  // window since the last cut have nothing to state, and a settlement always states both (S9, S5).
+  const actaLess = history || period.kind === 'current';
+  if (actaLess !== (record.cash === null) || actaLess !== (record.fund === null)) return invalidResponse();
   const cash = record.cash === null ? null : cashValue(record.cash);
   const fund = record.fund === null ? null : fundValue(record.fund);
   // The material sheet is the third account: the history has none, and a settlement whose sheet was
   // never seeded publishes none either.
-  if (history && record.materials !== null) return invalidResponse();
+  if (actaLess && record.materials !== null) return invalidResponse();
   const materials = record.materials === null ? null : materialsValue(record.materials);
   const top_models = topModelsValue(record.top_models);
   const stock = stockValue(record.stock);
   // The drawer of today is stated by every source and is never null: it is the drawer of the branch,
   // not a total of the period, and it is the one reading a branch without a settlement open has.
   const today = todayValue(record.today);
+  // The window and the line of today are the same stretch of time: an answer whose two totals
+  // disagree is not describing one window (S6).
+  if (period.kind === 'current' && sales.total_cents !== today.sold_cents) return invalidResponse();
   // The purchase envelope of today is stated by every source too: it is the second money box of the
   // branch, and without an open settlement there is no other screen that states it (S15).
   const fund_today = fundTodayValue(record.fund_today);
@@ -779,9 +794,10 @@ export function parseMetricsAnswer(raw: string): MetricsAnswer {
 // Path and transport
 // ---------------------------------------------------------------------------------
 
-/** The period token this contract reads: the whole history or one positive closing id. */
+/** The period token this contract reads: the window since the last cut, the whole history or one
+ * positive closing id. */
 function metricsPeriodTokenIsValid(token: string): boolean {
-  if (token === 'all') return true;
+  if (token === 'all' || token === 'current') return true;
   return /^[1-9]\d*$/.test(token) && Number.isSafeInteger(Number(token));
 }
 
