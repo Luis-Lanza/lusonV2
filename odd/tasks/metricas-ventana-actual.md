@@ -26,3 +26,4 @@ Pantalla de Métricas de la sucursal: agregar un período calculado «Desde el �
 
 - **L1.** «pero cuando una rendicion esta abierta quiere decir que la sucursal esta bloqueada... como puedo ver las metricas entonces»
 - **L2.** «Período «Desde el último corte» en el selector» (dirección elegida sobre las tres ofrecidas).
+- **L3.** Incidente en uso: el selector seguía sin ofrecer la ventana. Causa: el handler armaba la entrada `current` **solo** cuando la lectura ya la pedía, así que la lectura que publica el selector (`period=all`, la primera de la pantalla) nunca la incluía y era imposible elegirla. Corregido: la ventana se coloca delante del selector en toda lectura y se usa como período elegido solo cuando se pide. El test que faltaba —publicación en `period=all`— quedó agregado.

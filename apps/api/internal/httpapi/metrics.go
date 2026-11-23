@@ -104,16 +104,21 @@ func (a *API) metrics(purchaseStore *purchases.Store, store *closings.Store) htt
 			failure(w, 400, "invalid_request")
 			return
 		}
-		chosen := closings.MetricsPeriod{ClosingID: period.ClosingID,
-			History: period.Kind == purchases.PeriodAll}
-		if window {
-			periods, period, err = metricsCurrentPeriod(periods)
-			if err != nil {
-				metricsFailure(w, err)
-				return
+		// The window is placed in front of the selector on every read, not only when it is asked for:
+		// a period the branch can choose has to be published by the read that offers it (S4). When a
+		// live settlement exists, or the branch never closed one, the window does not exist and the
+		// selector is the one the branch already has.
+		if withWindow, windowPeriod, windowErr := metricsCurrentPeriod(periods); windowErr == nil {
+			periods = withWindow
+			if window {
+				period = windowPeriod
 			}
-			chosen = closings.MetricsPeriod{Window: true}
+		} else if window {
+			metricsFailure(w, windowErr)
+			return
 		}
+		chosen := closings.MetricsPeriod{ClosingID: period.ClosingID,
+			History: period.Kind == purchases.PeriodAll, Window: window}
 		result, err := store.Metrics(r.Context(), actor, chosen)
 		if err != nil {
 			metricsFailure(w, err)

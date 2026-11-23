@@ -377,14 +377,16 @@ func TestMetricsHTTPAnswer(t *testing.T) {
 	if answer.Source != "settlement" {
 		t.Fatalf("a closed settlement states its own origin, got %q", answer.Source)
 	}
-	// The selector offers the closed settlement and the whole history: the pending balance is not a
-	// period, so it is not offered here at all.
-	if len(answer.Periods) != 2 || answer.Periods[0].Kind != "settlement" ||
-		answer.Periods[0].ClosingID == nil || *answer.Periods[0].ClosingID != closed.ID ||
-		answer.Periods[0].From == nil || answer.Periods[0].To == nil ||
-		answer.Periods[1].Kind != "all" || answer.Periods[1].ClosingID != nil ||
-		answer.Periods[1].From != nil || answer.Periods[1].To != nil {
-		t.Fatalf("the selector must publish the settlement and the history: %+v", answer.Periods)
+	// The selector offers the window since the last cut, then the closed settlement, then the whole
+	// history: the pending balance is not a period, so it is not offered here at all (S4).
+	if len(answer.Periods) != 3 || answer.Periods[0].Kind != "current" ||
+		answer.Periods[0].ClosingID != nil || answer.Periods[0].From == nil || answer.Periods[0].To != nil ||
+		answer.Periods[1].Kind != "settlement" ||
+		answer.Periods[1].ClosingID == nil || *answer.Periods[1].ClosingID != closed.ID ||
+		answer.Periods[1].From == nil || answer.Periods[1].To == nil ||
+		answer.Periods[2].Kind != "all" || answer.Periods[2].ClosingID != nil ||
+		answer.Periods[2].From != nil || answer.Periods[2].To != nil {
+		t.Fatalf("the selector must publish the window, the settlement and the history: %+v", answer.Periods)
 	}
 	if answer.Period.Kind != "settlement" || answer.Period.ClosingID == nil ||
 		*answer.Period.ClosingID != closed.ID || answer.Period.Label == "" {
@@ -424,7 +426,8 @@ func TestMetricsHTTPAnswer(t *testing.T) {
 		t.Fatalf("the history states no drawer, no envelope and no material: %+v", history)
 	}
 	if history.Period.Kind != "all" || history.Period.ClosingID != nil ||
-		len(history.Periods) != 2 || history.Periods[1].Kind != "all" {
+		len(history.Periods) != 3 || history.Periods[0].Kind != "current" ||
+		history.Periods[2].Kind != "all" {
 		t.Fatalf("the history is the last entry of the selector: %+v", history.Periods)
 	}
 
@@ -1561,6 +1564,38 @@ func TestMetricsHTTPCurrentWindow(t *testing.T) {
 // branch with no closed settlement has no window to offer, the token is judged exactly like the other
 // periods when the query is not the one this contract writes, and a refused read leaves the branch as
 // it was.
+func TestMetricsHTTPCurrentWindowIsPublishedOnEveryRead(t *testing.T) {
+	f := metricsFixture(t)
+	f.closeSettlement(t, 3,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"arranque del período"}`)
+	// The screen opens on the whole history, and that read is the one that has to publish the window:
+	// a period the branch can choose has to be offered by the read that publishes the selector (S4).
+	answer := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=all", "")), 200)
+	if answer.Period.Kind != "all" {
+		t.Fatalf("the whole history must still be the chosen period: %+v", answer.Period)
+	}
+	if len(answer.Periods) != 3 || answer.Periods[0].Kind != "current" ||
+		answer.Periods[1].Kind != "settlement" || answer.Periods[2].Kind != "all" {
+		t.Fatalf("the window must be published first on every read: %+v", answer.Periods)
+	}
+	if answer.Periods[0].Label != "Desde el último corte" || answer.Periods[0].ClosingID != nil ||
+		answer.Periods[0].To != nil || answer.Periods[0].From == nil {
+		t.Fatalf("the published window must name no settlement and no end: %+v", answer.Periods[0])
+	}
+	// The published entry is the period the contract then reads when it is chosen.
+	chosen := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=current", "")), 200)
+	if chosen.Period.Kind != "current" || chosen.Period.From == nil ||
+		*chosen.Period.From != *answer.Periods[0].From {
+		t.Fatalf("the chosen window must be the published one: %+v %+v", chosen.Period, answer.Periods[0])
+	}
+	// A settlement read publishes it too: the selector does not depend on what was asked for.
+	settlement := metricsAnswer(t, f.serve(t, f.request(3, "GET",
+		fmt.Sprintf("/api/metrics?period=%d", *answer.Periods[1].ClosingID), "")), 200)
+	if len(settlement.Periods) != 3 || settlement.Periods[0].Kind != "current" {
+		t.Fatalf("a settlement read must publish the window first too: %+v", settlement.Periods)
+	}
+}
+
 func TestMetricsHTTPCurrentWindowRefusals(t *testing.T) {
 	f := metricsFixture(t)
 	// The branch never closed a settlement: its selector is the whole history and it has no window.
