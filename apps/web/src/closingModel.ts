@@ -128,6 +128,12 @@ export interface ClosingOffer {
   readonly cut_at: string;
   readonly sales_total_cents: bigint;
   readonly commission_rate_percent: string;
+  /**
+   * The base the frozen rate was multiplied on: the battery lines of the window, never the whole sale,
+   * because an other product earns nothing (S1, S2, S3). An offer recorded before that rule carries no
+   * base — `null`, or the key omitted — and its amount is then only judged by its shape (S6).
+   */
+  readonly commission_base_cents?: bigint | null;
   readonly commission_amount_cents: bigint;
   readonly cash_sales_cents: bigint;
   readonly cash_expenses_cents: bigint;
@@ -289,6 +295,12 @@ export interface Closing {
   readonly contributed_cash_cents: bigint;
   readonly closing_cash_cents: bigint | null;
   readonly sales_total_cents: bigint;
+  /**
+   * The base the commission of this acta was multiplied on: the battery lines of the settled window,
+   * never the whole sale (S1, S2, S3). It is `null` — or omitted — on an acta recorded before the rule,
+   * which is a fact of the document and never a zero (S6); `sales_total_cents` still counts every line.
+   */
+  readonly commission_base_cents?: bigint | null;
   readonly commission_amount_cents: bigint;
   readonly card_total_cents: bigint;
   readonly transfer_total_cents: bigint;

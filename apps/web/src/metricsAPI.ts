@@ -178,8 +178,14 @@ export interface MetricsToday {
    * of a rate is a state of its own and never a zero percentage (S20).
    */
   readonly rate_percent: string | null;
-  /** The total the branch sold in that window: the base the commission is computed on (S18). */
+  /** The total the branch sold in that window: every line of it, batteries and other products (S4). */
   readonly sold_cents: bigint;
+  /**
+   * The base the commission is computed on: the battery lines of that same window. An other product is
+   * sold and collected but earns nothing, so the base is published beside the total instead of being
+   * assumed to be it (S1, S2, S18).
+   */
+  readonly commission_base_cents: bigint;
   /**
    * What the branch is earning so far, not what it holds: the amount is settled when the settlement is
    * proposed and never enters the drawer or the fund (S19).
@@ -675,7 +681,7 @@ function movementValue(value: unknown): MetricsMovement {
  */
 function todayValue(value: unknown): MetricsToday {
   const record = fields(value, ['since', 'opening', 'sales', 'expenses', 'effective', 'expected',
-    'rate', 'sold', 'commission', 'movements']);
+    'rate', 'sold', 'commission_base', 'commission', 'movements']);
   const opening_cents = wireMoney(record.opening, false);
   const sales_cents = wireMoney(record.sales, false);
   const expenses_cents = wireMoney(record.expenses, false);
@@ -683,15 +689,16 @@ function todayValue(value: unknown): MetricsToday {
   const expected_cents = wireMoney(record.expected, true);
   if (expected_cents !== opening_cents + sales_cents + effective_cents) return invalidResponse();
   const sold_cents = wireMoney(record.sold, false);
+  const commission_base_cents = wireMoney(record.commission_base, false);
   const commission_cents = wireMoney(record.commission, false);
   const rate = record.rate === null ? null : wirePercent(record.rate);
-  // The commission is the rate times the total sold, rounded exactly once on that total: the mirror of
+  // The commission is the rate times the battery base, rounded exactly once on that base: the mirror of
   // the server's own arithmetic, so a card that does not add up is refused here instead of being shown
-  // as if someone had written it (S18). A branch without a rate earns nothing, and a commission with no
-  // rate behind it is not a reading this server could have produced (S20).
+  // as if someone had written it (S1, S3). A branch without a rate earns nothing, and a commission with
+  // no rate behind it is not a reading this server could have produced (S20).
   if (rate === null) {
     if (commission_cents !== 0n) return invalidResponse();
-  } else if (commission_cents !== (sold_cents * rate.hundredths + 5000n) / 10000n) {
+  } else if (commission_cents !== (commission_base_cents * rate.hundredths + 5000n) / 10000n) {
     return invalidResponse();
   }
   if (!Array.isArray(record.movements) || record.movements.length > metricsTodayMovements) {
@@ -709,7 +716,7 @@ function todayValue(value: unknown): MetricsToday {
     since: record.since === null ? null : timestamp(record.since),
     opening_cents, sales_cents, expenses_cents, effective_cents, expected_cents,
     rate_percent: rate === null ? null : rate.text,
-    sold_cents, commission_cents,
+    sold_cents, commission_base_cents, commission_cents,
     movements: Object.freeze(movements),
   });
 }

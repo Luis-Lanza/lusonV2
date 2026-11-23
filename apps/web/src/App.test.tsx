@@ -2052,7 +2052,7 @@ describe('branch metrics', () => {
     // commission it did not earn are all stated, and the absence of a rate is a null (S18-S20).
     today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', effective: '0.00',
       expected: '0.00',
-      rate: null, sold: '0.00', commission: '0.00', movements: [] },
+      rate: null, sold: '0.00', commission_base: '0.00', commission: '0.00', movements: [] },
     fund_today: { since: null, opening: '0.00', purchases: '0.00', effective: '0.00', balance: '0.00', documents: 0,
       used_units: 0, scrap_milli: 0 } };
   // The screen opens on the window since the last cut (S10): a computed period with no acta, so it

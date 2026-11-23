@@ -36,7 +36,8 @@ const expense = (overrides: Record<string, unknown> = {}) => ({
 });
 
 // The closed settlement of the chosen artboard: Bs 7.015,00 expected, Bs 6.980,00 counted,
-// Bs 900,00 fund, 4,50 % of Bs 32.480,00 reported beside the drawer.
+// Bs 900,00 fund, 4,50 % of Bs 32.480,00 reported beside the drawer. The period sold batteries and no
+// other product, so the base the commission was computed on is its whole sale (S3).
 const document = (overrides: Record<string, unknown> = {}) => ({
   id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: 'closed',
   period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z',
@@ -45,17 +46,35 @@ const document = (overrides: Record<string, unknown> = {}) => ({
   expected_cash: '7015.00',
   counted_cash: '6980.00', cash_difference: '-35.00', contributed_cash: '0.00',
   closing_cash: '900.00', taken_cash: '6080.00', sales_total: '32480.00',
-  commission_amount: '1461.60', card_total: '3240.00', transfer_total: '1180.00',
+  commission_base: '32480.00', commission_amount: '1461.60', card_total: '3240.00',
+  transfer_total: '1180.00',
   qr_total: '2760.00', observation: 'contado en persona', opened_by_account_id: 1,
   count_lines: [countedLine(), countedLine({ variant_id: 2, polarity: 'R', expected_quantity: 9 })],
   rounds: [], expenses: [], corrections: [], ...overrides,
 });
 
+// One round of a proposal: the offer the warehouse made the branch, with the base its commission was
+// multiplied on beside a total that still counts every line of the period (S3, S5).
+const offer = (overrides: Record<string, unknown> = {}) => ({
+  period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z',
+  sales_total: '32480.00', commission_rate_percent: '4.50', commission_base: '20000.00',
+  commission_amount: '900.00', cash_sales: '6430.00', cash_expenses: '215.00',
+  card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00',
+  counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00',
+  observation: '', count_lines: [{ variant_id: 1, expected_quantity: 12, counted_quantity: 12 }],
+  ...overrides });
+
+const round = (overrides: Record<string, unknown> = {}) => ({
+  id: 1, round: 1, offer: offer(), proposed_by_account_id: 1,
+  proposed_at: '2026-09-12T18:31:00Z', decision: 'accepted', decision_reason: '',
+  decided_by_account_id: 2, decided_at: '2026-09-12T18:35:00Z', ...overrides });
+
 const openDocument = (overrides: Record<string, unknown> = {}) => document({
   status: 'open', closed_at: null, commission_rate_percent: null, cash_sales: '0.00',
   cash_expenses: '0.00', cash_effective: '0.00', expected_cash: '800.00', counted_cash: null,
   cash_difference: null,
-  closing_cash: null, taken_cash: null, sales_total: '0.00', commission_amount: '0.00',
+  closing_cash: null, taken_cash: null, sales_total: '0.00', commission_base: '0.00',
+  commission_amount: '0.00',
   card_total: '0.00', transfer_total: '0.00', qr_total: '0.00', observation: '',
   count_lines: [countedLine({ counted_quantity: null })], ...overrides,
 });
@@ -139,11 +158,61 @@ describe('the settlement document', () => {
 
   it('rejects a commission that is not the frozen rate over the total, rounded once half up (S6, S20)', () => {
     // Bs 0,10 at 5,00 % is exactly half a cent: the single rounding goes up to Bs 0,01.
-    const half = document({ sales_total: '0.10', commission_amount: '0.01',
+    const half = document({ sales_total: '0.10', commission_base: '0.10', commission_amount: '0.01',
       commission_rate_percent: '5.00' });
     expect(closingRail(parseClosing(JSON.stringify(half))).commission_cents).toBe(1n);
     expect(() => parseClosing(JSON.stringify({ ...half, commission_amount: '0.00' }))).toThrow();
   });
+
+  it('computes the commission on the battery base of the period and never on the whole sale (S1, S3)', () => {
+    // The period sold a battery and an other product: Bs 32.480,00 of total, of which Bs 20.000,00 are
+    // the battery lines. The frozen 4,50 % applies to those 20.000,00 and reports Bs 900,00 beside a
+    // total that keeps counting both lines (S4).
+    const mixed = document({ sales_total: '32480.00', commission_base: '20000.00',
+      commission_amount: '900.00' });
+    const closing = parseClosing(JSON.stringify(mixed));
+    expect(closing.commission_base_cents).toBe(2000000n);
+    expect(closing.sales_total_cents).toBe(3248000n);
+    expect(closing.commission_amount_cents).toBe(90000n);
+    expect(closingRail(closing).commission_cents).toBe(90000n);
+    // The commission the whole sale would produce is not the commission of this base, and the parser
+    // refuses the document instead of describing it (S1).
+    expect(() => parseClosing(JSON.stringify({ ...mixed, commission_amount: '1461.60' }))).toThrow();
+  });
+
+  it('accepts an acta recorded before the rule as a document without a base (S6)', () => {
+    // An acta recorded before the commission was restricted to the batteries states no base: its amount
+    // is read as the money it is and is never recomputed over a base the document does not publish.
+    const before: Record<string, unknown> = document({ commission_amount: '1461.60' });
+    delete before.commission_base;
+    const closing = parseClosing(JSON.stringify(before));
+    expect(closing.commission_base_cents).toBeNull();
+    expect(closing.commission_amount_cents).toBe(146160n);
+    // The same document with the null the server publishes for it reads the same way.
+    expect(parseClosing(JSON.stringify(document({ commission_base: null }))).commission_base_cents)
+      .toBeNull();
+    // Without a base only the shape of the amount is judged: a malformed one is still refused.
+    expect(() => parseClosing(JSON.stringify(document({ commission_base: null,
+      commission_amount: '1461.6' })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ commission_base: '-32480.00' })))).toThrow();
+  });
+
+  it('reads the base of a proposal round and refuses a commission that base does not produce (S3, S5)', () => {
+    // The offer of the round is the preview the warehouse proposes: its total counts every line and its
+    // commission is the rate over the battery base alone.
+    const closing = parseClosing(JSON.stringify(document({ rounds: [round()] })));
+    expect(closing.rounds[0].offer.commission_base_cents).toBe(2000000n);
+    expect(closing.rounds[0].offer.sales_total_cents).toBe(3248000n);
+    expect(closing.rounds[0].offer.commission_amount_cents).toBe(90000n);
+    // An offer whose commission is the one the whole sale would produce is not this contract's.
+    expect(() => parseClosing(JSON.stringify(document({ rounds: [round({
+      offer: offer({ commission_amount: '1461.60' }) })] })))).toThrow();
+    // An offer made before the rule publishes no base: only the shape of its amount is judged.
+    const before = parseClosing(JSON.stringify(document({ rounds: [round({ offer: offer({
+      commission_base: null, commission_amount: '1461.60' }) })] })));
+    expect(before.rounds[0].offer.commission_base_cents).toBeNull();
+  });
+
   it('rejects a shape this contract never publishes', () => {
     expect(() => parseClosing(JSON.stringify({ ...document(), total: '6080.00' }))).toThrow();
     const missing: Record<string, unknown> = document();
@@ -383,8 +452,8 @@ describe('the purchase fund of the document', () => {
       opening_cash: '100.00', cash_sales: '0.00', cash_expenses: '45.50',
       cash_effective: '-15.50', expected_cash: '84.50',
       counted_cash: '84.50', cash_difference: '0.00', closing_cash: '84.50', taken_cash: '0.00',
-      sales_total: '0.00', commission_amount: '0.00', card_total: '0.00', transfer_total: '0.00',
-      qr_total: '0.00',
+      sales_total: '0.00', commission_base: '0.00', commission_amount: '0.00', card_total: '0.00',
+      transfer_total: '0.00', qr_total: '0.00',
     })));
     expect(settled.cash_effective_cents).toBe(-1550n);
     expect(settled.cash_expenses_cents).toBe(4550n);

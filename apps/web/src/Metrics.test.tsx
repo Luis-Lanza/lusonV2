@@ -61,8 +61,9 @@ const stock = { units: 214 };
 const today = {
   since: '2026-11-01T12:00:00Z', opening: '500000.00', sales: '1842300.00',
   expenses: '2500.00', effective: '-42500.00', expected: '2299800.00',
-  // What the branch is earning so far: 2100000.00 sold since the cut at 12.50% is 262500.00 (S18).
-  rate: '12.50', sold: '2100000.00', commission: '262500.00',
+  // What the branch is earning so far: the rate over the battery base of the window, 12.50% of
+  // 2100000.00 = 262500.00. The window sold no other product, so its base is its total (S3, S18).
+  rate: '12.50', sold: '2100000.00', commission_base: '2100000.00', commission: '262500.00',
   movements: [
     { kind: 'aporte', amount: '10000.00', effective: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
     { kind: 'gasto', amount: '2500.00', effective: '-2500.00', occurred_at: '2026-11-02T09:30:00Z' },
@@ -107,8 +108,9 @@ const liveBody = () => JSON.stringify({
 const currentBody = () => JSON.stringify({
   periods: [currentPeriod, closed, older, allPeriod], period: currentPeriod, source: 'live', sales,
   cash: null, fund: null, materials: null,
-  // One window, one total: the period collected what the line of today says was sold (S6).
-  today: { ...today, sold: sales.total, commission: '535800.00' },
+  // One window, one total: the period collected what the line of today says was sold, and the battery
+  // base of that same window is stated beside it (S6).
+  today: { ...today, sold: sales.total, commission_base: sales.total, commission: '535800.00' },
   top_models: topModels, stock, fund_today: fundToday,
 });
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -430,8 +432,10 @@ describe('branch metrics screen', () => {
   });
 
   it('states a window without sales as the start of the commission, not as a zero', async () => {
+    // A window that sold no battery has no base to multiply, so the commission it earned is zero (S7).
     setup(token => token === '4'
-      ? json(settlementBody({ today: { ...today, sold: '0.00', commission: '0.00' } }))
+      ? json(settlementBody({ today: { ...today, sold: '0.00', commission_base: '0.00',
+        commission: '0.00' } }))
       : json(historyBody()));
     await selectPeriod('4');
     expect(within(panel('Hoy')).getByText('Sin comisión todavía')).toBeInTheDocument();

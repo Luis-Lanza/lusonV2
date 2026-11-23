@@ -380,24 +380,41 @@ function materialLines(record: Record<string, unknown>): readonly ClosingMateria
   return Object.freeze(lines);
 }
 
-/** The commission is the frozen rate over the offer's own total, rounded once, half up (S6, S20). */
-function commissionOf(sales_total_cents: bigint, rate: string): bigint {
+/** The commission is the frozen rate over the base it was multiplied on, rounded once, half up (S3). */
+function commissionOf(base_cents: bigint, rate: string): bigint {
   const hundredths = closingCents(rate);
-  return (sales_total_cents * hundredths + 5000n) / 10000n;
+  return (base_cents * hundredths + 5000n) / 10000n;
+}
+
+/**
+ * Whether a published commission answers its identity. The base is the battery lines of the window and
+ * never the whole sale, because an other product earns nothing (S1, S2); an acta recorded before that
+ * rule publishes no base at all, and its amount is then only judged by its shape, never recomputed over
+ * a base the document does not state (S6).
+ */
+function commissionAgrees(commission_cents: bigint, base_cents: bigint | null | undefined,
+  rate: string): boolean {
+  return base_cents === null || base_cents === undefined
+    || commission_cents === commissionOf(base_cents, rate);
 }
 
 function offer(value: unknown): ClosingOffer {
   const record = fields(value, ['period_start', 'cut_at', 'sales_total', 'commission_rate_percent',
     'commission_amount', 'cash_sales', 'cash_expenses', 'card_total', 'transfer_total', 'qr_total',
     'counted_cash', 'contributed_cash', 'closing_cash', 'observation', 'count_lines'],
-  ['purchase_fund_counted', 'purchase_fund_cash']);
+  ['purchase_fund_counted', 'purchase_fund_cash', 'commission_base']);
   const period_start = timestamp(record.period_start);
   const cut_at = timestamp(record.cut_at);
   if (Date.parse(cut_at) < Date.parse(period_start)) return invalidResponse();
   const rate = percent(record.commission_rate_percent);
   const sales_total_cents = amount(record.sales_total);
+  // The base is the amount this payload may omit: an offer made before the rule recorded none, which
+  // is not the same fact as a zero base and is never read as one (S6).
+  const commission_base_cents = optionalAmount(record.commission_base ?? null);
   const commission_amount_cents = amount(record.commission_amount);
-  if (commission_amount_cents !== commissionOf(sales_total_cents, rate)) return invalidResponse();
+  if (!commissionAgrees(commission_amount_cents, commission_base_cents, rate)) {
+    return invalidResponse();
+  }
   const counted_cash = optionalAmount(record.counted_cash);
   const closing_cash = optionalAmount(record.closing_cash);
   // An offer is only made for a counted drawer, so both sides of it are stated.
@@ -416,6 +433,7 @@ function offer(value: unknown): ClosingOffer {
     cut_at,
     sales_total_cents,
     commission_rate_percent: rate,
+    commission_base_cents,
     commission_amount_cents,
     cash_sales_cents: amount(record.cash_sales),
     cash_expenses_cents: amount(record.cash_expenses),
@@ -782,7 +800,9 @@ function expensesOf(value: unknown): readonly ClosingExpense[] {
 /**
  * Reads one settlement. The derived numbers are recomputed here from the facts that produce
  * them and must agree with what the server published, so the rail can never show a drawer that
- * disagrees with its own money.
+ * disagrees with its own money. The commission is one of those identities: it is the frozen rate over
+ * the base the document published, and an acta recorded before that rule states no base and is read
+ * as it was written (S3, S6).
  */
 function readClosing(value: unknown): Closing {
   const record = fields(value, ['id', 'branch_location_id', 'branch_name', 'status',
@@ -791,7 +811,7 @@ function readClosing(value: unknown): Closing {
     'contributed_cash',
     'closing_cash', 'taken_cash', 'sales_total', 'commission_amount', 'card_total',
     'transfer_total', 'qr_total', 'observation', 'opened_by_account_id', 'count_lines', 'rounds',
-    'expenses', 'corrections'], [...purchaseFundKeys, 'material_lines']);
+    'expenses', 'corrections'], [...purchaseFundKeys, 'material_lines', 'commission_base']);
   // The branch's own expenses of the window, with the motive of each one: the document is only accepted
   // when the field is the list the contract publishes, so a shape change cannot reach the acta unnoticed
   // (S8, S13).
@@ -808,6 +828,9 @@ function readClosing(value: unknown): Closing {
   if ((state === 'closed') !== (closed_at !== null)) return invalidResponse();
   const rate = record.commission_rate_percent === null ? null : percent(record.commission_rate_percent);
   if ((state === 'open') !== (rate === null)) return invalidResponse();
+  // The base the commission was multiplied on. An acta recorded before the rule publishes none, which
+  // is a fact of its own: the amount is then judged by its shape alone (S6).
+  const commission_base_cents = optionalAmount(record.commission_base ?? null);
   const counted_cash_cents = optionalAmount(record.counted_cash);
   const closing_cash_cents = optionalAmount(record.closing_cash);
   if (!Array.isArray(record.count_lines) || record.count_lines.length > closingMaxCountLines) {
@@ -840,6 +863,7 @@ function readClosing(value: unknown): Closing {
     contributed_cash_cents: amount(record.contributed_cash),
     closing_cash_cents,
     sales_total_cents: amount(record.sales_total),
+    commission_base_cents,
     commission_amount_cents: amount(record.commission_amount),
     card_total_cents: amount(record.card_total),
     transfer_total_cents: amount(record.transfer_total),
@@ -861,7 +885,7 @@ function readClosing(value: unknown): Closing {
   if (difference !== rail.difference_cents) return invalidResponse();
   const taken = record.taken_cash === null ? null : signedAmount(record.taken_cash);
   if (taken !== rail.taken_cents) return invalidResponse();
-  if (rate !== null && rail.commission_cents !== commissionOf(rail.sales_total_cents, rate)) {
+  if (rate !== null && !commissionAgrees(rail.commission_cents, commission_base_cents, rate)) {
     return invalidResponse();
   }
   return closing;
