@@ -42,13 +42,22 @@ func decisionNetwork(t *testing.T, f *transferHTTPFixture, server *httptest.Serv
 	return w
 }
 
+// decisionRevisions snapshots the counters these transfer readers own: `inventory` at 0 and
+// `transfers:<id>` at `<id>`, so a test that increments by the location it wrote keeps meaning what it
+// says. The snapshot is read by scope name rather than by position: the catalogue's global counter is
+// not part of what a transfer decision moves, and an alphabetical array would silently shift it in.
 func decisionRevisions(t *testing.T, f *transferHTTPFixture) [4]int64 {
 	t.Helper()
-	var values []int64
-	if f.p.QueryRow(f.ctx, "SELECT array_agg(revision ORDER BY scope) FROM realtime_revisions").Scan(&values) != nil || len(values) != 4 {
+	var values [4]int64
+	if f.p.QueryRow(f.ctx, `SELECT
+ (SELECT revision FROM realtime_revisions WHERE scope='inventory'),
+ (SELECT revision FROM realtime_revisions WHERE scope='transfers:1'),
+ (SELECT revision FROM realtime_revisions WHERE scope='transfers:2'),
+ (SELECT revision FROM realtime_revisions WHERE scope='transfers:3')`).Scan(
+		&values[0], &values[1], &values[2], &values[3]) != nil {
 		t.Fatal("complete internal revision snapshot failed")
 	}
-	return [4]int64{values[0], values[1], values[2], values[3]}
+	return values
 }
 
 func decisionLiveViews(t *testing.T, f *transferHTTPFixture, server *httptest.Server, original transferDTO, status string, want map[string]json.RawMessage) {

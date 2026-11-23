@@ -8,6 +8,8 @@ export interface RealtimeOptions {
   inventory: () => void;
   /** Future participant-only transfer readers; no inventory work is implied. */
   transfers?: () => void;
+  /** The global list of motives a branch expense is recorded with; no branch scope. */
+  catalogue?: () => void;
   error: (signal: AbortSignal) => Promise<Recovery>;
 }
 
@@ -97,10 +99,11 @@ export function useRealtime(options: RealtimeOptions): () => void {
       try { source = new EventSource('/api/events'); }
       catch { source = null; if (validated) schedule(); else void failed(null); return; }
       const instance = source;
-      const handlers: [string, EventListener][] = (['resync', 'inventory', 'transfers'] as const).map(kind => [kind, event => {
+      const handlers: [string, EventListener][] = (['resync', 'inventory', 'transfers', 'catalogue'] as const).map(kind => [kind, event => {
         if (!valid() || source !== instance || instance.readyState === 2 || !emptyInvalidation(event)) return;
         if (kind === 'resync') { attempts = 0; nativeErrors = 0; nextNativeProbe = 0; latest.current.resync(); }
         else if (kind === 'inventory') latest.current.inventory();
+        else if (kind === 'catalogue') latest.current.catalogue?.();
         else latest.current.transfers?.();
       }]);
       handlers.push(['error', () => { void failed(instance); }]);

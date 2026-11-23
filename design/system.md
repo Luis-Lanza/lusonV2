@@ -1,6 +1,8 @@
 # Luson visual system
 
-Synced on 2026-11-20 from **all 16 stylesheets** under `apps/web/src` (3 191 lines), not from `style.css` alone as the 2026-11-16 file was. Read-only: no project source was modified. This is not a proposed starter: every value below exists in the sources.
+Synced on 2026-11-22 from **all 17 stylesheets** under `apps/web/src` (3 293 lines), re-measuring the file set the 2026-11-20 sync covered. Read-only: no project source was modified. This is not a proposed starter: every value below exists in the sources.
+
+The 2026-11-22 re-sync ran because `style.css` had grown after the Caja work. Result: **the token layer did not change.** The six custom properties, the 16 type sizes plus `inherit`, the 10 radii and the 10 shadows are the same set, and no color was added or removed — 67 hex values plus 2 `rgb()` forms, the same 69 representations as before. Occurrence counts moved, the `.cash-*` block appeared and is documented under Component rules, and every delta is recorded in *Delta since the 2026-11-20 sync* below.
 
 What this sync added over the previous file: the 15 section stylesheets that grew after that sync (`stock-entry.css`, `catalog-prices.css`, `point-of-sale.css`, `closings.css`, `stock-adjustments.css`, `administration.css`, `password.css`, `transfer-actions|approved|cancellation|detail|dispatch|receipt|received|transit.css`, `TransferUnifiedReconciliation.css`), the color representations of those 15 files (69 distinct now, 35 of them in `style.css` alone), the `#0000` transparent border, the 11.5 / 12.5 / 13.5 px sizes, the `kbd` component, the sticky rail and sticky action bar, and the pressed-state `inset` shadows. No value was removed. `TransferUnifiedReconciliation.css` is one line of a single import-level rule and contributes no token.
 
@@ -8,11 +10,11 @@ What this sync added over the previous file: the 15 section stylesheets that gre
 
 | File | Lines | What it carries |
 |---|---|---|
-| `apps/web/src/style.css` | 1 267 | `:root` tokens, base controls, shell (sidebar, top bar, main padding), tables, pager, kind/supplier steps, metrics band, modals and backdrops, mobile shell |
-| `apps/web/src/stock-entry.css` | 129 | the Ingresos screen: panels, supplier choices, kind step, stock table, totals bar, history, reversal and detail dialogs, three breakpoints |
+| `apps/web/src/style.css` | 1 290 | `:root` tokens, base controls, shell (sidebar, top bar, main padding), tables, pager, kind/supplier steps, metrics band, the `.cash-*` cash workspace and ledger, modals and backdrops, mobile shell |
+| `apps/web/src/stock-entry.css` | 186 | the Ingresos screen: panels, supplier choices, kind step, bounded grouped catalogue, stock table, totals bar, history, reversal and detail dialogs, three breakpoints |
 | `apps/web/src/catalog-prices.css` | 116 | catálogo de precios: panel, kind tabs, filters, expandable table row, price form, chips |
 | `apps/web/src/point-of-sale.css` | 160 | sale workspace: `1fr + 380px` layout, sticky cart, line controls, payments |
-| `apps/web/src/closings.css` | 280 | settlement workspace: `1fr + 380px` layout, sticky table head, sticky action bar, `kbd` legend, outside/changed row markers |
+| `apps/web/src/closings.css` | 302 | settlement workspace: `1fr + 380px` layout, sticky table head, sticky action bar, `kbd` legend, outside/changed row markers, the motive column of the acta |
 | `apps/web/src/stock-adjustments.css` | 84 | adjustment screen: panels, totals, dialog |
 | `apps/web/src/administration.css` | 57 | account administration panels and table |
 | `apps/web/src/password.css` | 10 | password form card |
@@ -27,9 +29,24 @@ What this sync added over the previous file: the 15 section stylesheets that gre
 
 No Tailwind `@theme` block, no `tailwind.config.*`, no token file and no component-library folder exist: `style.css` only does `@import "tailwindcss"` and then writes plain CSS. The six custom properties below are the whole token layer.
 
+## Delta since the 2026-11-20 sync
+
+Measured on 2026-11-22 by extracting every `#hex`, every `rgb()`, every `font-size`, every `border-radius`, every `box-shadow` and every `padding`/`gap`/`margin` length from `apps/web/src/*.css`, then comparing the sets with the tables above.
+
+| Group | Before (2026-11-20) | Now (2026-11-22) | Token set |
+| --- | --- | --- | --- |
+| Sources | 16 stylesheets, 3 191 lines | 17 files, 3 293 lines | unchanged |
+| Colors | 69 representations, 359 occurrences | 69 representations (67 hex, 2 `rgb()`), 367 occurrences | **unchanged** |
+| Type sizes | 16 sizes + `inherit` | the same 16 sizes + `inherit` | **unchanged** |
+| Radii | `0`, `2`, `3`, `4`, `6`, `8`, `12`, `20`, `999px`, `50%` | the same 10 values | **unchanged** |
+| Shadows | 10 values | the same 10 values | **unchanged** |
+| Spacing | 21 scale steps | the same 21 steps | **unchanged** |
+
+The three files that grew are `style.css` (+23 lines: the `.cash-*` cash workspace and ledger), `stock-entry.css` (+57: the bounded grouped ingress catalogue) and `closings.css` (+22: the motive of an expense in the acta). Everything they added is built from the values already in the tables above, which is why no token had to be added. Two measurements worth naming: `13.5px` now appears once (`.stock-kind-choice strong`, style.css:117) instead of twice, and `border-radius: 12px` now appears three times (`style.css:44`, `style.css:384`, `TransferUnifiedReconciliation.css:1`).
+
 ## Colors
 
-**69 distinct representations, 359 occurrences**: 68 colors plus the `#0000` transparent keyword. Six are declared as custom properties; the rest are literal (documented here with an alias). `#fff` and the `white` keyword are recorded as `#FFFFFF`; hex case is normalized to upper case; alpha suffixes are kept exactly as written.
+**69 distinct representations, 367 occurrences**: 67 hex values (including the `#0000` transparent keyword) plus 2 `rgb()` forms. Six are declared as custom properties; the rest are literal (documented here with an alias). `#fff` and the `white` keyword are recorded as `#FFFFFF`; hex case is normalized to upper case; alpha suffixes are kept exactly as written.
 
 ### Custom properties declared in the source
 
@@ -140,19 +157,19 @@ The table below holds every color representation the sources write out literally
 
 ## Typography
 
-One family, declared once: `Inter, sans-serif` (`apps/web/src/style.css:4`). Inter is not downloaded, so every self-contained board falls back to the declared generic `sans-serif`. Textarea and `kbd` rules only ever say `font-family: inherit`.
+One family, declared once: `Inter, sans-serif` (`apps/web/src/style.css:4`). The app ships Inter as local files of `@fontsource/inter` (`apps/web/package.json:15`) — the bundle contains its `.woff` files, so the product never asks a CDN for a glyph. An artboard is one self-contained file that may not reference those files, so it falls back to the declared generic `sans-serif`: it renders a different face and its measured text widths are approximate, which is why no artboard claims to reproduce the product's exact metrics. Textarea and `kbd` rules only ever say `font-family: inherit`.
 
 Base size `14px` on `:root`. **16 numeric sizes plus `inherit`** appear:
 
 | Size | Occurrences | Role in the product | Source example |
 |---|---|---|---|
 | `10px` | 9 | mobile badge, table cell label | `.bottom-nav .transfer-action-badge` (style.css:73) |
-| `11px` | 89 | captions, table heads, tags, meta | `small`, `th` (style.css:28, 141) |
+| `11px` | 98 | captions, table heads, tags, meta, the evidence link | `small`, `th` (style.css:28, 141) |
 | `11.5px` | 1 | kind chip | `.stock-chip` (style.css:129) |
-| `12px` | 154 | labels, secondary body, nav | `.side-nav a` (style.css:65) |
+| `12px` | 160 | labels, secondary body, nav, cash meta | `.side-nav a` (style.css:65), `.cash-motive-note` (style.css:1156) |
 | `12.5px` | 1 | kind explanation line | `.stock-kind-line` (style.css:125) |
-| `13px` | 81 | body, inputs, table cells | `table`, `.search-field input` (style.css:140, 99) |
-| `13.5px` | 2 | supplier/kind choice title | `.stock-kind-choice strong` (style.css:117), `.stock-supplier-choice strong` (stock-entry.css:120) |
+| `13px` | 84 | body, inputs, table cells, the cash table | `table`, `.search-field input` (style.css:140, 99), `.cash-table` (style.css:1141) |
+| `13.5px` | 1 | kind choice title | `.stock-kind-choice strong` (style.css:117) |
 | `14px` | 18 | root size, compact headings | `:root` (style.css:7) |
 | `15px` | 4 | dialog sub-headings | `.count-corrections h5` (style.css:791) |
 | `16px` | 19 | panel headings, receipt values | `.variant-bottom b` (style.css:209) |
@@ -160,7 +177,7 @@ Base size `14px` on `:root`. **16 numeric sizes plus `inherit`** appear:
 | `18px` | 12 | brand, top bar, panel h2 | `.app-header > strong` (style.css:81) |
 | `20px` | 14 | mobile h1, totals | `.stock-totals dd` (stock-entry.css:40) |
 | `22px` | 17 | page h1, dialog h2 | `h1` (style.css:86) |
-| `24px` | 11 | login h1, detail total | `.transfer-receipt-overview dd` (style.css:584) |
+| `24px` | 12 | login h1, detail total | `.transfer-receipt-overview dd` (style.css:584) |
 | `26px` | 2 | the figure a measuring screen leads with | `.metrics-amount`, `.cash-band-value.cash-lead` (style.css:985) |
 | `inherit` | 1 | receipt cell note | `.receipt-preview-table small` (transfer-receipt.css:103) |
 
@@ -208,13 +225,13 @@ Compound paddings are combinations of the scale: `5px 12px`, `7px 11px`, `8px 12
 
 | Value | Occurrences | Source example |
 |---|---|---|
-| `0` | 15 | `.side-nav a, .side-nav button` — navigation strips meet square (style.css:65) |
+| `0` | 16 | `.side-nav a, .side-nav button` — navigation strips meet square (style.css:65) |
 | `2px` | 1 | `.received-original > summary:focus-visible` (transfer-received.css:91) |
 | `3px` | 17 | `.polarity`, `.badge`, `.tag` chips (style.css:146, 149) |
-| `4px` | 81 | `button`, `input`, `.results` (style.css:20, 24, 138), `.stock-entry-panel` (stock-entry.css:9) |
-| `6px` | 25 | `.stock-kind-line`, `.transfer-decision-modal`, dialog bodies (style.css:124, 622) |
+| `4px` | 85 | `button`, `input`, `.results` (style.css:20, 24, 138), `.stock-entry-panel` (stock-entry.css:9) |
+| `6px` | 26 | `.stock-kind-line`, `.transfer-decision-modal`, dialog bodies (style.css:124, 622) |
 | `8px` | 41 | `.login-intro .logo` (style.css:46), mobile cards and panel radius (stock-entry.css:53, 67), `.closing-balances` cells (closings.css:184) |
-| `12px` | 2 | `.login-card` (style.css:44) |
+| `12px` | 3 | `.login-card` (style.css:44), `.transfer-review` (style.css:384), `.unified-modal` (TransferUnifiedReconciliation.css:1) |
 | `20px` | 4 | `.pending-status` pills in the approved detail (transfer-approved.css:40) |
 | `999px` | 8 | `.transfer-action-badge`, `.stock-chip` — pills (style.css:66, 128) |
 | `50%` | 6 | `i` history marker, `.stock-kind-dot` (style.css:42, 120) |
@@ -229,7 +246,7 @@ Compound paddings are combinations of the scale: `5px 12px`, `7px 11px`, `8px 12
 | `inset 3px 0 0 var(--wine)` | 1 | `.closing-table tr.outside td:first-child` (closings.css:102) |
 | `inset 3px 0 0 #E8CF86` | 1 | `.closing-table tr.changed td:first-child` (closings.css:70) |
 | `inset 0 0 0 3px white` | 1 | the white ring of a pressed kind dot (style.css:123) |
-| `0 20px 50px #24212433` | 2 | `.transfer-review` (style.css:384) |
+| `0 20px 50px #24212433` | 3 | `.transfer-review` (style.css:384), `.unified-modal` (TransferUnifiedReconciliation.css:1) |
 | `0 16px 48px rgb(0 0 0 / 20%)` | 2 | `.transfer-decision-modal` (style.css:622) |
 | `0 -2px 10px #2421240D` | 1 | `.closing-bar` sticky action bar (closings.css:148) |
 | `none` | 1 | reset on a nested cell inside an elevated surface (style.css:412) |
@@ -270,6 +287,11 @@ Compound paddings are combinations of the scale: `5px 12px`, `7px 11px`, `8px 12
 - **Dialog.** Centered white panel, 6px radius, `0 16px 48px rgb(0 0 0 / 20%)`, 24px header/body padding, 20px 24px footer; backdrop `rgb(36 33 36 / 45%)`. Source: `.transfer-decision-modal`, `.transfer-decision-backdrop` (style.css:621–630).
 - **Keyboard legend.** `kbd` = 11px, `2px 6px`, 3px radius, white fill, `border` edge with a `2px` bottom border, `muted` label. Source: `kbd` (closings.css:54–55).
 - **Notices.** One quiet tint line (`.stock-kind-line`, 12.5px wine on tint, 6px radius) or the warm action summary (`#FFF9EF` fill, `#E7D6B7` edge, `#91621E` icon) — never a second full-width banner competing with the work. Source: style.css:124, transfer-actions.css:5–8.
+- **Cash workspace.** `.cash-workspace` is a 16px flex column holding a 22px/700/`-.015em` `h1`, a 13px `muted` lede capped at 70ch with its `<strong>` in `ink`, and a 12px `muted` note. A `.cash-section-title` is 12px/600 `muted` uppercase-headed by `.04em` above the block it names. The period picker is a `.cash-period-field` grid (6px gap) whose `select` is `min-height:44px` and `min-width:240px`, with the live `.cash-provenance` pill beside it (7px `#047857` dot, tint fill, 999px radius). Source: style.css:1091–1117.
+- **Cash figure band.** `.cash-band` is a four-column grid joined by the 1px `page` seam, each `.cash-band-cell` a white 16px 18px block with a 12px `muted` `dt` and a 22px/700/`-.02em` tabular `dd`; the leading cell reaches 26px. Direction is carried by color **and** sign: `.cash-out` `#BA1A1A`, `.cash-in` `#047857`, `.cash-lead` wine. A 12px `muted` `.cash-band-sub` sits 2px under the figure. Source: style.css:1117–1135.
+- **Cash ledger.** `.cash-columns` is `minmax(0,1fr) minmax(0,372px)` with a 20px gap: the ledger panel on the left, the register form in a `.cash-rail` at the right. A `.cash-panel` is white with 1px `border`, 8px radius and the soft shadow; `.cash-table-wrap` scrolls horizontally so the table never crushes the columns. The table is 13px, 6px 8px head padding with the first and last cells flush to the panel edge, 10px 8px body rows, `.num` right-aligned with tabular numerals, `.cash-when` `muted` and non-wrapping, `.cash-motive-label` 600 with its 12px `muted` note under it, `.cash-author` 12px `muted`. Always give the table a `.cash-caption` (12px `muted`, left-aligned) that says what the ledger is: a nameless table is the failure mode here. Source: style.css:1136–1157.
+- **Kind mark.** `.cash-kind` is a badge, not a control: `2px 6px`, 3px radius, 11px, and one warm pair per kind — gasto `#FFF0F0`/`#FFDAD6`/`#BA1A1A`, aporte `#ECFDF5`/`#A7F3D0`/`#047857`, recaudación `#FFFBEF`/`#E8CF86`/`#805400`, corrección `tint`/`#D9B3C1`/wine. The label is always written out; the color never carries the meaning alone. Source: style.css:1158–1166.
+- **Cash form.** `.cash-form` is a 8px-gap grid; `label` is 12px/600 `muted` with `.04em`; `input`, `select` and `textarea` take the full width at `min-height:44px`, the textarea `min-height:64px` and vertical resize. The quiet inline action `.cash-fix` is `min-height:44px`, transparent until hover (`tint`), and drops its underline when disabled. Source: style.css:1167–1180.
 - **Mobile shell.** At `767px` the sidebar and top bar disappear for a `390px` warehouse column with a sticky 12px 16px mobile header and a bottom nav; `Ingresos` becomes the third destination and the bar grows to `min-height:64px`. Source: style.css:161–220, stock-entry.css:59–61.
 - **Table on narrow screens.** At `600px` the head is clipped to a screen-reader-only element and each row becomes an 8px-radius card with `data-label` cells. Source: stock-entry.css:63–71, catalog-prices.css:103–110.
 

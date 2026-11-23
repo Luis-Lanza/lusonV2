@@ -76,6 +76,10 @@ evidence of an assignment; the database refuses a different actor with its own S
 * **Reading** a settlement is the warehouse's for every branch and the branch's for its own;
   a settlement of another branch is `404 not_found`, exactly like another branch's documents.
   The commission rate of a branch is read by the warehouse and by that branch only.
+* **Administering the motive catalogue** — listing it, creating a motive, renaming one, archiving one
+  and reactivating one — is the warehouse administrator's alone: account `1` at location `1` with a
+  completed password change. A branch session is `403 forbidden` on every `/api/admin/cash-categories`
+  route, before any method or body work (S7).
 
 Branch scope is therefore enforced twice: by the store, with the identity taken from the
 session and never from the request body, and by the database's own admission functions. No
@@ -100,6 +104,11 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings/corrections/{correction}/decision` | POST | 200 with the correction and the branch's answer |
 | `/api/closings/expenses` | POST | 201 with the recorded expense |
 | `/api/closings/cash-categories` | GET | 200 with the closed list of motives an expense is recorded with |
+| `/api/admin/cash-categories` | GET | 200 with the whole catalogue of motives, archived ones included |
+| `/api/admin/cash-categories` | POST | 201 with the created motive |
+| `/api/admin/cash-categories/{id}/rename` | POST | 200 with the renamed motive |
+| `/api/admin/cash-categories/{id}/retire` | POST | 200 with the archived motive |
+| `/api/admin/cash-categories/{id}/reactivate` | POST | 200 with the reactivated motive |
 | `/api/closings/cash-movements` | POST | 201 with the recorded movement of the operational drawer (`application/json` or `multipart/form-data`) |
 | `/api/closings/cash-movements/{id}/evidence` | GET, HEAD | 200 with the photo of one pay-out, served with its validated content type |
 | `/api/closings/cash-corrections` | POST | 201 with the recorded correction of one movement |
@@ -109,7 +118,7 @@ No other method and no other path is served by this contract: `405 method_not_al
 an explicit `Allow` header (`GET, POST` for the collection, `GET, POST` for the commission,
 `POST` for the expenses and for the two writes of the drawer, `GET` for the closed list of motives,
 for the book of the drawer and for one settlement, `POST` for each operation, `GET, HEAD` for the photo
-of one pay-out). Every mutation
+of one pay-out, `GET, POST` for the administration's catalogue and `POST` for each of its writes). Every mutation
 requires the usual same-origin session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`;
 every read requires the session only. A query string is not part of any route here except the
 branch history (`GET /api/closings`) and the book of the drawer (`GET
@@ -127,7 +136,8 @@ The commission path is a longer literal path than a settlement id, so it is neve
 `{id}` and never collides with the suffix of an operation. `expenses` is a literal path beside
 `{id}` for the same reason: it is never read as a settlement id, and it names no settlement at all.
 `cash-categories` is the same kind of literal path: it is the closed list of motives, never a
-settlement id.
+settlement id. The administration's catalogue is mounted under `/api/admin/cash-categories`, a
+prefix of its own, so it is never confused with the branch read nor with the settlement routes.
 `corrections` is the literal suffix of one settlement's own collection, so it is never read as an
 id either, and `count`, `materials` and `cash` are the same kind of literal suffix, which is why the
 three sheets of a settlement are never confused with a document id. The decision of a correction is
@@ -490,19 +500,55 @@ GET /api/closings/cash-categories
  {"id":9,"label":"Mantenimiento"},{"id":10,"label":"Impuestos"},{"id":11,"label":"Otros gastos"}]}
 ```
 
-* The list is the one the seed of this delivery states, in this order, and the read publishes only
-  the motives that are still offered, ordered by their place in the list and then by their label:
+* The list starts as the seed of this delivery, in this order, and the read publishes only the
+  motives that are still offered, ordered by their place in the list and then by their label:
   `categories` is an array of objects that state exactly their `id` and their `label`. An archived
   motive is not an option of the screen and is not listed (S8); an empty catalogue is
   `{"categories":[]}`, never a missing key.
-* `Otros gastos` is the **last** option and it is the only escape valve: it does not reopen free
-  text — the clarification of what it paid for goes in the note of the expense (S2).
+* `Otros gastos` is the catch-all option and it does not reopen free text: the clarification of what
+  it paid for goes in the note of the expense (S2). It is pinned, so it is never archived, though it
+  may be renamed; a motive created later is appended after it in the list.
 * The read is not anonymous: it requires a session, exactly like every other read of this contract.
   It states no branch, because the list is the same for every branch, so a branch account and the
   warehouse account read exactly the same answer. A query string is not part of this route
   (`400 invalid_request`), and the route is `GET` only (`405 method_not_allowed` with `Allow: GET`).
-* No route of this delivery creates, renames, archives or deletes an option: that is the
-  administration vertical (S6), and nothing here offers it.
+
+The catalogue is administered at `/api/admin/cash-categories` by the warehouse administrator (S3,
+S4, S5, S7, S13). The administration lists every motive — archived ones included — and every write
+answers the row it wrote as `{"category":category}`; the read answers `{"categories":[category]}`.
+`category` is exactly:
+
+```json
+{"id":12,"label":"Fletes","sort_order":12,"state":"active","retired_at":null,"retired_by":null}
+```
+
+* `sort_order` is the place of the motive in the list and `state` is `"active"` or `"retired"`.
+  `retired_at` is the instant of the archive, RFC 3339 in UTC, and `retired_by` is the account name
+  that archived it; both are `null` on an active motive and both are stated on an archived one.
+* `GET /api/admin/cash-categories` publishes every row ordered by `sort_order` and then by `label`,
+  archived motives included, which is what the administration needs to reactivate one. The branch
+  read above is unchanged: it keeps listing active motives only, for any session (S12).
+* `POST /api/admin/cash-categories` with `{"label":"Fletes"}` creates a motive at
+  `max(sort_order)+1`, so a new option is always appended at the end of the list and there is no
+  reordering screen (S5).
+* `POST /api/admin/cash-categories/{id}/rename` with `{"label":"Fletes del día"}` changes the label
+  and keeps the identity and the place. The label copy of every movement that already named the motive
+  is not rewritten, so the history keeps the label it recorded (S4).
+* `POST /api/admin/cash-categories/{id}/retire` archives the motive: it stops being offered in Caja,
+  the database refuses a new expense with it, and the row is never deleted (S3, S9). The catch-all
+  motive is pinned and is never archived; the last active motive is never archived either (S10).
+* `POST /api/admin/cash-categories/{id}/reactivate` clears `retired_at` and `retired_by`, so the
+  motive is offered again (S3).
+* The body states `label` and nothing else: a missing label, a padded or empty label and an unknown
+  key are `400 invalid_request`. The archive and reactivation routes state no body; a body there is
+  `400 invalid_request`.
+* A write that names a motive this installation does not hold is `404 category_unknown`. A label the
+  catalogue already holds is `409 duplicate_label` on create and on rename. Archiving the pinned
+  catch-all is `409 category_pinned`, and archiving the last active motive is `409 last_category`.
+  Every rejection leaves the table exactly as it was (S13).
+* `{id}` is a canonical positive integer, exactly like every other identity of this contract. A
+  branch session is `403 forbidden`; any other method on an administration route is `405
+  method_not_allowed` with its own `Allow` header.
 
 Every expense of this contract — the `gasto` of the operational drawer and the row the expense route
 writes — states a motive of this list, keeps a **copy of the label** that motive had when the row was
@@ -1178,7 +1224,7 @@ about instead of a generic code.
 
 | Status | Code | Companion key | Meaning |
 |---|---|---|---|
-| 400 | `invalid_request` | — | Malformed body or framing, a body that did not arrive complete, an unknown or duplicate key, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
+| 400 | `invalid_request` | — | Malformed body or framing, a body that did not arrive complete, an unknown or duplicate key, an empty, padded or non-canonical motive label, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
 | 400 | `correction_target_invalid` | — | A correction of the drawer names a movement it may not answer: an unknown one, one of another branch, another correction, the transfer of a settlement or a movement of a period a closure already signed (LC030) |
 | 400 | `category_required` | — | An expense states no motive, and the motive is mandatory (LC033) |
 | 400 | `category_unknown` | — | The motive of an expense is not one the closed list offers, or it is archived (LC033) |
@@ -1189,8 +1235,9 @@ about instead of a generic code.
 | 400 | `evidence_dimensions` | — | The uploaded image is above 6000×6000 pixels |
 | 400 | `evidence_not_applicable` | — | A receipt was uploaded on a kind that carries none: only a `gasto` carries one |
 | 401 | `unauthenticated` | — | No session |
-| 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, warehouse on an expense, warehouse or another branch on a decision) |
+| 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, branch on a catalogue administration route, warehouse on an expense, warehouse or another branch on a decision) |
 | 404 | `not_found` | — | No such settlement for this caller, no setting for that branch, or an aliased path |
+| 404 | `category_unknown` | — | The administration named a motive the catalogue does not hold |
 | 409 | `settlement_live` | `branch_location_id`, `closing_id` | The branch already has a live settlement, named by the refusal; only one exists at a time |
 | 409 | `branch_retired` | `branch_location_id` | The branch was retired and is not settled |
 | 409 | `count_pending` | `variant_id` | A sheet still states a variant with no counted quantity; out of band only, because the opener seeds every line (defensive) |
@@ -1212,6 +1259,9 @@ about instead of a generic code.
 | 409 | `correction_fund_started` | — | The fund of a settlement is corrected before its next period starts |
 | 409 | `correction_journal` | — | A delta was journalled outside the acceptance of its own correction |
 | 409 | `correction_exceeds` | — | The corrections of one movement of the drawer would exceed the amount that movement stated (LC031) |
+| 409 | `duplicate_label` | — | The label of the motive already exists in the catalogue (the unique label, `23505`) |
+| 409 | `category_pinned` | — | The pinned catch-all motive is never archived (LC035) |
+| 409 | `last_category` | — | The last active motive is never archived (LC036) |
 | 503 | `service_unavailable` | — | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL or configuration details: only the database's own rejection is
@@ -1261,6 +1311,8 @@ stable SQLSTATEs:
 | `LC031` | The corrections of one movement of the drawer never exceed the amount that movement stated | 409 `correction_exceeds` |
 | `LC024` | Location 1 is the warehouse: an expense belongs to a branch | `403 forbidden` from the expense route, 503 `service_unavailable` elsewhere |
 | `LC033` | The motive of an expense is one the closed list offers and is not archived, no other kind names one, and the note is optional only where a motive is stated | 400 `category_required`, `category_unknown` or `category_not_applicable`; 503 `service_unavailable` only for a row this layer could not have written |
+| `LC035` | The pinned catch-all motive is never archived; a rename is still allowed | 409 `category_pinned` |
+| `LC036` | The last active motive is never archived | 409 `last_category` |
 | — | The four `BEFORE INSERT` triggers of the ledger answer in name order, so the motive is the last word: `LC001` → `LC030` → `LC031` → `LC032` → `LC033` | The first refusal of an older rule is the one the caller reads |
 
 The receipt of a pay-out is four nullable columns of `branch_cash_movements` — `evidence_bytes`,

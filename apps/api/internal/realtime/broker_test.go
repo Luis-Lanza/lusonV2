@@ -80,7 +80,7 @@ func TestR03BrokerContract(t *testing.T) {
 	}
 	ready := func() *Broker {
 		return &Broker{ctx: context.Background(), ready: true, subscribers: make(map[uint64]*Subscription),
-			versions: map[string]int64{"inventory": 0, "transfers:1": 0, "transfers:2": 0, "transfers:3": 0}}
+			versions: map[string]int64{"inventory": 0, "catalogue": 0, "transfers:1": 0, "transfers:2": 0, "transfers:3": 0}}
 	}
 	t.Run("capacity", func(t *testing.T) {
 		b := ready()
@@ -271,7 +271,7 @@ func (f *brokerFixture) revisions(t *testing.T) map[string]int64 {
 		}
 		out[key] = revision
 	}
-	if rows.Err() != nil || len(out) != 4 {
+	if rows.Err() != nil || len(out) != 5 {
 		t.Fatal("revision set incomplete")
 	}
 	return out

@@ -111,6 +111,20 @@ var (
 	// S3): only an expense is recorded with a motive, so a contribution, a collection and a
 	// correction name none.
 	ErrCategoryNotApplicable = errors.New("only an expense states a motive of the drawer")
+	// ErrCategoryMissing is the administration's refusal of a motive this installation does not
+	// hold. It is the same fact the branch reads as ErrCategoryUnknown, but the administration
+	// answers it with a missing resource instead of a malformed request (S13).
+	ErrCategoryMissing = errors.New("the motive of the drawer does not exist")
+	// ErrCategoryDuplicate is the refusal of a label the catalogue already holds: labels are unique,
+	// so creating or renaming onto one is a conflict the administrator answers by changing the
+	// label (the unique constraint of 061, S13).
+	ErrCategoryDuplicate = errors.New("the label of a motive already exists")
+	// ErrCategoryPinned is the refusal of archiving the catch-all motive, which is stated once and
+	// is never archived (LC035, S10).
+	ErrCategoryPinned = errors.New("the catch-all motive is never archived")
+	// ErrCategoryLastActive is the refusal of archiving the last offered motive, which would leave
+	// every branch unable to record an expense (LC036, S10).
+	ErrCategoryLastActive = errors.New("the last offered motive is never archived")
 	// ErrEvidenceEmpty is the refusal of a receipt with no bytes (S6): an empty file is not a photo, and
 	// the branch either uploads one or records the pay-out without its receipt (S1).
 	ErrEvidenceEmpty = errors.New("the receipt is empty")
@@ -730,6 +744,17 @@ type Expense struct {
 type CashCategory struct {
 	ID    int64  `json:"id"`
 	Label string `json:"label"`
+}
+
+// CatalogueCategory is one row of the administration's catalogue (S3, S4, S5, S13): the identity,
+// the label and the place of the motive, and the retirement the administration stamps. RetiredAt and
+// RetiredBy are present exactly together; an active motive states neither.
+type CatalogueCategory struct {
+	ID        int64      `json:"id"`
+	Label     string     `json:"label"`
+	SortOrder int16      `json:"sort_order"`
+	RetiredAt *time.Time `json:"retired_at"`
+	RetiredBy *string    `json:"retired_by"`
 }
 
 // ProposalCountLine is one line of the count sheet as the branch reads it in the offer.

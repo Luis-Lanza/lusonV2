@@ -22,6 +22,7 @@ const (
 	Resync         Event = "resync"
 	Inventory      Event = "inventory"
 	Transfers      Event = "transfers"
+	Catalogue      Event = "catalogue"
 	channel              = "luson_realtime"
 	maxSubscribers       = 128
 	queueSize            = 8
@@ -180,6 +181,10 @@ func parsePayload(payload string) (Event, int, bool) {
 	if payload == "inventory:0" {
 		return Inventory, 0, true
 	}
+	// The list of motives is global to every branch, so its scope has no location either.
+	if payload == "catalogue:0" {
+		return Catalogue, 0, true
+	}
 	if !strings.HasPrefix(payload, "transfers:") || len(payload) > len("transfers:32767") {
 		return "", 0, false
 	}
@@ -197,20 +202,20 @@ func readRevisions(ctx context.Context, conn *pgx.Conn) (map[string]int64, error
  UNION ALL SELECT '',-1 WHERE EXISTS (
    (SELECT 'transfers:' || id FROM locations EXCEPT SELECT scope FROM realtime_revisions)
    UNION ALL
-   (SELECT scope FROM realtime_revisions EXCEPT (SELECT 'inventory' UNION ALL SELECT 'transfers:' || id FROM locations))
+   (SELECT scope FROM realtime_revisions EXCEPT (SELECT 'inventory' UNION ALL SELECT 'catalogue' UNION ALL SELECT 'transfers:' || id FROM locations))
  ) ORDER BY scope`)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
 	defer rows.Close()
-	versions := make(map[string]int64, 4)
+	versions := make(map[string]int64, 5)
 	for rows.Next() {
 		var scope string
 		var revision int64
 		if rows.Scan(&scope, &revision) != nil || revision < 0 {
 			return nil, ErrUnavailable
 		}
-		if scope != "inventory" {
+		if scope != "inventory" && scope != "catalogue" {
 			if _, _, valid := parsePayload(scope); !valid {
 				return nil, ErrUnavailable
 			}
@@ -220,7 +225,9 @@ func readRevisions(ctx context.Context, conn *pgx.Conn) (map[string]int64, error
 		}
 		versions[scope] = revision
 	}
-	if _, exists := versions["inventory"]; rows.Err() != nil || !exists || len(versions) < 4 {
+	_, hasInventory := versions["inventory"]
+	_, hasCatalogue := versions["catalogue"]
+	if rows.Err() != nil || !hasInventory || !hasCatalogue || len(versions) < 5 {
 		return nil, ErrUnavailable
 	}
 	return versions, nil

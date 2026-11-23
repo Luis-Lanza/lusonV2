@@ -6,6 +6,7 @@ import {
 import { centsToMoney, parseTypedMoney } from './pointOfSaleModel';
 import TransferDate from './shared/TransferDate';
 import { createMetricsAPI, metricsPeriodToken, MetricsAPIError, type MetricsPeriod } from './metricsAPI';
+import { subscribeCatalogueInvalidation } from './useInventory';
 import {
   CashAPIError, cashCatalogueUnavailable, cashErrorMessages, cashEvidenceRefusal, cashKindLabels,
   cashLedgerUnavailable, cashWrittenKinds, createCashAPI, type CashCategory, type CashLedger,
@@ -28,6 +29,9 @@ const cashDescriptionMessage = 'Escribí el motivo del movimiento.';
 const cashMotiveMessage = 'Elegí un motivo de la lista: un gasto sin motivo no se registra.';
 const cashMotiveCatalogueEmpty =
   'La lista de motivos está vacía: no hay ninguno para registrar un gasto. Los aportes y las recaudaciones siguen funcionando.';
+/** A motive archived while the operator had it chosen is announced, never dropped in silence (S11, S4). */
+const cashMotiveArchivedMessage = (label: string) =>
+  `El motivo «${label}» ya no está disponible: se archivó mientras registrabas el gasto. Elegí otro de la lista.`;
 const cashCorrectionRowReason = 'Las correcciones no se corrigen.';
 const cashCorrectedRowReason = 'Ya está corregido por completo.';
 const cashFrozenRowReason = 'La sucursal está congelada: no se corrige mientras dure la rendición.';
@@ -108,8 +112,13 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
   const [busy, setBusy] = useState(false);
   const [frozen, setFrozen] = useState(false);
   const [catalogue, setCatalogue] = useState<CatalogueState>(initialCatalogueState);
-  /** The attempts of the read of the catalogue: one when the screen loads, and one per retry. */
+  /** The attempts of the read of the catalogue: one when the screen loads, one per retry and one per
+   * catalogue invalidation the shell receives from the stream (S8). */
   const [catalogueAttempt, setCatalogueAttempt] = useState(0);
+  /** Why the chosen motive is gone, in the words of the operator; empty when the choice still stands. */
+  const [motiveNotice, setMotiveNotice] = useState('');
+  /** The motive the operator chose, kept beside the select so a re-read can tell whether it survived. */
+  const chosenMotive = useRef({ id: '', label: '' });
 
   /** The photo of the expense being written: at most one, always optional (S1). */
   const [evidence, setEvidence] = useState<Evidence | null>(null);
@@ -130,24 +139,41 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
   const amountInput = useRef<HTMLInputElement>(null);
   const correctionInput = useRef<HTMLInputElement>(null);
 
-  // The closed list of motives is read once when the screen loads, with its own state: an expense cannot be
-  // registered without it, while an aporte and a recaudación name no motive of the list (S1, S4).
+  // The closed list of motives is read when the screen loads and again on every invalidation of the
+  // catalogue, with its own state: an expense cannot be registered without it, while an aporte and a
+  // recaudación name no motive of the list (S1, S4). A re-read keeps the options already shown instead of
+  // blanking the form, and a motive archived while it was chosen is announced, never dropped in silence (S8, S11).
   useEffect(() => {
     const controller = new AbortController();
-    setCatalogue(initialCatalogueState);
+    setCatalogue(current => current.phase === 'error' ? initialCatalogueState : current);
     void (async () => {
       try {
         const options = await api.categories(controller.signal);
         if (controller.signal.aborted) return;
         setCatalogue({ phase: 'ready', options, problem: '' });
+        const chosen = chosenMotive.current;
+        if (chosen.id !== '' && !options.some(option => String(option.id) === chosen.id)) {
+          chosenMotive.current = { id: '', label: '' };
+          setCategory('');
+          setMotiveNotice(cashMotiveArchivedMessage(chosen.label));
+        }
       } catch (error) {
         if (controller.signal.aborted) return;
         if (error instanceof CashAPIError && error.code === 'aborted') return;
-        setCatalogue({ phase: 'error', options: [], problem: cashCatalogueUnavailable });
+        // A failed re-read of a list already on screen keeps it: the operator still has motives to choose
+        // from, and the last read is a fact of the catalogue, not of this attempt.
+        setCatalogue(current => current.phase === 'ready'
+          ? current
+          : { phase: 'error', options: [], problem: cashCatalogueUnavailable });
       }
     })();
     return () => controller.abort();
   }, [api, catalogueAttempt]);
+
+  // The catalogue is global, so its frame reaches every session: a motive created or archived by the
+  // administration arrives here without a reload (S8).
+  useEffect(() => subscribeCatalogueInvalidation(
+    () => setCatalogueAttempt(current => current + 1)), []);
 
   // The windows the screen may ask for are the ones the metrics reader already publishes with their
   // instants: the closed settlements. The live one is the store's own default window, which starts at
@@ -338,6 +364,10 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
     try {
       await api.record(input, csrf, undefined, photo);
       setAmount(''); setCategory(''); setNote(''); setReason('');
+      // The form states no motive any more, so nothing can be announced as archived from under it: a later
+      // archival of the motive that was just written must not read as a choice that disappeared.
+      chosenMotive.current = { id: '', label: '' };
+      setMotiveNotice('');
       removeEvidence();
       setNotice(`${cashKindLabels[kind]} registrado en el libro de la caja.`);
       // The book is read again, so the band and the list describe the movement that was just written.
@@ -630,9 +660,17 @@ export default function Cash({ csrf, branch, fetcher = globalThis.fetch }: CashP
                           : <>
                             {/* The motive of an expense is picked from the closed list: this screen offers no
                                 path to type one by hand (S1). */}
+                            {motiveNotice !== '' && <p role="alert" className="cash-problem">{motiveNotice}</p>}
                             <label htmlFor="cash-category">Motivo</label>
                             <select id="cash-category" value={category} disabled={busy}
-                              onChange={event => setCategory(event.target.value)}>
+                              onChange={event => {
+                                const id = event.target.value;
+                                setCategory(id);
+                                setMotiveNotice('');
+                                chosenMotive.current = {
+                                  id, label: catalogue.options.find(option => String(option.id) === id)?.label ?? '',
+                                };
+                              }}>
                               <option value="">Elegí un motivo…</option>
                               {catalogue.options.map(option => <option key={option.id}
                                 value={String(option.id)}>{option.label}</option>)}

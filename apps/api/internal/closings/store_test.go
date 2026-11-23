@@ -4640,8 +4640,8 @@ func TestCashCategoriesAreTheSeededList(t *testing.T) {
 	e.contribute(t, 2, "100.00", "Fondo de la caja")
 	agua := e.motive(t, "Agua")
 	flete := e.expenseWith(t, 2, "Agua", "10.00", "Flete del mediodía")
-	if _, err := e.pool.Exec(e.ctx, `UPDATE branch_cash_categories SET retired_at=now() WHERE id=$1`,
-		agua); err != nil {
+	if _, err := e.pool.Exec(e.ctx, `UPDATE branch_cash_categories SET retired_at=now(),retired_by='fixture'
+ WHERE id=$1`, agua); err != nil {
 		t.Fatalf("a motive must be archivable: %v", err)
 	}
 	categories, err := e.store.CashCategories(e.ctx, identity(2))

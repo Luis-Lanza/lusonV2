@@ -274,7 +274,7 @@ func (a *API) registerEvents(mux *http.ServeMux, broker *realtime.Broker) {
 					return
 				}
 				switch event {
-				case realtime.Resync, realtime.Inventory, realtime.Transfers:
+				case realtime.Resync, realtime.Inventory, realtime.Transfers, realtime.Catalogue:
 					frame = "event: " + string(event) + "\ndata: {}\n\n"
 				default:
 					return

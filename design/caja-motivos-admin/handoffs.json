@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "chosen": "01-tabla-y-alta.html",
+  "handoffs": {
+    "01-tabla-y-alta.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-22T20:25:42.248Z",
+      "startedAt": "2026-11-22T20:25:53.806Z",
+      "implementedAt": "2026-11-22T21:32:48.649Z",
+      "feature": "odd/tasks/caja-motivos-admin.md",
+      "note": "Implementado como quinta solapa «Motivos de caja» del catálogo: tabla con lugar/estado, alta al final, renombrar conservando la historia, archivar con confirmación y reactivación en un bloque plegado. Verificado: suite Go y web en verde, y la verificación independiente encontró un mensaje falso que ya está corregido.",
+      "previewUrl": "http://127.0.0.1:8080/"
+    }
+  }
+}

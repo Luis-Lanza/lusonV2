@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Administración · Motivos de caja · Luson</title>
+<style>
+:root{--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;--surface:#FFFFFF;--disabled-bg:#EFEDEF;--disabled-ink:#595459;--disabled-border:#AAA5AA;--soft-shadow:0 1px 2px #2421240D;--reject-ink:#991515;--reject-border:#CCAAAA;--received-ink:#047857;--received-bg:#ECFDF5;--received-border:#A7F3D0;--warning-bg:#FFFBEF;--warning-border:#E8CF86;--warning-ink:#805400;--approved-ink:#22633B;--approved-bg:#EDF7F0}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font:14px/1.4 Inter,sans-serif;color:var(--ink);background:var(--page)}
+button{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0 12px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer}
+button:hover{background:var(--tint)}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--muted);border-radius:4px;padding:8px 12px;min-height:44px}
+.shell{display:flex;min-height:900px}
+.sidebar{width:240px;flex:0 0 240px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;padding-bottom:12px}
+.brand{display:flex;align-items:center;gap:10px;padding:16px 12px;border-bottom:1px solid var(--border)}
+.brand-mark{width:28px;height:28px;border-radius:6px;background:var(--wine);flex:0 0 auto}
+.brand strong{display:block;font-size:18px;font-weight:700;color:var(--wine);letter-spacing:-.015em}
+.brand small{display:block;font-size:11px;color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:4px;padding:12px}
+.nav button{justify-content:flex-start;border-color:transparent;background:none;min-height:40px;border-radius:0;padding:0 12px;font-weight:400}
+.nav button:hover{background:var(--tint)}
+.nav button[aria-current="page"]{background:var(--tint);box-shadow:inset 2px 0 0 var(--wine);font-weight:600}
+.nav .divider{height:1px;background:var(--border);margin:8px 0}
+.identity{margin-top:auto;padding:10px 12px;background:var(--page);border-radius:8px;color:var(--muted);font-size:12px}
+.main{flex:1 1 auto;min-width:0;padding:80px 24px 24px 40px;position:relative}
+.topbar{position:absolute;inset:0 0 auto 0;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.topbar strong{font-size:18px;font-weight:700}
+.topbar span{font-size:12px;color:var(--muted)}
+.topbar span b{color:var(--ink);font-weight:600}
+.crumbs{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+h1{margin:0 0 4px;font-size:22px;font-weight:700;letter-spacing:-.015em}
+.lede{margin:0;max-width:78ch;font-size:13px;line-height:18px;color:var(--muted)}
+.lede strong{color:var(--ink);font-weight:600}
+.split{display:grid;grid-template-columns:minmax(0,340px) minmax(0,1fr);gap:20px;margin-top:20px;align-items:start}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--soft-shadow)}
+.panel-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:16px 20px 10px;border-bottom:1px solid var(--border)}
+.panel-head h2{margin:0;font-size:16px;font-weight:600}
+.panel-head p{margin:3px 0 0;font-size:12px;color:var(--muted)}
+.tag{display:inline-block;padding:4px 8px;border:1px solid var(--border);border-radius:3px;background:var(--page);color:var(--muted);font-size:11px;font-weight:600}
+ul.list{list-style:none;margin:0;padding:6px 0}
+ul.list li{margin:0}
+ul.list button{width:100%;min-height:44px;justify-content:space-between;border:0;border-radius:0;background:none;padding:0 20px;font-weight:400;text-align:left}
+ul.list button:hover{background:var(--page)}
+ul.list button[aria-current="true"]{background:var(--tint);box-shadow:inset 3px 0 0 var(--wine);font-weight:600}
+ul.list .pos{font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;font-weight:600;flex:0 0 auto}
+ul.list .name{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.list-foot{border-top:1px solid var(--border);padding:14px 20px}
+.list-foot p{margin:0;font-size:12px;line-height:18px;color:var(--muted)}
+.list-foot button{margin-top:10px;width:100%}
+.detail-body{display:grid;gap:20px;padding:20px}
+.field{display:grid;gap:6px}
+.field label{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.field .hint{margin:0;font-size:12px;line-height:18px;color:var(--muted)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.mini-label{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.readonly{padding:10px 12px;border:1px solid var(--border);border-radius:4px;background:var(--page);font-size:13px;color:var(--muted)}
+.readonly b{color:var(--ink);font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid}
+.pill-active{background:var(--received-bg);border-color:var(--received-border);color:var(--received-ink)}
+.pill-retired{background:var(--disabled-bg);border-color:var(--disabled-border);color:var(--disabled-ink)}
+.preview{border:1px solid var(--border);border-radius:8px;background:var(--page);padding:14px 16px}
+.preview h3{margin:0 0 4px;font-size:13px;font-weight:600}
+.preview p{margin:0 0 10px;font-size:12px;line-height:18px;color:var(--muted)}
+.fake-select{border:1px solid var(--muted);border-radius:4px;background:var(--surface);padding:8px 12px;min-height:44px;display:flex;justify-content:space-between;align-items:center;font-size:13px}
+.fake-select span[aria-hidden]{color:var(--muted)}
+.fake-menu{margin:6px 0 0;padding:4px 0;list-style:none;border:1px solid var(--border);border-radius:4px;background:var(--surface);max-height:150px;overflow:auto}
+.fake-menu li{padding:6px 12px;font-size:13px;display:flex;justify-content:space-between;gap:8px}
+.fake-menu li[aria-selected="true"]{background:var(--tint);color:var(--wine);font-weight:600}
+.fake-menu li .pos{color:var(--muted);font-variant-numeric:tabular-nums;font-size:12px}
+.effect{border:1px solid var(--warning-border);background:var(--warning-bg);border-radius:8px;padding:14px 16px;color:var(--warning-ink)}
+.effect h3{margin:0 0 6px;font-size:13px;font-weight:600;display:flex;gap:8px;align-items:center}
+.effect ul{margin:0;padding-left:18px;font-size:12px;line-height:18px}
+.confirm{border:1px solid var(--reject-border);border-radius:8px;padding:14px 16px;background:var(--surface)}
+.confirm p{margin:0 0 10px;font-size:13px;line-height:18px}
+.confirm p b{font-weight:600}
+.confirm .buttons{display:flex;gap:8px}
+.danger{color:var(--reject-ink);border-color:var(--reject-border);font-weight:600;background:var(--surface)}
+.danger:hover{background:#FFF0F0}
+.primary{background:var(--wine);border-color:var(--wine);color:var(--surface);font-weight:600}
+.primary:hover{background:var(--hover)}
+.detail-foot{display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border);padding:14px 20px;border-radius:0 0 8px 8px}
+.live{display:inline-flex;align-items:center;gap:8px;padding:3px 10px;border-radius:999px;background:var(--tint);color:var(--wine);font-size:11px;font-weight:600}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--received-ink);flex:0 0 auto}
+@media (prefers-reduced-motion:no-preference){button{transition:background-color .12s ease}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span><div><strong>Luson</strong><small>Control de Baterías</small></div></div>
+    <nav class="nav" aria-label="Secciones">
+      <button type="button">Inventario</button>
+      <button type="button">Transferencias <span class="tag" style="margin-left:auto">0</span></button>
+      <button type="button">Rendición de cuentas</button>
+      <button type="button">Punto de venta</button>
+      <button type="button">Historial de ventas</button>
+      <button type="button">Compras</button>
+      <button type="button">Caja</button>
+      <button type="button">Métricas</button>
+      <div class="divider" role="presentation"></div>
+      <button type="button" aria-current="page">Administración</button>
+      <button type="button">Mi contraseña</button>
+    </nav>
+    <div class="identity">
+      <strong style="display:block;color:var(--ink);font-size:13px">dev_almacen</strong>
+      Almacén central
+      <button type="button" style="margin-top:8px;width:100%;min-height:36px;justify-content:flex-start;background:none;border-color:transparent;color:var(--muted);font-weight:600">Salir</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar"><strong>Administración</strong><span>Ubicación asignada: <b>Almacén central</b></span></div>
+
+    <p class="crumbs">Administración · Motivos de caja</p>
+    <h1>Motivos de caja</h1>
+    <p class="lede">El catálogo que la sucursal usa para explicar un gasto. Elegí un motivo a la izquierda para
+      renombrarlo o archivarlo; el que crees se agrega al final. <strong>Nada se borra:</strong> archivar saca el
+      motivo del selector y deja intactos los gastos que ya lo usaron.</p>
+
+    <div class="split">
+      <section class="panel" aria-labelledby="lista">
+        <div class="panel-head">
+          <div>
+            <h2 id="lista">Motivos</h2>
+            <p>11 activos · 1 archivado</p>
+          </div>
+          <span class="live"><span class="dot" aria-hidden="true"></span>En vivo</span>
+        </div>
+        <ul class="list">
+          <li><button type="button"><span class="pos">01</span><span class="name">Alquiler</span></button></li>
+          <li><button type="button"><span class="pos">02</span><span class="name">Internet</span></button></li>
+          <li><button type="button" aria-current="true"><span class="pos">03</span><span class="name">Energía eléctrica</span></button></li>
+          <li><button type="button"><span class="pos">04</span><span class="name">Agua</span></button></li>
+          <li><button type="button"><span class="pos">05</span><span class="name">Limpieza</span></button></li>
+          <li><button type="button"><span class="pos">06</span><span class="name">Sueldos</span></button></li>
+          <li><button type="button"><span class="pos">07</span><span class="name">Transporte</span></button></li>
+          <li><button type="button"><span class="pos">08</span><span class="name">Insumos de tienda</span></button></li>
+          <li><button type="button"><span class="pos">09</span><span class="name">Mantenimiento</span></button></li>
+          <li><button type="button"><span class="pos">10</span><span class="name">Impuestos</span></button></li>
+          <li><button type="button"><span class="pos">11</span><span class="name">Otros gastos</span><span class="pill pill-active">Cajón de sastre</span></button></li>
+          <li><button type="button"><span class="pos">—</span><span class="name">Gas</span><span class="pill pill-retired">Archivado</span></button></li>
+        </ul>
+        <div class="list-foot">
+          <p>Archivar no borra: el motivo sale del selector y sigue explicando los gastos viejos.</p>
+          <button type="button">Crear un motivo</button>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="detalle">
+        <div class="panel-head">
+          <div>
+            <h2 id="detalle">Energía eléctrica</h2>
+            <p>Posición 03 de 11 · se creó el 19/11/2026</p>
+          </div>
+          <span class="pill pill-active">Activo</span>
+        </div>
+
+        <div class="detail-body">
+          <form class="field" novalidate>
+            <label for="etiqueta">Etiqueta</label>
+            <input id="etiqueta" value="Energía eléctrica" aria-describedby="etiqueta-hint">
+            <p class="hint" id="etiqueta-hint">Es el texto exacto que aparece en el selector de la sucursal. Los gastos
+              ya registrados conservan la etiqueta con la que se cargaron, así que renombrar no reescribe la historia.</p>
+          </form>
+
+          <div class="row2">
+            <div class="field">
+              <span class="mini-label">Orden</span>
+              <div class="readonly"><b>03</b> de 11 · el orden no se edita; un motivo nuevo va al final</div>
+            </div>
+            <div class="field">
+              <span class="mini-label">Alcance</span>
+              <div class="readonly">Todas las sucursales · sólo para gastos</div>
+            </div>
+          </div>
+
+          <div class="preview">
+            <h3>Lo que ve la sucursal ahora</h3>
+            <p>Aportes y recaudaciones no piden motivo: el catálogo es sólo de gastos.</p>
+            <div class="fake-select" role="img" aria-label="Selector de la sucursal con el motivo Energía eléctrica elegido">
+              <span>Energía eléctrica</span><span aria-hidden="true">▾</span>
+            </div>
+            <ul class="fake-menu" aria-hidden="true">
+              <li><span>Alquiler</span><span class="pos">01</span></li>
+              <li><span>Internet</span><span class="pos">02</span></li>
+              <li aria-selected="true"><span>Energía eléctrica</span><span class="pos">03</span></li>
+              <li><span>Agua</span><span class="pos">04</span></li>
+              <li><span>Limpieza</span><span class="pos">05</span></li>
+            </ul>
+          </div>
+
+          <div class="effect">
+            <h3><span aria-hidden="true">◆</span> Qué pasa si lo archivás</h3>
+            <ul>
+              <li>Deja de ofrecerse en el selector de todas las sucursales, sin recargar la página.</li>
+              <li>Los gastos que lo usaron siguen mostrando «Energía eléctrica» en el libro y en el acta.</li>
+              <li>Podés reactivarlo cuando quieras: vuelve a la misma posición.</li>
+            </ul>
+          </div>
+
+          <div class="confirm">
+            <p><b>Archivar «Energía eléctrica».</b> Es reversible y no toca ningún movimiento. La sucursal que lo
+              tenía elegido en ese momento recibe un aviso y elige otro motivo.</p>
+            <div class="buttons">
+              <button type="button" class="danger">Sí, archivar</button>
+              <button type="button">Cancelar</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-foot">
+          <button type="button">Archivar</button>
+          <button type="button" class="primary">Guardar etiqueta</button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>

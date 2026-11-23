@@ -1,0 +1,28 @@
+{
+  "title": "Administración de los motivos de Caja",
+  "brief": "Pantalla para que el administrador cree, renombre, archive y reactive los motivos de gasto de Caja, y que las sucursales los vean en vivo. La ubicación de la pantalla es parte de lo que se decide aquí.",
+  "feature": "odd/tasks/caja-motivos-admin.md",
+  "artboards": [
+    {
+      "file": "01-tabla-y-alta.html",
+      "title": "Solapa dentro del catálogo: tabla y alta en el pie",
+      "tradeoff": "Densidad máxima y cero estructura nueva: once motivos en una tabla, el alta en el pie del mismo panel y los archivados plegados. El alta compite por el ancho con la lista y no hay lugar para explicar el efecto de archivar más allá de una línea.",
+      "width": 1440,
+      "height": 1240
+    },
+    {
+      "file": "02-maestro-detalle.html",
+      "title": "Sección propia Administración: lista, detalle y vista previa",
+      "tradeoff": "Cada acción tiene su espacio, su explicación y su confirmación, y la vista previa muestra el selector de la sucursal. Ocupa más ancho, suma un nivel de navegación y deja la mitad derecha vacía cuando todavía no se eligió un motivo.",
+      "width": 1440,
+      "height": 1200
+    },
+    {
+      "file": "03-el-selector-manda.html",
+      "title": "Dentro de Caja: el selector real al lado del editor",
+      "tradeoff": "Se edita mirando el mismo selector que la sucursal va a tener, incluido el aviso al operador que tenía el motivo archivado. Mezcla la administración con la operación de caja y es el peor tablero para cargar varios motivos seguidos.",
+      "width": 1440,
+      "height": 1340
+    }
+  ]
+}

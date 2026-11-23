@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Cash from './Cash';
 import { cashErrorMessages, cashMaxEvidenceBytes } from './cashAPI';
+import { notifyCatalogueInvalidation } from './useInventory';
 
 // jsdom answers no image source of its own, so the preview is pinned on the URL the screen asks for: the
 // browser is the one that turns the chosen file into something an <img> can show.
@@ -775,5 +776,52 @@ describe('el comprobante del gasto (S1, S2, S7)', () => {
     const withoutPhoto = rowOf(42);
     expect(within(withoutPhoto).queryByRole('link')).not.toBeInTheDocument();
     expect(withoutPhoto.textContent).not.toContain('comprobante');
+  });
+});
+
+describe('los motivos del catálogo en vivo', () => {
+  it('re-reads the list on a catalogue invalidation and keeps the motive already chosen', async () => {
+    const { catalogueCalls } = setup();
+    await chooseMotive('Limpieza');
+    await waitFor(() => expect(catalogueCalls()).toHaveLength(1));
+    act(() => notifyCatalogueInvalidation());
+    await waitFor(() => expect(catalogueCalls()).toHaveLength(2));
+    // The re-read never blanks the form: the choice stands while the list it came from still offers it.
+    expect((screen.getByLabelText('Motivo') as HTMLSelectElement).value).toBe('5');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('announces the motive archived while it was chosen and asks for another', async () => {
+    let reads = 0;
+    setup({
+      categories: () => json(reads++ === 0
+        ? catalogueAnswer
+        : { categories: catalogueAnswer.categories.filter(category => category.label !== 'Limpieza') }),
+    });
+    await chooseMotive('Limpieza');
+    act(() => notifyCatalogueInvalidation());
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('«Limpieza»');
+    expect(alert.textContent).toContain('Elegí otro de la lista');
+    expect((screen.getByLabelText('Motivo') as HTMLSelectElement).value).toBe('');
+  });
+  it('says nothing about a motive archived after the expense that used it was recorded', async () => {
+    let reads = 0;
+    setup({
+      categories: () => json(reads++ === 0
+        ? catalogueAnswer
+        : { categories: catalogueAnswer.categories.filter(category => category.label !== 'Limpieza') }),
+    });
+    await screen.findByText('Quedó al cerrar');
+    fireEvent.change(screen.getByLabelText('Monto en bolivianos'), { target: { value: '85,00' } });
+    await chooseMotive('Limpieza');
+    fireEvent.change(screen.getByLabelText('Nota (opcional)'), { target: { value: 'Detergente' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar gasto' }));
+    // The write clears the form, so no motive is chosen any more when the list comes back without it.
+    await waitFor(() => expect(screen.getByLabelText('Motivo')).toHaveValue(''));
+    act(() => notifyCatalogueInvalidation());
+    await waitFor(() => expect(reads).toBeGreaterThan(1));
+    // Announcing a choice that disappeared would be a lie: the operator had already recorded the expense.
+    expect(screen.queryByText(/ya no está disponible/)).not.toBeInTheDocument();
   });
 });

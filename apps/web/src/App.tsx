@@ -20,6 +20,7 @@ import CatalogPrices from './CatalogPrices';
 import CatalogBatteries from './CatalogBatteries';
 import CatalogOtherProducts from './CatalogOtherProducts';
 import CatalogSuppliers from './CatalogSuppliers';
+import CashCategories from './CashCategories';
 import CatalogSectionBoundary from './CatalogSectionBoundary';
 import PointOfSale, { SalesSectionBoundary, salesHistoryFailureMessage } from './PointOfSale';
 import SalesHistory from './SalesHistory';
@@ -130,28 +131,42 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
   </nav>;
 }
-// The catalogue holds four screens of one section: the price matrix, the battery
-// catalogue, the other products and the warehouse suppliers. All are gated by the
+// The catalogue holds five screens of one section: the price matrix, the battery
+// catalogue, the other products, the warehouse suppliers and the cash motives. All are gated by the
 // same warehouse authority and remounted per owner, so a rotated session cannot
 // publish any of them into a newer session.
 function CatalogScreens({ owner, csrf, brands, screen, onScreen }: {
   owner: string; csrf: string; brands: readonly string[]; screen: 'prices' | 'batteries' | 'other-products' | 'suppliers';
   onScreen: (screen: 'prices' | 'batteries' | 'other-products' | 'suppliers') => void;
 }) {
+  // «Motivos de caja» is the fifth screen of this registry. Its own hash is not part of the
+  // published navigation, so it lives here as a local tab: any hashed screen (a click, a typed
+  // hash or the browser's back) closes it instead of drawing it over another screen.
+  const [cashMotives, setCashMotives] = useState(false);
+  useEffect(() => { setCashMotives(false); }, [screen]);
+  const select = (target: 'prices' | 'batteries' | 'other-products' | 'suppliers') => {
+    setCashMotives(false);
+    onScreen(target);
+  };
+  const pressed = (target: 'prices' | 'batteries' | 'other-products' | 'suppliers') =>
+    !cashMotives && screen === target;
   return <>
     <div className="admin-tabs" role="group" aria-label="Secciones del catálogo">
-      <button type="button" aria-pressed={screen === 'prices'} onClick={() => onScreen('prices')}>Precios</button>
-      <button type="button" aria-pressed={screen === 'batteries'} onClick={() => onScreen('batteries')}>Baterías</button>
-      <button type="button" aria-pressed={screen === 'other-products'} onClick={() => onScreen('other-products')}>Otros productos</button>
-      <button type="button" aria-pressed={screen === 'suppliers'} onClick={() => onScreen('suppliers')}>Proveedores</button>
+      <button type="button" aria-pressed={pressed('prices')} onClick={() => select('prices')}>Precios</button>
+      <button type="button" aria-pressed={pressed('batteries')} onClick={() => select('batteries')}>Baterías</button>
+      <button type="button" aria-pressed={pressed('other-products')} onClick={() => select('other-products')}>Otros productos</button>
+      <button type="button" aria-pressed={pressed('suppliers')} onClick={() => select('suppliers')}>Proveedores</button>
+      <button type="button" aria-pressed={cashMotives} onClick={() => setCashMotives(true)}>Motivos de caja</button>
     </div>
-    {screen === 'batteries'
-      ? <CatalogBatteries key={`catalog-batteries-${owner}`} csrf={csrf} />
-      : screen === 'other-products'
-        ? <CatalogOtherProducts key={`catalog-other-products-${owner}`} csrf={csrf} />
-        : screen === 'suppliers'
-          ? <CatalogSuppliers key={`catalog-suppliers-${owner}`} csrf={csrf} />
-          : <CatalogPrices key={owner} csrf={csrf} brands={brands} />}
+    {cashMotives
+      ? <CashCategories key={`catalog-cash-motives-${owner}`} csrf={csrf} />
+      : screen === 'batteries'
+        ? <CatalogBatteries key={`catalog-batteries-${owner}`} csrf={csrf} />
+        : screen === 'other-products'
+          ? <CatalogOtherProducts key={`catalog-other-products-${owner}`} csrf={csrf} />
+          : screen === 'suppliers'
+            ? <CatalogSuppliers key={`catalog-suppliers-${owner}`} csrf={csrf} />
+            : <CatalogPrices key={owner} csrf={csrf} brands={brands} />}
   </>;
 }
 // Exported for the hook-order test: App can never mount this with an unauthenticated
