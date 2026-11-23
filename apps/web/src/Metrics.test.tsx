@@ -380,6 +380,8 @@ describe('branch metrics screen', () => {
     const card = panel('Hoy');
     // The two money boxes of the branch as they stand, and the two readings of the live window (S12, S18).
     expect(within(card).getByText('Bs 2.299.800,00')).toBeInTheDocument();
+    // The envelope is named for what it is: the branch's purchase fund (S15).
+    expect(within(card).getByText('Fondo de compras disponible')).toBeInTheDocument();
     expect(within(card).getByText('Bs 360.000,00')).toBeInTheDocument();
     expect(within(card).getByText('Bs 2.100.000,00')).toBeInTheDocument();
     expect(within(card).getByText('Bs 262.500,00')).toBeInTheDocument();

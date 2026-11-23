@@ -172,7 +172,7 @@ function TodayLine({ today, fundToday }: { today: MetricsToday; fundToday: Metri
       : <>desde el corte del <TransferDate value={today.since} /></>}</p>
     <dl>
       <div><dt>Efectivo en el cajón</dt><dd>{money(today.expected_cents)}</dd></div>
-      <div><dt>Fondo disponible</dt><dd>{money(fundToday.balance_cents)}</dd></div>
+      <div><dt>Fondo de compras disponible</dt><dd>{money(fundToday.balance_cents)}</dd></div>
       <div><dt>Vendido desde el corte</dt><dd>{today.sold_cents === 0n
         ? 'Sin ventas' : money(today.sold_cents)}</dd></div>
       <div><dt>Comisión devengada</dt><dd>{today.rate_percent === null
