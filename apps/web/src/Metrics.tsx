@@ -131,6 +131,14 @@ function PeriodFigures({ answer }: { answer: MetricsAnswer }) {
   </section>;
 }
 
+/** What the window bought, in the units of each kind: a zero is not a kind the branch bought. */
+function boughtText(usedUnits: number, scrapMilli: bigint): string {
+  const parts: string[] = [];
+  if (usedUnits !== 0) parts.push(`${usedUnits} u`);
+  if (scrapMilli !== 0n) parts.push(`${kilos(scrapMilli)} kg`);
+  return parts.length === 0 ? 'Sin unidades ni kilos' : parts.join(' · ');
+}
+
 /**
  * Today in one line: the drawer and the envelope as they stand, and the two readings of the live
  * window -- what the branch sold since the last cut and the commission it is earning, never what it
@@ -153,6 +161,15 @@ function TodayLine({ today, fundToday }: { today: MetricsToday; fundToday: Metri
         : today.commission_cents > 0n
           ? money(today.commission_cents)
           : 'Sin comisión todavía'}</dd></div>
+      {/* The purchases of the window, because the envelope is what pays them: a branch that bought a
+          used battery today reads it here instead of going back to Compras to check it landed (S15). */}
+      <div><dt>Compras desde el corte</dt><dd>{fundToday.documents === 0
+        ? 'Sin compras'
+        : fundToday.documents === 1 ? '1 compra' : `${fundToday.documents} compras`}
+        {fundToday.documents > 0 && <span className="metrics-today-note">
+          {boughtText(fundToday.used_units, fundToday.scrap_milli)}
+        </span>}
+      </dd></div>
     </dl>
   </section>;
 }

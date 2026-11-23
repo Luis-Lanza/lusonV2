@@ -308,8 +308,37 @@ describe('branch metrics screen', () => {
     expect(within(card).getByText('Bs 360.000,00')).toBeInTheDocument();
     expect(within(card).getByText('Bs 2.100.000,00')).toBeInTheDocument();
     expect(within(card).getByText('Bs 262.500,00')).toBeInTheDocument();
+    // The purchases of the window, because the envelope is what pays them (S15, S17).
+    expect(within(card).getByText('4 compras')).toBeInTheDocument();
+    expect(within(card).getByText('11 u · 42,500 kg')).toBeInTheDocument();
     // The window those figures cover, from the cut of the last closed settlement.
     expect(card).toHaveTextContent('desde el corte del 01/11/2026 · 08:00');
+  });
+
+  it('reads the purchase of one used battery in the line of today', async () => {
+    // The case the operator checks by hand: one document paid from the envelope, one battery and no
+    // scrap. The line names the purchase, what it bought and the balance it left (S15, S17).
+    setup(token => token === '4'
+      ? json(settlementBody({ fund_today: { ...fundToday, purchases: '100.00', effective: '-100.00',
+        balance: '479900.00', documents: 1, used_units: 1, scrap_milli: 0 } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const card = panel('Hoy');
+    expect(within(card).getByText('1 compra')).toBeInTheDocument();
+    expect(within(card).getByText('1 u')).toBeInTheDocument();
+    expect(within(card).getByText('Bs 479.900,00')).toBeInTheDocument();
+  });
+
+  it('states a window without purchases with words instead of a zero', async () => {
+    setup(token => token === '4'
+      ? json(settlementBody({ fund_today: { ...fundToday, purchases: '0.00', effective: '0.00',
+        balance: '480000.00', documents: 0, used_units: 0, scrap_milli: 0 } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const card = panel('Hoy');
+    expect(within(card).getByText('Sin compras')).toBeInTheDocument();
+    expect(within(card).queryByText(/Sin unidades ni kilos/)).toBeNull();
+    expect(within(card).queryByText('0 compras')).toBeNull();
   });
 
   it('states the absence of a rate and of a sale with words, never with a zero', async () => {
