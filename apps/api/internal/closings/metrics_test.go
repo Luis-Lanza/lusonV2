@@ -662,13 +662,13 @@ func TestMetricsTodayFollowsTheSettlementFormula(t *testing.T) {
 }
 
 // TestMetricsTodayPublishesTheCommissionTheBranchIsEarning pins S18 on the read: the drawer of today
-// states what the branch is earning so far -- the rate the warehouse froze for it, the total it sold
-// since the last cut and the commission those two produce, rounded once -- and it states it whatever
-// period the screen is showing, because the branch is inside exactly one window of its own.
+// states what the branch is earning so far -- the rate the warehouse froze for it, the batteries it
+// sold since the last cut and the commission those two produce, rounded once -- and it states it
+// whatever period the screen is showing, because the branch is inside exactly one window of its own.
 func TestMetricsTodayPublishesTheCommissionTheBranchIsEarning(t *testing.T) {
 	e := fixture(t)
 	first := e.closeFirstSettlement(t, "500.00")
-	// One cash sale and one by card: the commission is on the total sold, not on what reached the
+	// One cash sale and one by card: the commission is on the batteries sold, not on what reached the
 	// drawer, so the second one is a term of this reading even though the drawer never sees it.
 	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
 	e.sell(t, 1, 1, "40.00", sales.PaymentCard)
@@ -689,13 +689,75 @@ func TestMetricsTodayPublishesTheCommissionTheBranchIsEarning(t *testing.T) {
 	}
 	for _, source := range []string{"settlement", "history", "live"} {
 		today := read(source)
-		// 140.00 sold since the cut, at the 12.50% the fixture configures: 17.50 of commission.
+		// 140.00 of batteries sold since the cut, at the 12.50% the fixture configures: 17.50 of
+		// commission. The base is the battery line, which here is the whole sale.
 		if today.Rate == nil || *today.Rate != "12.50" {
 			t.Fatalf("%s: today must state the rate the warehouse configured: %+v", source, today.Rate)
 		}
-		if today.Sold != "140.00" || today.Commission != "17.50" {
+		if today.Sold != "140.00" || today.CommissionBase != "140.00" || today.Commission != "17.50" {
 			t.Fatalf("%s: today must state the base and the commission it produces: %+v", source, today)
 		}
+	}
+}
+
+// TestMetricsTodayComputesTheCommissionOnBatteriesOnly is the whole point of this change (S1-S4): a
+// window that sells a battery and an other product counts both in `sold` and only the battery in
+// `commission_base`, so the commission is the frozen rate times the batteries and never the rate over
+// the whole sale. "la comision debe ser solamente de la venta de baterias, la venta de 'otros
+// productos' como agua acidulada no cuentan para la comision" (S1).
+func TestMetricsTodayComputesTheCommissionOnBatteriesOnly(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// 200.00 of batteries and 15.00 of an other product, both in cash: the whole sale is 215.00 and
+	// the base is the battery line alone.
+	battery := variantOfEntry(t, e, 1)
+	e.sell(t, battery, 2, "100.00", sales.PaymentCash)
+	_, product := e.productOf(t, "Agua acidulada", 5)
+	e.sellProduct(t, product, 3, "5.00")
+
+	// The card reads the same window whatever period is on screen, so the drawer of today is read by
+	// the history, by the live settlement and by the computed window of the branch.
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	window, err := e.store.Metrics(e.ctx, identity(2), closings.MetricsPeriod{Window: true})
+	if err != nil {
+		t.Fatalf("the computed window could not be read: %v", err)
+	}
+	for _, today := range []closings.MetricsToday{historyOf(t, e).Today, metricsOf(t, e, opened.ID).Today,
+		window.Today} {
+		if today.Sold != "215.00" {
+			t.Fatalf("`sold` counts every sale of the window, of both kinds: %+v", today)
+		}
+		if today.CommissionBase != "200.00" {
+			t.Fatalf("only the battery line is the commission base: %+v", today)
+		}
+		// 12.50% of 200.00 is 25.00; over the whole sale it would have been 26.88.
+		if today.Rate == nil || *today.Rate != "12.50" || today.Commission != "25.00" {
+			t.Fatalf("the commission is the rate times the battery base: %+v", today)
+		}
+	}
+	// S4: the window still cross-checks its own money against `sold`, which counts both kinds, and
+	// the commission it publishes is the one the drawer of today is earning over the same window.
+	if window.Sales.Total != "215.00" || window.Sales.Total != window.Today.Sold ||
+		window.Sales.Commission != "25.00" || window.Sales.Commission != window.Today.Commission {
+		t.Fatalf("the window and the drawer of today must state one money: %+v %+v", window.Sales,
+			window.Today)
+	}
+}
+
+// TestMetricsTodayEarnsNothingWithoutBatterySales pins S7 on the card: a window that sold an other
+// product and no battery states that sale in `sold` and a base of 0.00, so the commission it earns is
+// zero and the screen has a number to say «Sin comisión todavía» with.
+func TestMetricsTodayEarnsNothingWithoutBatterySales(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	_, product := e.productOf(t, "Agua acidulada", 10)
+	e.sellProduct(t, product, 3, "5.00")
+	today := historyOf(t, e).Today
+	if today.Sold != "15.00" || today.CommissionBase != "0.00" || today.Commission != "0.00" {
+		t.Fatalf("a period without batteries sells and earns nothing: %+v", today)
 	}
 }
 
@@ -714,7 +776,7 @@ func TestMetricsTodayStatesNoCommissionWithoutAConfiguredRate(t *testing.T) {
 		t.Fatalf("a branch without a configured rate states no rate: %+v", *today.Rate)
 	}
 	// The base is a fact of the window whether or not a rate exists; the commission is not.
-	if today.Sold != "100.00" || today.Commission != "0.00" {
+	if today.Sold != "100.00" || today.CommissionBase != "100.00" || today.Commission != "0.00" {
 		t.Fatalf("today must state the base and a commission of zero: %+v", today)
 	}
 }

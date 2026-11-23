@@ -262,14 +262,16 @@ type metricsTodayDTO struct {
 	Effective string `json:"effective"`
 	Expected  string `json:"expected"`
 	// The rate is null for a branch the warehouse never configured: the absence of a rate is a state
-	// of its own and never a zero percentage (S20). Sold is the base the commission was computed on,
-	// and Commission is what the branch is earning -- not what it holds: the amount is settled when
-	// the settlement is proposed and until then it is a projection, pinned by the identity that
-	// produces it (S18, S19).
-	Rate       *string              `json:"rate"`
-	Sold       string               `json:"sold"`
-	Commission string               `json:"commission"`
-	Movements  []metricsMovementDTO `json:"movements"`
+	// of its own and never a zero percentage (S20). Sold is every sale of the window, and CommissionBase
+	// is the battery sales of that same window -- the amount the commission was computed on, which
+	// `sold` is not (S1, S2, S4). Commission is what the branch is earning -- not what it holds: the
+	// amount is settled when the settlement is proposed and until then it is a projection, pinned by
+	// the identity that produces it (S18, S19).
+	Rate           *string              `json:"rate"`
+	Sold           string               `json:"sold"`
+	CommissionBase string               `json:"commission_base"`
+	Commission     string               `json:"commission"`
+	Movements      []metricsMovementDTO `json:"movements"`
 }
 
 // metricsFundTodayDTO is the purchase envelope of today: the cut its window starts from -- null for a
@@ -610,21 +612,24 @@ func metricsTodayRecord(today closings.MetricsToday) (metricsTodayDTO, error) {
 		return unavailable()
 	}
 	// The commission is the settlement's own rule applied to the window the branch is living: its
-	// configured rate times the total it sold there, rounded once. A branch the warehouse never gave a
-	// rate to earns nothing and states a null rate, never a zero percentage that would read as a rate
-	// (S20); a rate that produces a different commission, or a commission with no rate behind it, is a
-	// number this read could not have written (S18).
-	if !metricsMoneyPattern.MatchString(string(today.Sold)) {
-		return unavailable()
+	// configured rate times the batteries it sold there -- never the whole sale, because an other
+	// product earns no commission (S1, S2) -- rounded once. A branch the warehouse never gave a rate
+	// to earns nothing and states a null rate, never a zero percentage that would read as a rate
+	// (S20); a rate that produces a different commission, or a commission with no rate behind it, is
+	// a number this read could not have written (S18).
+	for _, amount := range []closings.Money{today.Sold, today.CommissionBase} {
+		if !metricsMoneyPattern.MatchString(string(amount)) {
+			return unavailable()
+		}
 	}
-	record.Sold = string(today.Sold)
+	record.Sold, record.CommissionBase = string(today.Sold), string(today.CommissionBase)
 	record.Commission = "0.00"
 	if today.Rate != nil {
 		rate, err := closings.ParsePercent(string(*today.Rate))
 		if err != nil {
 			return unavailable()
 		}
-		commission, err := closings.Commission(today.Sold, rate)
+		commission, err := closings.Commission(today.CommissionBase, rate)
 		if err != nil || string(commission) != string(today.Commission) {
 			return unavailable()
 		}

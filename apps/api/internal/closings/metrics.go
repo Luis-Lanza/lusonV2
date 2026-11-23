@@ -148,13 +148,17 @@ type MetricsToday struct {
 	// Rate is the commission the warehouse configured for this branch, or nil when it never gave it
 	// one: a rate that does not exist is stated as its absence and never as a zero percentage (S20).
 	Rate *Percent
-	// Sold is the total the branch sold since that cut, the exact term the commission is computed on,
-	// and Commission is that rate times that total rounded once -- the settlement's own rule (S18).
-	// Neither is money in a box: the commission is settled when the settlement is proposed and until
-	// then it is what the branch is earning, not what it holds (S19).
-	Sold       Money
-	Commission Money
-	Movements  []MetricsMovement
+	// Sold is the total the branch sold since that cut -- every sale of the window, batteries and other
+	// products alike -- and CommissionBase is the part of it the commission is paid on: the subtotal of
+	// the lines whose catalogue entry is a battery (S1, S2, S4). "la comision debe ser solamente de la
+	// venta de baterias, la venta de 'otros productos' como agua acidulada no cuentan para la comision"
+	// (S1). Commission is that rate times that base rounded once -- the settlement's own rule (S18).
+	// None of the three is money in a box: the commission is settled when the settlement is proposed
+	// and until then it is what the branch is earning, not what it holds (S19).
+	Sold           Money
+	CommissionBase Money
+	Commission     Money
+	Movements      []MetricsMovement
 }
 
 // MetricsFundToday is the purchase envelope of the branch as it stands today, stated whatever period
@@ -628,10 +632,16 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 		today.Opening, today.Since = opening, &cut
 	}
 	// The cash that reached the drawer, the NET expense paid out of it, the signed effect of every
-	// movement of the window that belongs to no settlement, and the total the branch sold: the last one
-	// is not a term of the drawer -- a card sale never enters it -- but it is the base the commission of
-	// the window is computed on, read over the same predicate as the others so they describe one window
-	// and not four (S18).
+	// movement of the window that belongs to no settlement, the total the branch sold and the part of it
+	// that earns a commission: the fourth is not a term of the drawer -- a card sale never enters it --
+	// and the fifth is not a collection either, because a commission is settled when the settlement is
+	// proposed. Both are read over the same predicate as the others so they describe one window and not
+	// five (S4, S18).
+	//
+	// The total counts every sale of the window, of either catalogue kind, which is the money the card
+	// states; the base counts only the lines whose entry is a battery, so a period that sold an other
+	// product -- agua acidulada, say -- earns no commission on it (S1, S2). Only the base is narrowed:
+	// every other reading of this window stays the sum of every sale (S4).
 	//
 	// The expenses and the effect are read from `branch_cash_ledger`, exactly as `periodTotals` reads
 	// them (S4, S13): the view states one signed effect per row, so the expense of the window is
@@ -640,7 +650,7 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 	// transfer rows a settlement writes are excluded by `closing_id IS NULL`: they are the acta's own
 	// facts, already stated by its `contributed_cash` and `taken_cash`, and counting them here as well
 	// would count the same money twice (S5).
-	var sales, expenses, effective, sold string
+	var sales, expenses, effective, sold, base string
 	if err := q.QueryRow(ctx, `SELECT
  coalesce((SELECT sum(sale.cash_amount) FROM sales sale
         WHERE sale.branch_location_id=$1
@@ -654,16 +664,24 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
           AND ($2::timestamptz IS NULL OR ledger.occurred_at >= $2)),0)::numeric(12,2)::text,
  coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
         WHERE sale.branch_location_id=$1
-          AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text`,
-		int16(branch), today.Since).Scan(&sales, &expenses, &effective, &sold); err != nil {
+          AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text,
+ coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
+        JOIN catalog_variants variant ON variant.id=line.variant_id
+        JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
+        WHERE sale.branch_location_id=$1
+          AND ($2::timestamptz IS NULL OR sale.created_at >= $2)
+          AND entry.kind='battery'),0)::numeric(12,2)::text`,
+		int16(branch), today.Since).Scan(&sales, &expenses, &effective, &sold, &base); err != nil {
 		return MetricsToday{}, fail(ctx)
 	}
-	today.Sales, today.Expenses, today.Sold = Money(sales), Money(expenses), Money(sold)
+	today.Sales, today.Expenses, today.Sold, today.CommissionBase =
+		Money(sales), Money(expenses), Money(sold), Money(base)
 	// The amounts are what the branch holds or spent, never a signed reading: anything else is a
 	// persisted state this answer could not have been produced from. The effect of the window is signed
 	// on purpose -- it is the net of aportes, recaudaciones and gastos, and a corrected row reverses one
 	// of them -- so it is judged by its own reading.
-	for _, amount := range []Money{today.Opening, today.Sales, today.Expenses, today.Sold} {
+	for _, amount := range []Money{today.Opening, today.Sales, today.Expenses, today.Sold,
+		today.CommissionBase} {
 		if _, ok := amountCents(amount); !ok {
 			return MetricsToday{}, ErrUnavailable
 		}
@@ -679,7 +697,7 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 		return MetricsToday{}, ErrUnavailable
 	}
 	today.Expected = expected
-	// What the branch is earning so far: the rate the warehouse froze for it times the total it sold
+	// What the branch is earning so far: the rate the warehouse froze for it times the batteries it sold
 	// in this window, rounded exactly once by the settlement's own rule, so the card and the acta of
 	// the period being lived cannot disagree on the arithmetic (S18). A branch the warehouse never
 	// gave a rate to states no rate and earns no commission -- an absence, never a zero percentage
@@ -691,7 +709,7 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 	case err != nil:
 		return MetricsToday{}, fail(ctx)
 	default:
-		commission, err := Commission(today.Sold, rate)
+		commission, err := Commission(today.CommissionBase, rate)
 		if err != nil {
 			return MetricsToday{}, ErrUnavailable
 		}

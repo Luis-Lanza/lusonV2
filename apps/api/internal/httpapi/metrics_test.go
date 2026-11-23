@@ -39,7 +39,7 @@ var (
 	metricsModelWireKeys        = []string{"catalog_entry_id", "brand", "model", "capacity_ah", "units", "money"}
 	metricsProductModelWireKeys = []string{"catalog_entry_id", "name", "units", "money"}
 	metricsStockWireKeys        = []string{"units"}
-	metricsTodayWireKeys        = []string{"since", "opening", "sales", "expenses", "effective", "expected", "rate", "sold", "commission", "movements"}
+	metricsTodayWireKeys        = []string{"since", "opening", "sales", "expenses", "effective", "expected", "rate", "sold", "commission_base", "commission", "movements"}
 	metricsFundTodayWireKeys    = []string{"since", "opening", "purchases", "effective", "balance", "documents", "used_units", "scrap_milli"}
 	metricsMovementWireKeys     = []string{"kind", "amount", "effective", "occurred_at"}
 	metricsPeriodWireKeys       = []string{"kind", "closing_id", "from", "to", "label"}
@@ -196,10 +196,13 @@ type metricsAnswerWire struct {
 		Expected  string `json:"expected"`
 		// The rate is null for a branch the warehouse never configured, so the absence of a rate is
 		// a state of its own and never a zero percentage (S20).
-		Rate       *string `json:"rate"`
-		Sold       string  `json:"sold"`
-		Commission string  `json:"commission"`
-		Movements  []struct {
+		Rate *string `json:"rate"`
+		Sold string  `json:"sold"`
+		// CommissionBase is the battery sales of the window: the exact amount the commission was
+		// computed on, which `sold` -- every sale of the window -- no longer is (S1, S4).
+		CommissionBase string `json:"commission_base"`
+		Commission     string `json:"commission"`
+		Movements      []struct {
 			Kind   string `json:"kind"`
 			Amount string `json:"amount"`
 			// Effective is the signed effect of the row, positive into the drawer and negative out of
@@ -320,7 +323,8 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 		metricsObject(t, movement, metricsMovementWireKeys)
 	}
 	for _, money := range []string{answer.Today.Opening, answer.Today.Sales, answer.Today.Expenses,
-		answer.Today.Effective, answer.Today.Expected} {
+		answer.Today.Effective, answer.Today.Expected, answer.Today.Sold,
+		answer.Today.CommissionBase, answer.Today.Commission} {
 		if !metricsMoneyWire.MatchString(money) {
 			t.Fatalf("today money %q is not canonical: %s", money, w.Body.String())
 		}
@@ -681,7 +685,8 @@ func validMetrics() closings.Metrics {
 		// A branch with no configured rate earns nothing: the base it sold is a fact, the commission it
 		// did not earn is the zero of a rate that does not exist, and the rate itself is the null (S18-S20).
 		Today: closings.MetricsToday{Opening: "5.00", Sales: "10.00", Expenses: "2.00",
-			Effective: "-2.00", Expected: "13.00", Sold: "10.00", Commission: "0.00",
+			Effective: "-2.00", Expected: "13.00", Sold: "10.00", CommissionBase: "10.00",
+			Commission: "0.00",
 			Movements: []closings.MetricsMovement{
 				{Kind: "gasto", Amount: "2.00", Effective: "-2.00",
 					OccurredAt: metricsTodayMoment()}}},
@@ -1267,11 +1272,13 @@ func TestMetricsHTTPTodayCommission(t *testing.T) {
 		t.Fatalf("today must state the rate the warehouse configured: %+v", answer.Today.Rate)
 	}
 	// A branch with no sale since its cut sold nothing; whatever rate it holds, it earned nothing.
-	if answer.Today.Sold != "0.00" || answer.Today.Commission != "0.00" {
+	if answer.Today.Sold != "0.00" || answer.Today.CommissionBase != "0.00" ||
+		answer.Today.Commission != "0.00" {
 		t.Fatalf("a window without sales states no commission: %+v", answer.Today)
 	}
 	history := read("all")
 	if history.Today.Sold != answer.Today.Sold ||
+		history.Today.CommissionBase != answer.Today.CommissionBase ||
 		history.Today.Commission != answer.Today.Commission ||
 		(history.Today.Rate == nil) != (answer.Today.Rate == nil) {
 		t.Fatalf("the commission of today is the same whatever period is shown: %+v want %+v",
@@ -1280,40 +1287,49 @@ func TestMetricsHTTPTodayCommission(t *testing.T) {
 }
 
 // TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten proves the contract fails closed
-// on the one reading a client must be able to trust: a commission that is not its rate times the total
-// sold is a number this server never wrote, so it is refused instead of reaching the screen.
+// on the one reading a client must be able to trust: a commission that is not its rate times the battery
+// base is a number this server never wrote, so it is refused instead of reaching the screen (S1-S4).
 func TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten(t *testing.T) {
 	rate := closings.Percent("12.50")
 	sold := closings.Money("140.00")
+	base := closings.Money("100.00")
 	impossible := closings.Percent("101.00")
 	shapes := map[string]closings.MetricsToday{
-		"a commission that is not its rate times the total": {
+		"a commission that is not its rate times the base": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &rate, Sold: sold, Commission: closings.Money("99.00")},
+			Rate: &rate, Sold: sold, CommissionBase: base, Commission: closings.Money("99.00")},
 		"a commission without a rate": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: nil, Sold: sold, Commission: closings.Money("17.50")},
+			Rate: nil, Sold: sold, CommissionBase: base, Commission: closings.Money("17.50")},
 		"a zero commission with a rate that produces one": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &rate, Sold: sold, Commission: closings.Money("0.00")},
+			Rate: &rate, Sold: sold, CommissionBase: base, Commission: closings.Money("0.00")},
 		"a rate that is not a percentage": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &impossible, Sold: sold, Commission: closings.Money("17.50")},
+			Rate: &impossible, Sold: sold, CommissionBase: base, Commission: closings.Money("17.50")},
 		"a total sold that is not money": {
 			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-			Rate: &rate, Sold: closings.Money("-0.001"), Commission: closings.Money("17.50")},
+			Rate: &rate, Sold: closings.Money("-0.001"), CommissionBase: base,
+			Commission: closings.Money("17.50")},
+		// The base is a published amount of its own: a shape that omits it, or states it with the
+		// shape of a rate, is an answer this read could not have written (S2, S4).
+		"a base that is not money": {
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
+			Rate: &rate, Sold: sold, CommissionBase: closings.Money(""),
+			Commission: closings.Money("17.50")},
 	}
 	for name, today := range shapes {
 		if _, err := metricsTodayRecord(today); !errors.Is(err, closings.ErrUnavailable) {
 			t.Fatalf("%s must be refused as unavailable, got %v", name, err)
 		}
 	}
-	// The reading the store does write is admitted, and it is the settled rule beside it.
+	// The reading the store does write is admitted, and it is the settled rule beside it: the rate over
+	// the batteries of the window, with every sale of the window published as `sold` (S1, S4).
 	admitted, err := metricsTodayRecord(closings.MetricsToday{
 		Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
-		Rate: &rate, Sold: sold, Commission: closings.Money("17.50")})
-	if err != nil || admitted.Commission != "17.50" || admitted.Rate == nil ||
-		*admitted.Rate != "12.50" || admitted.Sold != "140.00" {
+		Rate: &rate, Sold: sold, CommissionBase: base, Commission: closings.Money("12.50")})
+	if err != nil || admitted.Commission != "12.50" || admitted.Rate == nil ||
+		*admitted.Rate != "12.50" || admitted.Sold != "140.00" || admitted.CommissionBase != "100.00" {
 		t.Fatalf("a consistent commission must be published: %+v %v", admitted, err)
 	}
 }
@@ -1505,9 +1521,9 @@ func TestMetricsHTTPCurrentWindow(t *testing.T) {
 		answer.Sales.Card != "0.00" || answer.Sales.Sales != 1 || answer.Sales.Units != 2 {
 		t.Fatalf("the window counts only the sales after its cut: %+v", answer.Sales)
 	}
-	// S6: the total of the window is the total the same answer says the branch sold since that cut,
-	// and the commission is the one the drawer of today is earning over the same window.
+	// S1-S4: the base is the battery sales of the window, which here are the whole sale of the window.
 	if answer.Today.Sold != answer.Sales.Total || answer.Today.Sold != "192000.00" ||
+		answer.Today.CommissionBase != "192000.00" ||
 		answer.Today.Commission != answer.Sales.Commission {
 		t.Fatalf("the window and today must state one money: %+v %+v", answer.Sales, answer.Today)
 	}

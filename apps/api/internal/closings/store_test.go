@@ -978,6 +978,137 @@ func TestClosurePersistsTheCommissionItOffered(t *testing.T) {
 	}
 }
 
+// TestProposePaysNoCommissionOnAProductOnlyPeriod pins S7 on the settlement: a period that sold no
+// battery earns nothing -- the offer records 0.00 as its base and 0.00 as its commission -- while the
+// sale it did make keeps counting in the period's money (S4).
+func TestProposePaysNoCommissionOnAProductOnlyPeriod(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "0.00")
+	_, product := e.productOf(t, "Agua acidulada", 10)
+	e.sellProduct(t, product, 3, "5.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("0.00", "0.00", "0.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	offer := proposed.LatestRound().Payload
+	if offer.SalesTotal != "15.00" || offer.CommissionBase == nil || *offer.CommissionBase != "0.00" ||
+		offer.CommissionAmount != "0.00" {
+		t.Fatalf("a period without batteries earns nothing and states no base of its own: %+v", offer)
+	}
+	if proposed.SalesTotal != "15.00" || proposed.CommissionBase == nil ||
+		*proposed.CommissionBase != "0.00" || proposed.CommissionAmount != "0.00" {
+		t.Fatalf("the acta must record the zero of a period that sold no battery: %+v", proposed)
+	}
+}
+
+// TestProposeOffersTheBatteryCommissionBase pins S5 on the settlement: a period that sells a battery
+// and an other product previews the battery as the commission base, the offer multiplies that base with
+// the frozen rate, and the acta freezes the very base the preview published -- so the two documents of
+// one period never multiply two different numbers (S1, S4).
+func TestProposeOffersTheBatteryCommissionBase(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "0.00")
+	// 100.00 of batteries and 15.00 of an other product: the sale is 115.00 and the base is 100.00.
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	_, product := e.productOf(t, "Agua acidulada", 5)
+	e.sellProduct(t, product, 3, "5.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+
+	// The preview the warehouse reads before proposing already multiplies the battery base: 12.50% of
+	// 100.00 is 12.50, while the rate over the whole sale would have been 14.38.
+	preview, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the open settlement could not be read: %v", err)
+	}
+	if preview.SalesTotal != "115.00" || preview.CommissionBase == nil ||
+		*preview.CommissionBase != "100.00" || preview.CommissionAmount != "12.50" {
+		t.Fatalf("the preview must multiply the battery base: %+v", preview)
+	}
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("0.00", "0.00", "0.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+
+	// The offer the branch is asked to accept is the preview: one base, one rate, one commission.
+	offer := proposed.LatestRound().Payload
+	if offer.SalesTotal != "115.00" || offer.CommissionRatePercent != "12.50" ||
+		offer.CommissionBase == nil || *offer.CommissionBase != "100.00" ||
+		offer.CommissionAmount != "12.50" {
+		t.Fatalf("the offer must multiply the base the preview published: %+v", offer)
+	}
+	if proposed.SalesTotal != "115.00" || proposed.CommissionBase == nil ||
+		*proposed.CommissionBase != "100.00" || proposed.CommissionAmount != "12.50" {
+		t.Fatalf("the database must record the base and the commission on it: %+v", proposed)
+	}
+	// The acta keeps the number it settled, whatever the branch sells afterwards.
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the offer: %v", err)
+	}
+	if closed.SalesTotal != "115.00" || closed.CommissionBase == nil ||
+		*closed.CommissionBase != "100.00" || closed.CommissionAmount != "12.50" {
+		t.Fatalf("the acta must freeze the base it multiplied: %+v", closed)
+	}
+}
+
+// TestActaWithoutAStoredCommissionBasePublishesNone pins S6 and S8: an acta recorded before the rule
+// carries no base, this read publishes the absence instead of inventing zero, and nothing rewrites the
+// commission it settled with. The historical shape is written here with the state machine's own
+// triggers switched off for one statement, because no migration ever rewrites a stored row (S8).
+func TestActaWithoutAStoredCommissionBasePublishesNone(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
+	id := e.closeWindow(t, drawerOf("700.00"))
+
+	if _, err := e.pool.Exec(e.ctx, `ALTER TABLE branch_closings DISABLE TRIGGER USER`); err != nil {
+		t.Fatalf("the triggers of the settlement could not be switched off: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := e.pool.Exec(context.Background(),
+			`ALTER TABLE branch_closings ENABLE TRIGGER USER`); err != nil {
+			t.Errorf("the triggers of the settlement could not be restored: %v", err)
+		}
+	})
+	if _, err := e.pool.Exec(e.ctx, `UPDATE branch_closings SET commission_base=NULL WHERE id=$1`, id); err != nil {
+		t.Fatalf("an acta recorded before the rule could not be stated without a base: %v", err)
+	}
+
+	acta, err := e.store.Read(e.ctx, warehouse(), id)
+	if err != nil {
+		t.Fatalf("the acta could not be read: %v", err)
+	}
+	if acta.CommissionBase != nil {
+		t.Fatalf("an acta without a base publishes no base, got %q", *acta.CommissionBase)
+	}
+	// The money it settled keeps standing: only the base is absent, and the commission it recorded is
+	// the one it signed.
+	if acta.SalesTotal != "200.00" || acta.CommissionAmount != "25.00" {
+		t.Fatalf("an acta without a base keeps the commission it recorded: %+v", acta)
+	}
+	metrics := metricsOf(t, e, id)
+	if metrics.Sales.Commission != "25.00" {
+		t.Fatalf("the metrics of that acta publish the commission it froze: %+v", metrics.Sales)
+	}
+}
+
 // TestProposeRefusesAnUndrawnDrawerOrNoRate pins the proposal's own refusals that the assumed
 // count leaves standing (rule 5 with S4 and S6): an uncounted drawer blocks the offer by name
 // instead of creating a round the closure would refuse, and a branch without a configured rate
