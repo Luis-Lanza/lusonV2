@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canje en el mostrador · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --ok:#047857; --reject:#991515; --warn-border:#E8CF86;
+    --shadow:0 1px 2px #2421240D;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  :focus-visible{outline:2px solid var(--wine);outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  .topbar{display:flex;align-items:center;gap:16px;height:56px;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+  .brand{font-weight:700;letter-spacing:.14em;font-size:13px;text-transform:uppercase}
+  .brand span{color:var(--wine)}
+  .where{color:var(--muted);font-size:13px}
+  .where b{color:var(--ink);font-weight:600}
+  .who{margin-left:auto;color:var(--muted);font-size:12px}
+  .workspace{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:0;align-items:start}
+  .pane{padding:26px 28px 120px}
+  h1{margin:0 0 4px;font-size:24px;letter-spacing:-.01em}
+  .lede{margin:0 0 22px;color:var(--muted);font-size:13px;max-width:62ch}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow)}
+  .search{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:16px}
+  .search label{grid-column:1/-1;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .search input{height:44px;padding:0 14px;font:inherit;font-size:17px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--ink)}
+  .search input::placeholder{color:#9A9196;letter-spacing:0}
+  .btn{height:44px;padding:0 18px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .btn-primary{background:var(--wine);border-color:var(--wine);color:#fff}
+  .btn-primary:hover{background:var(--hover)}
+  .btn-quiet{border-color:transparent;background:transparent;color:var(--muted);font-weight:500}
+  .hint{grid-column:1/-1;margin:2px 0 0;color:var(--muted);font-size:12px}
+  .section{margin-top:18px}
+  .section-head{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
+  .section-head h2{margin:0;font-size:15px}
+  .section-head .step{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.1em}
+  .found{padding:18px 20px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 28px}
+  .found header{grid-column:1/-1;display:flex;align-items:center;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;letter-spacing:.02em}
+  .pill-ok{background:#E8F5F0;color:var(--ok)}
+  .pill-wine{background:var(--tint);color:var(--wine)}
+  .pill-quiet{background:#F1EEEF;color:var(--muted)}
+  .sale-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:600}
+  .field{margin:0}
+  .field dt{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .field dd{margin:2px 0 0;font-size:14px}
+  .field dd b{font-weight:600}
+  .num{font-variant-numeric:tabular-nums}
+  .motivo{padding:16px 20px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px;padding:0;list-style:none}
+  .chip{padding:6px 12px;border:1px solid var(--border);border-radius:999px;font-size:12.5px;background:var(--surface);cursor:pointer;color:var(--ink)}
+  .chip[aria-pressed="true"]{background:var(--tint);border-color:var(--wine);color:var(--wine);font-weight:600}
+  .motivo textarea{width:100%;min-height:64px;padding:10px 12px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:13px;resize:vertical;background:var(--surface);color:var(--ink)}
+  .loan{padding:18px 20px}
+  .loan-grid{display:grid;grid-template-columns:2fr 90px 1fr;gap:14px}
+  .loan-field label{display:block;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+  .loan-field select,.loan-field input{width:100%;height:40px;padding:0 10px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:13px;background:var(--surface);color:var(--ink)}
+  .origins{display:grid;gap:6px;margin:14px 0 0;padding:0;list-style:none}
+  .origin{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--surface)}
+  .origin[data-checked="true"]{border-color:var(--wine);background:var(--tint)}
+  .origin .count{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+  .origin .count b{color:var(--ink)}
+  .note{margin:12px 0 0;padding:10px 12px;border-left:2px solid var(--warn-border);background:#FFFBEF;font-size:12.5px;color:#5B4A16;border-radius:0 4px 4px 0}
+  .actionbar{position:fixed;left:0;right:380px;bottom:0;display:flex;align-items:center;gap:14px;padding:14px 28px;background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -1px 2px #2421240D}
+  .actionbar .total{margin-left:auto;color:var(--muted);font-size:12px}
+  .queue{position:sticky;top:0;min-height:100vh;padding:22px 20px;background:var(--surface);border-left:1px solid var(--border)}
+  .queue h2{margin:0 0 2px;font-size:15px}
+  .queue .sub{margin:0 0 16px;color:var(--muted);font-size:12px}
+  .case{display:block;width:100%;text-align:left;padding:12px 0;border:0;border-top:1px solid var(--border);background:none;color:inherit;font:inherit;cursor:pointer}
+  .case-top{display:flex;align-items:baseline;gap:8px}
+  .case-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted)}
+  .case-days{margin-left:auto;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--wine)}
+  .case-client{font-size:13.5px;font-weight:600;margin:3px 0 1px}
+  .case-what{font-size:12px;color:var(--muted)}
+  .case-state{margin-top:6px}
+  .empty-queue{margin-top:18px;padding:14px;border:1px dashed var(--border);border-radius:8px;color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Luson <span>·</span> Garantías</div>
+  <div class="where">Sucursal A · <b>Punto de venta</b></div>
+  <div class="who">Marta Sosa · sucursal_a</div>
+</header>
+
+<main class="workspace">
+  <div class="pane">
+    <h1>Garantía y reparación</h1>
+    <p class="lede">Buscá la batería por su número de serie. El serial se anotó al vender, así que alcanza con leer la etiqueta para encontrar la venta, el plazo y el cliente.</p>
+
+    <form class="panel search" onsubmit="return false">
+      <label for="serial">Número de serie de la batería reclamada</label>
+      <input id="serial" value="WL-8842137" autocomplete="off">
+      <button class="btn btn-primary" type="submit">Buscar</button>
+      <p class="hint">Se compara sin distinguir mayúsculas. Una batería no puede estar vendida dos veces.</p>
+    </form>
+
+    <section class="section" aria-labelledby="venta-h">
+      <div class="section-head"><span class="step">01</span><h2 id="venta-h">La venta encontrada</h2></div>
+      <article class="panel found">
+        <header>
+          <span class="pill pill-ok">Garantía vigente</span>
+          <span class="sale-no">GAR-A-0042</span>
+          <span class="pill pill-quiet">18 meses</span>
+          <span class="pill pill-wine">Vence 12/09/2027</span>
+        </header>
+        <dl class="field"><dt>Batería vendida</dt><dd><b>Willard NS60ZL</b> · 12V · polaridad L</dd></dl>
+        <dl class="field"><dt>Fecha de venta</dt><dd class="num">12/03/2026 · 09:14</dd></dl>
+        <dl class="field"><dt>Cliente</dt><dd><b>Marta Ferreyra</b> · DNI 27.884.501</dd></dl>
+        <dl class="field"><dt>Teléfono</dt><dd class="num">11 4457-2210</dd></dl>
+        <dl class="field" style="grid-column:1/-1"><dt>Dirección registrada</dt><dd>Av. Rivadavia 14.882, barrio Flores</dd></dl>
+      </article>
+    </section>
+
+    <section class="section" aria-labelledby="motivo-h">
+      <div class="section-head"><span class="step">02</span><h2 id="motivo-h">Qué declara el cliente</h2></div>
+      <div class="panel motivo">
+        <ul class="chips">
+          <li><button class="chip" aria-pressed="true" type="button">No arranca en frío</button></li>
+          <li><button class="chip" aria-pressed="false" type="button">No retiene carga</button></li>
+          <li><button class="chip" aria-pressed="false" type="button">Se hinchó</button></li>
+          <li><button class="chip" aria-pressed="false" type="button">Olor a ácido</button></li>
+          <li><button class="chip" aria-pressed="false" type="button">Otra</button></li>
+        </ul>
+        <label for="decla" style="font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)">Detalle</label>
+        <textarea id="decla">Al segundo día de dejarla parada no arranca. La cargamos y a la semana otra vez.</textarea>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="prestamo-h">
+      <div class="section-head"><span class="step">03</span><h2 id="prestamo-h">La batería usada en préstamo</h2></div>
+      <div class="panel loan">
+        <div class="loan-grid">
+          <div class="loan-field">
+            <label for="modelo">Modelo prestado</label>
+            <select id="modelo">
+              <option>Willard NS60ZL · usada</option>
+              <option>Bosch S4 75Ah · usada</option>
+              <option>Moura 12N5L · usada</option>
+            </select>
+          </div>
+          <div class="loan-field">
+            <label for="cant">Cantidad</label>
+            <input id="cant" value="1" class="num">
+          </div>
+          <div class="loan-field">
+            <label for="carga">Nivel de carga</label>
+            <select id="carga"><option>Probada, carga completa</option><option>Probada, media carga</option></select>
+          </div>
+        </div>
+
+        <p style="margin:14px 0 6px;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)">De dónde sale</p>
+        <ul class="origins">
+          <li class="origin" data-checked="true">
+            <input type="radio" name="origen" checked aria-label="Sucursal A">
+            <span><b>Sucursal A</b> · este local</span>
+            <span class="count"><b>3</b> usadas del modelo</span>
+          </li>
+          <li class="origin" data-checked="false">
+            <input type="radio" name="origen" aria-label="Almacén">
+            <span><b>Almacén</b> · se pide el envío</span>
+            <span class="count"><b>11</b> usadas del modelo</span>
+          </li>
+          <li class="origin" data-checked="false">
+            <input type="radio" name="origen" aria-label="Sucursal B">
+            <span><b>Sucursal B</b> · se coordina el traslado</span>
+            <span class="count"><b>1</b> usada del modelo</span>
+          </li>
+        </ul>
+        <p class="note">El origen sólo deja registrado de dónde salió la usada: no mueve stock entre locales y no crea una transferencia. Las usadas no son inventario.</p>
+      </div>
+    </section>
+  </div>
+
+  <aside class="queue" aria-labelledby="cola-h">
+    <h2 id="cola-h">Pendientes en esta sucursal</h2>
+    <p class="sub">Ordenados por días desde el último aviso al cliente.</p>
+
+    <button class="case" type="button">
+      <span class="case-top"><span class="case-no">C-A-00038</span><span class="case-days">47 d</span></span>
+      <span class="case-client">Ricardo Palomeque</span>
+      <span class="case-what">Willard NS60ZL · reparada, esperando canje</span>
+      <span class="case-state"><span class="pill pill-wine">Avisado</span></span>
+    </button>
+
+    <button class="case" type="button">
+      <span class="case-top"><span class="case-no">C-A-00041</span><span class="case-days">12 d</span></span>
+      <span class="case-client">Norma Quiroga</span>
+      <span class="case-what">Bosch S4 75Ah · en fábrica</span>
+      <span class="case-state"><span class="pill pill-quiet">Legajo F-2214</span></span>
+    </button>
+
+    <button class="case" type="button">
+      <span class="case-top"><span class="case-no">C-A-00042</span><span class="case-days">0 d</span></span>
+      <span class="case-client">Marta Ferreyra</span>
+      <span class="case-what">Willard NS60ZL · registrando ahora</span>
+      <span class="case-state"><span class="pill pill-ok">En la sucursal</span></span>
+    </button>
+
+    <div class="empty-queue">Las baterías que devuelve fábrica quedan en custodia y no se pueden vender: aparecen acá hasta que el cliente las retira o el Almacén autoriza liberarlas.</div>
+  </aside>
+
+  <div class="actionbar">
+    <button class="btn btn-quiet" type="button">Descartar</button>
+    <span class="total">Caso C-A-00043 · sin costo para el cliente</span>
+    <button class="btn btn-primary" type="button">Registrar canje e imprimir comprobante</button>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comprobante de préstamo · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page);color:var(--ink);font:13px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;justify-content:center;padding:24px}
+  :focus-visible{outline:2px solid var(--wine);outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  .sheet{width:794px;min-height:1123px;background:var(--surface);padding:56px 60px 48px;display:flex;flex-direction:column;box-shadow:0 1px 2px #2421240D,0 8px 32px #24212414}
+  .head{display:flex;align-items:flex-start;gap:20px;padding-bottom:18px;border-bottom:2px solid var(--ink)}
+  .brand{font-weight:700;letter-spacing:.16em;font-size:15px;text-transform:uppercase}
+  .brand span{color:var(--wine)}
+  .branch{margin-top:2px;color:var(--muted);font-size:11.5px}
+  .doc{margin-left:auto;text-align:right}
+  .doc h1{margin:0;font-size:19px;letter-spacing:-.01em}
+  .doc .num{margin-top:3px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600}
+  .doc .date{margin-top:1px;color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+  h2{margin:26px 0 8px;font-size:10.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 28px;padding:14px 0 0;border-top:1px solid var(--border)}
+  .grid.three{grid-template-columns:1fr 1fr 1fr}
+  dt{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  dd{margin:2px 0 0;font-size:13px}
+  dd b{font-weight:600}
+  table{width:100%;border-collapse:collapse;margin-top:12px}
+  thead th{background:var(--page);text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--border)}
+  tbody td{padding:10px;border-bottom:1px solid var(--border);font-size:13px}
+  tbody td.num{font-variant-numeric:tabular-nums}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+  .terms{margin:10px 0 0;padding:0;list-style:none;counter-reset:t}
+  .terms li{position:relative;padding:0 0 0 26px;margin-bottom:9px;font-size:12.5px;line-height:1.55}
+  .terms li::before{counter-increment:t;content:counter(t);position:absolute;left:0;top:1px;width:17px;height:17px;border-radius:50%;background:var(--tint);color:var(--wine);font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .key{padding:14px 16px;border:1px solid var(--border);border-left:3px solid var(--wine);border-radius:0 6px 6px 0;margin-top:12px;font-size:12.5px}
+  .key b{display:block;margin-bottom:2px}
+  .sign{display:grid;grid-template-columns:1fr 1fr;gap:48px;margin-top:auto;padding-top:52px}
+  .sign div{border-top:1px solid var(--ink);padding-top:6px;font-size:11px;color:var(--muted)}
+  .sign div span{display:block;color:var(--ink);font-size:12px;font-weight:600;margin-bottom:2px}
+  .foot{margin-top:26px;padding-top:12px;border-top:1px solid var(--border);display:flex;gap:16px;color:var(--muted);font-size:10.5px}
+  .foot .right{margin-left:auto;text-align:right}
+</style>
+</head>
+<body>
+<article class="sheet">
+  <header class="head">
+    <div>
+      <div class="brand">Luson <span>·</span> Baterías</div>
+      <div class="branch">Sucursal A · Av. Rivadavia 14.200 · CABA</div>
+    </div>
+    <div class="doc">
+      <h1>Comprobante de préstamo</h1>
+      <div class="num">C-A-00043</div>
+      <div class="date">23/11/2026 · 10:42</div>
+    </div>
+  </header>
+
+  <h2>Cliente</h2>
+  <dl class="grid three">
+    <div><dt>Nombre</dt><dd><b>Marta Ferreyra</b></dd></div>
+    <div><dt>Documento</dt><dd>DNI 27.884.501</dd></div>
+    <div><dt>Teléfono</dt><dd>11 4457-2210</dd></div>
+  </dl>
+
+  <h2>Batería reclamada, que queda en revisión</h2>
+  <dl class="grid">
+    <div><dt>Modelo</dt><dd><b>Willard NS60ZL</b> · 12V · polaridad L</dd></div>
+    <div><dt>Número de serie</dt><dd class="mono">WL-8842137</dd></div>
+    <div><dt>Venta de origen</dt><dd>GAR-A-0042 · 12/03/2026</dd></div>
+    <div><dt>Garantía vigente</dt><dd>18 meses · hasta 12/09/2027</dd></div>
+    <div><dt>Falla declarada</dt><dd>No arranca en frío</dd></div>
+    <div><dt>Costo para el cliente</dt><dd><b>Sin costo</b></dd></div>
+  </dl>
+
+  <h2>Batería usada entregada en préstamo</h2>
+  <table>
+    <caption style="position:absolute;left:-9999px">Batería entregada en préstamo</caption>
+    <thead>
+      <tr><th scope="col">Modelo</th><th scope="col">Cantidad</th><th scope="col">Origen</th><th scope="col">Estado</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>Willard NS60ZL</b> <span class="mono" style="color:var(--muted)">usada</span></td>
+        <td class="num">1</td>
+        <td>Sucursal A</td>
+        <td>Probada, carga completa</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Condiciones del canje</h2>
+  <ol class="terms">
+    <li>La batería reclamada queda en poder de Luson y se envía al Almacén y a la fábrica para su revisión.</li>
+    <li>La batería usada se entrega en préstamo, sin cargo, para que el cliente pueda seguir usando su vehículo mientras se resuelve la garantía.</li>
+    <li>Cuando la batería reclamada regrese de fábrica, el canje se realiza en esta sucursal: se entrega la batería resultante y se devuelve la usada prestada.</li>
+    <li>Si el cliente no se presenta dentro de los días que se le informen al ser avisado, el préstamo queda como definitivo y la batería resultante se libera.</li>
+    <li>Si la fábrica no cubre la garantía, el cliente conserva la batería usada prestada y la batería reclamada queda en poder de Luson.</li>
+    <li>El plazo de garantía original no se extiende ni se reinicia por este préstamo.</li>
+  </ol>
+
+  <div class="key">
+    <b>Su batería está en revisión.</b>
+    Este comprobante es su respaldo: no necesita conservar la batería reclamada ni el remito de fábrica. Con este número puede consultar el estado en cualquier momento.
+  </div>
+
+  <div class="sign">
+    <div><span>Marta Ferreyra</span>Recibí la batería usada en préstamo</div>
+    <div><span>Marta Sosa</span>Entregué en nombre de Sucursal A</div>
+  </div>
+
+  <footer class="foot">
+    <div>
+      Garantía de origen GAR-A-0042 · Caso C-A-00043<br>
+      Emitido por Luson · copia del cliente, copia de la sucursal
+    </div>
+    <div class="right">
+      Página 1 de 1<br>
+      Comprobante sin valor fiscal
+    </div>
+  </footer>
+</article>
+</body>
+</html>

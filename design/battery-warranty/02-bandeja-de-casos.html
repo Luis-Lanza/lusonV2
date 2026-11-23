@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bandeja de casos · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --ok:#047857; --reject:#991515; --warn-border:#E8CF86;
+    --shadow:0 1px 2px #2421240D;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  :focus-visible{outline:2px solid var(--wine);outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  .topbar{display:flex;align-items:center;gap:16px;height:56px;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+  .brand{font-weight:700;letter-spacing:.14em;font-size:13px;text-transform:uppercase}
+  .brand span{color:var(--wine)}
+  .where{color:var(--muted);font-size:13px}
+  .where b{color:var(--ink);font-weight:600}
+  .who{margin-left:auto;color:var(--muted);font-size:12px}
+  .head{padding:22px 28px 0}
+  .head-row{display:flex;align-items:flex-end;gap:16px}
+  h1{margin:0;font-size:24px;letter-spacing:-.01em}
+  .head p{margin:4px 0 0;color:var(--muted);font-size:13px}
+  .head .actions{margin-left:auto;display:flex;gap:8px}
+  .btn{height:38px;padding:0 16px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .btn-primary{background:var(--wine);border-color:var(--wine);color:#fff}
+  .btn-primary:hover{background:var(--hover)}
+  .tabs{display:flex;gap:2px;margin:18px 0 0;border-bottom:1px solid var(--border)}
+  .tab{position:relative;padding:9px 14px;border:0;background:none;color:var(--muted);font:inherit;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+  .tab[aria-selected="true"]{color:var(--wine);border-bottom-color:var(--wine)}
+  .tab .n{margin-left:6px;font-size:11px;font-variant-numeric:tabular-nums;color:var(--muted);font-weight:600}
+  .tab[aria-selected="true"] .n{color:var(--wine)}
+  .layout{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:0;align-items:start}
+  .tablewrap{padding:0 28px 40px}
+  table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:var(--shadow);margin-top:16px}
+  thead th{background:var(--page);text-align:left;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap}
+  tbody td{padding:12px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr[aria-selected="true"] td{background:var(--tint)}
+  tbody tr{cursor:pointer}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted)}
+  .who-cell{font-weight:600}
+  .sub-cell{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:1px}
+  .num{font-variant-numeric:tabular-nums}
+  .days{font-weight:600;font-variant-numeric:tabular-nums}
+  .days.hot{color:var(--wine)}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+  .pill-ok{background:#E8F5F0;color:var(--ok)}
+  .pill-wine{background:var(--tint);color:var(--wine)}
+  .pill-quiet{background:#F1EEEF;color:var(--muted)}
+  .pill-warn{background:#FFFBEF;color:#5B4A16;box-shadow:inset 0 0 0 1px var(--warn-border)}
+  .detail{position:sticky;top:0;min-height:100vh;padding:22px 22px 40px;background:var(--surface);border-left:1px solid var(--border)}
+  .detail-top{display:flex;align-items:baseline;gap:10px;margin-bottom:2px}
+  .detail-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:600}
+  .detail h2{margin:8px 0 2px;font-size:18px}
+  .detail .client-line{margin:0;color:var(--muted);font-size:12.5px}
+  .facts{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin:16px 0 0;padding:14px 0 0;border-top:1px solid var(--border)}
+  .facts dt{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .facts dd{margin:2px 0 0;font-size:13px}
+  .timeline{margin:18px 0 0;padding:0;list-style:none;border-top:1px solid var(--border)}
+  .timeline li{position:relative;padding:12px 0 12px 22px;border-bottom:1px solid var(--border)}
+  .timeline li::before{content:"";position:absolute;left:2px;top:18px;width:7px;height:7px;border-radius:50%;background:var(--border)}
+  .timeline li[data-done="true"]::before{background:var(--ok)}
+  .timeline li[data-current="true"]::before{background:var(--wine);box-shadow:0 0 0 3px var(--tint)}
+  .timeline .h{display:flex;align-items:baseline;gap:8px}
+  .timeline strong{font-size:13px;font-weight:600}
+  .timeline time{margin-left:auto;color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+  .timeline p{margin:2px 0 0;color:var(--muted);font-size:12px}
+  .custody{margin:16px 0 0;padding:12px 14px;border:1px solid var(--border);border-left:3px solid var(--wine);border-radius:0 6px 6px 0;background:var(--page)}
+  .custody strong{display:block;font-size:13px}
+  .custody p{margin:3px 0 0;color:var(--muted);font-size:12px}
+  .detail-actions{display:flex;gap:8px;margin-top:18px}
+  .detail-actions .btn{flex:1}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Luson <span>·</span> Garantías</div>
+  <div class="where">Sucursal A · <b>Casos de garantía</b></div>
+  <div class="who">Marta Sosa · sucursal_a</div>
+</header>
+
+<div class="head">
+  <div class="head-row">
+    <div>
+      <h1>Casos de garantía</h1>
+      <p>Todo lo que no es stock vendible: reclamos, hallazgos en góndola y unidades en custodia.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button">Exportar</button>
+      <button class="btn btn-primary" type="button">Registrar canje</button>
+    </div>
+  </div>
+  <div class="tabs" role="tablist" aria-label="Filtro de casos">
+    <button class="tab" role="tab" aria-selected="true">Todos <span class="n">14</span></button>
+    <button class="tab" role="tab" aria-selected="false">Esperando canje <span class="n">5</span></button>
+    <button class="tab" role="tab" aria-selected="false">En poder de la sucursal <span class="n">2</span></button>
+    <button class="tab" role="tab" aria-selected="false">Viajando <span class="n">3</span></button>
+    <button class="tab" role="tab" aria-selected="false">En fábrica <span class="n">4</span></button>
+  </div>
+</div>
+
+<div class="layout">
+  <div class="tablewrap">
+    <table>
+      <caption class="sr-only" style="position:absolute;left:-9999px">Casos de garantía de la sucursal</caption>
+      <thead>
+        <tr>
+          <th scope="col">Caso</th>
+          <th scope="col">Cliente</th>
+          <th scope="col">Batería</th>
+          <th scope="col">Origen</th>
+          <th scope="col">Estado</th>
+          <th scope="col" style="text-align:right">Días</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr aria-selected="true">
+          <td class="mono">C-A-00038</td>
+          <td><span class="who-cell">Ricardo Palomeque</span><span class="sub-cell num">11 5512-8890</span></td>
+          <td>Willard NS60ZL<span class="sub-cell mono">WL-7712004</span></td>
+          <td><span class="pill pill-quiet">Garantía</span></td>
+          <td><span class="pill pill-wine">Reparada · esperando canje</span></td>
+          <td class="days hot" style="text-align:right">47</td>
+        </tr>
+        <tr aria-selected="false">
+          <td class="mono">C-A-00041</td>
+          <td><span class="who-cell">Norma Quiroga</span><span class="sub-cell num">11 4478-1103</span></td>
+          <td>Bosch S4 75Ah<span class="sub-cell mono">BO-2291043</span></td>
+          <td><span class="pill pill-quiet">Garantía</span></td>
+          <td><span class="pill pill-quiet">En fábrica · legajo F-2214</span></td>
+          <td class="days" style="text-align:right">12</td>
+        </tr>
+        <tr aria-selected="false">
+          <td class="mono">C-A-00039</td>
+          <td><span class="who-cell">Sucursal A · góndola</span><span class="sub-cell">Detectada por el vendedor</span></td>
+          <td>Moura 12N5L<span class="sub-cell">2 unidades</span></td>
+          <td><span class="pill pill-warn">Stock fallado</span></td>
+          <td><span class="pill pill-warn">Verificando en Almacén</span></td>
+          <td class="days" style="text-align:right">6</td>
+        </tr>
+        <tr aria-selected="false">
+          <td class="mono">C-A-00040</td>
+          <td><span class="who-cell">Elsa Benítez</span><span class="sub-cell num">11 6690-2244</span></td>
+          <td>Varta Blue 45Ah<span class="sub-cell mono">VA-1180322</span></td>
+          <td><span class="pill pill-quiet">Garantía</span></td>
+          <td><span class="pill pill-warn">Fábrica no cubrió · esperando decisión</span></td>
+          <td class="days hot" style="text-align:right">63</td>
+        </tr>
+        <tr aria-selected="false">
+          <td class="mono">C-A-00037</td>
+          <td><span class="who-cell">Hugo Maidana</span><span class="sub-cell num">11 3320-7719</span></td>
+          <td>Willard NS60ZL<span class="sub-cell mono">WL-6620147</span></td>
+          <td><span class="pill pill-quiet">Garantía</span></td>
+          <td><span class="pill pill-ok">Entregada al cliente</span></td>
+          <td class="days" style="text-align:right">—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <aside class="detail" aria-labelledby="detalle-h">
+    <div class="detail-top"><span class="detail-no">C-A-00038</span><span class="pill pill-wine">Reparada</span></div>
+    <h2 id="detalle-h">Ricardo Palomeque</h2>
+    <p class="client-line">11 5512-8890 · Av. Directorio 3310</p>
+
+    <dl class="facts">
+      <div><dt>Batería reclamada</dt><dd>Willard NS60ZL</dd></div>
+      <div><dt>Serial</dt><dd class="mono">WL-7712004</dd></div>
+      <div><dt>Venta</dt><dd class="num">GAR-A-0031 · 04/09/2025</dd></div>
+      <div><dt>Garantía</dt><dd>18 meses · hasta 04/03/2027</dd></div>
+      <div><dt>Préstamo</dt><dd>NS60ZL usada · Sucursal A</dd></div>
+      <div><dt>Costo al cliente</dt><dd>Sin costo</dd></div>
+    </dl>
+
+    <ol class="timeline">
+      <li data-done="true"><div class="h"><strong>Reclamo registrado</strong><time>12/10/2026</time></div><p>No arranca en frío. Se entregó usada NS60ZL.</p></li>
+      <li data-done="true"><div class="h"><strong>Recibida en Almacén</strong><time>14/10/2026</time></div><p>Verificada: daño interno, cubierta.</p></li>
+      <li data-done="true"><div class="h"><strong>Enviada a fábrica</strong><time>16/10/2026</time></div><p>Legajo F-2190.</p></li>
+      <li data-done="true"><div class="h"><strong>Fábrica: reparada</strong><time>03/11/2026</time></div><p>Vuelve la unidad original reparada.</p></li>
+      <li data-current="true"><div class="h"><strong>Avisado al cliente</strong><time>05/11/2026</time></div><p>Aviso telefónico. Esperando canje hace 47 días.</p></li>
+      <li><div class="h"><strong>Canje</strong><time>—</time></div><p>Se entrega la reparada y vuelve la usada prestada.</p></li>
+    </ol>
+
+    <div class="custody">
+      <strong>En custodia por garantía: 1</strong>
+      <p>La reparada no es stock vendible mientras espera al cliente. No se puede vender y no se cuenta en el conteo físico.</p>
+    </div>
+
+    <div class="detail-actions">
+      <button class="btn" type="button">Registrar nuevo aviso</button>
+      <button class="btn btn-primary" type="button">Entregar canje</button>
+    </div>
+  </aside>
+</div>
+</body>
+</html>

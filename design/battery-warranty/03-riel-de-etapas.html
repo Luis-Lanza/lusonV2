@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riel de etapas · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --ok:#047857; --reject:#991515; --warn-border:#E8CF86;
+    --shadow:0 1px 2px #2421240D;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  :focus-visible{outline:2px solid var(--wine);outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  .topbar{display:flex;align-items:center;gap:14px;height:56px;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+  .brand{font-weight:700;letter-spacing:.14em;font-size:13px;text-transform:uppercase}
+  .brand span{color:var(--wine)}
+  .case-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;font-weight:600}
+  .serial{color:var(--muted);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .who{margin-left:auto;color:var(--muted);font-size:12px}
+  .shell{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:calc(100vh - 56px)}
+  .rail{background:var(--surface);border-right:1px solid var(--border);padding:22px 0}
+  .rail h2{margin:0 22px 2px;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .rail .owner{margin:0 22px 18px;font-size:12px;color:var(--muted)}
+  .steps{margin:0;padding:0;list-style:none}
+  .step{display:grid;grid-template-columns:22px minmax(0,1fr);gap:10px;padding:11px 22px;position:relative;border-left:2px solid transparent}
+  .step .dot{margin-top:4px;width:11px;height:11px;border-radius:50%;border:2px solid var(--border);background:var(--surface)}
+  .step[data-state="done"] .dot{border-color:var(--ok);background:var(--ok)}
+  .step[data-state="current"]{border-left-color:var(--wine);background:var(--tint)}
+  .step[data-state="current"] .dot{border-color:var(--wine);background:var(--wine);box-shadow:0 0 0 3px #fff}
+  .step b{display:block;font-size:13px;font-weight:600}
+  .step span{display:block;color:var(--muted);font-size:11.5px;margin-top:1px}
+  .step[data-state="pending"] b{color:var(--muted);font-weight:500}
+  .rail-foot{margin:20px 22px 0;padding-top:14px;border-top:1px solid var(--border);font-size:11.5px;color:var(--muted)}
+  .main{padding:24px 28px 40px}
+  .main-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:18px}
+  .main-head h1{margin:0;font-size:22px;letter-spacing:-.01em}
+  .main-head p{margin:3px 0 0;color:var(--muted);font-size:13px}
+  .main-head .actions{margin-left:auto;display:flex;gap:8px}
+  .btn{height:38px;padding:0 16px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .btn-primary{background:var(--wine);border-color:var(--wine);color:#fff}
+  .btn-primary:hover{background:var(--hover)}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow)}
+  .panel + .panel{margin-top:16px}
+  .panel-head{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--border)}
+  .panel-head h3{margin:0;font-size:14px}
+  .panel-head .right{margin-left:auto;font-size:12px;color:var(--muted)}
+  .panel-body{padding:16px 18px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600}
+  .pill-ok{background:#E8F5F0;color:var(--ok)}
+  .pill-wine{background:var(--tint);color:var(--wine)}
+  .pill-quiet{background:#F1EEEF;color:var(--muted)}
+  .pill-warn{background:#FFFBEF;color:#5B4A16;box-shadow:inset 0 0 0 1px var(--warn-border)}
+  .units{width:100%;border-collapse:collapse}
+  .units th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:0 12px 8px 0;border-bottom:1px solid var(--border)}
+  .units th:last-child,.units td:last-child{padding-right:0;text-align:right}
+  .units td{padding:12px 12px 12px 0;border-bottom:1px solid var(--border);vertical-align:top;font-size:13px}
+  .units tr:last-child td{border-bottom:0}
+  .units .role{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .units .what{font-weight:600}
+  .units .meta{color:var(--muted);font-size:12px;margin-top:1px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .custody-note{margin:14px 18px 18px;padding:12px 14px;border-left:3px solid var(--wine);background:var(--page);border-radius:0 6px 6px 0}
+  .custody-note strong{display:block;font-size:13px}
+  .custody-note p{margin:3px 0 0;color:var(--muted);font-size:12px}
+  .fact-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px 20px}
+  .fact-grid dt{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .fact-grid dd{margin:2px 0 0;font-size:13px}
+  .num{font-variant-numeric:tabular-nums}
+  .notice{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;border-radius:8px;background:#FFFBEF;box-shadow:inset 0 0 0 1px var(--warn-border);margin-top:16px}
+  .notice strong{font-size:13px;display:block}
+  .notice p{margin:2px 0 0;color:#5B4A16;font-size:12.5px}
+  .notice .btn{margin-left:auto;flex:none}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Luson <span>·</span> Garantías</div>
+  <div class="case-no">C-A-00041</div>
+  <div class="serial">BO-2291043</div>
+  <div class="who">Sucursal A · Norma Quiroga</div>
+</header>
+
+<div class="shell">
+  <nav class="rail" aria-labelledby="etapas-h">
+    <h2 id="etapas-h">Recorrido del caso</h2>
+    <p class="owner">Dueña del caso: <b>Sucursal A</b></p>
+    <ol class="steps">
+      <li class="step" data-state="done"><span class="dot"></span><div><b>Reclamo registrado</b><span>12/10 · se entregó usada</span></div></li>
+      <li class="step" data-state="done"><span class="dot"></span><div><b>Recibida en Almacén</b><span>14/10 · verificada</span></div></li>
+      <li class="step" data-state="done"><span class="dot"></span><div><b>Enviada a fábrica</b><span>16/10 · legajo F-2214</span></div></li>
+      <li class="step" data-state="current"><span class="dot"></span><div><b>En fábrica</b><span>12 días desde el envío</span></div></li>
+      <li class="step" data-state="pending"><span class="dot"></span><div><b>Vuelta a la sucursal</b><span>sin fecha</span></div></li>
+      <li class="step" data-state="pending"><span class="dot"></span><div><b>Aviso al cliente</b><span>—</span></div></li>
+      <li class="step" data-state="pending"><span class="dot"></span><div><b>Canje o liberación</b><span>—</span></div></li>
+    </ol>
+    <p class="rail-foot">El Almacén puede mover la batería, pero el caso sigue siendo de la sucursal: acá se le debe la respuesta al cliente.</p>
+  </nav>
+
+  <main class="main">
+    <div class="main-head">
+      <div>
+        <h1>En fábrica</h1>
+        <p>Legajo <b>F-2214</b> · enviada el 16/10/2026 · 12 días de espera</p>
+      </div>
+      <div class="actions">
+        <button class="btn" type="button">Ver historial</button>
+        <button class="btn btn-primary" type="button">Registrar veredicto</button>
+      </div>
+    </div>
+
+    <section class="panel" aria-labelledby="unidades-h">
+      <div class="panel-head">
+        <h3 id="unidades-h">Las tres unidades del caso</h3>
+        <span class="right">Cada una con su destino propio</span>
+      </div>
+      <div class="panel-body">
+        <table class="units">
+          <caption style="position:absolute;left:-9999px">Las unidades del caso y su destino</caption>
+          <thead>
+            <tr><th scope="col">Unidad</th><th scope="col">Qué es</th><th scope="col">Dónde está</th><th scope="col">Destino</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="role">Reclamada</td>
+              <td><div class="what">Bosch S4 75Ah</div><div class="meta mono">BO-2291043 · 18 meses</div></td>
+              <td><span class="pill pill-quiet">Fábrica</span></td>
+              <td><span class="pill pill-quiet">Sin determinar</span></td>
+            </tr>
+            <tr>
+              <td class="role">Préstamo</td>
+              <td><div class="what">NS60ZL usada</div><div class="meta">1 unidad · de Sucursal A</div></td>
+              <td><span class="pill pill-wine">Con el cliente</span></td>
+              <td><span class="pill pill-quiet">Vuelve al canje</span></td>
+            </tr>
+            <tr>
+              <td class="role">Devuelta</td>
+              <td><div class="what">—</div><div class="meta">Aparece cuando fábrica resuelve</div></td>
+              <td><span class="pill pill-quiet">No existe aún</span></td>
+              <td><span class="pill pill-quiet">—</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="custody-note">
+        <strong>En custodia por garantía: 0</strong>
+        <p>Cuando la unidad vuelva y se destine al cliente, aparece acá y queda fuera del stock vendible hasta el canje.</p>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="datos-h">
+      <div class="panel-head"><h3 id="datos-h">Datos de la venta</h3></div>
+      <div class="panel-body">
+        <dl class="fact-grid">
+          <div><dt>Venta</dt><dd class="num">GAR-A-0018</dd></div>
+          <div><dt>Fecha de venta</dt><dd class="num">02/02/2026</dd></div>
+          <div><dt>Garantía</dt><dd>18 meses · hasta 02/08/2027</dd></div>
+          <div><dt>Costo al cliente</dt><dd>Sin costo</dd></div>
+          <div><dt>Cliente</dt><dd>Norma Quiroga</dd></div>
+          <div><dt>Documento</dt><dd class="num">DNI 21.440.883</dd></div>
+          <div><dt>Teléfono</dt><dd class="num">11 4478-1103</dd></div>
+          <div><dt>Origen</dt><dd>Garantía de venta</dd></div>
+        </dl>
+      </div>
+    </section>
+
+    <div class="notice">
+      <div>
+        <strong>Fábrica no contesta hace 12 días</strong>
+        <p>El caso escala por antigüedad pero no se cierra solo: si la unidad vuelve reparada, la sucursal registra el aviso al cliente antes de liberar nada.</p>
+      </div>
+      <button class="btn" type="button">Avisar al Almacén</button>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -101,3 +101,7 @@ L8. User: "1.la sucural le debe la respuesta al cliente y el almaen solo mueve l
 con esto creamos una rama y comenzmaos, tambien con los mocksups. pero todo en una rama nueva, quiero ver como va funcionar"
 
 L9. Exploración (evidencia, no requerimiento): `purchase_used_lines` registra usadas por unidades de código de modelo, sin marca, polaridad, serial ni proveedor (`apps/api/migrations/032_purchases.sql:75-84`, `:72-73`). `closing_material_lines` ya compara esperado contra contado por modelo, con el esperado sembrado solo desde las compras de la ventana (`apps/api/migrations/045_closing_materials.sql:70-77`, `:120-133`). Nada de usadas entra en `inventory_balances` (`045:31-34`).
+
+L10. Diseño: `design/battery-warranty/` con cinco artboards — `01-mostrador-canje.html` (el canje en una pantalla), `02-bandeja-de-casos.html` (cola primero, detalle al costado), `03-riel-de-etapas.html` (riel de fases y las tres unidades del caso), `04-comprobante-prestamo.html` (A4 que el cliente se lleva) y `05-mesa-almacen.html` (mesa de fábrica). El artboard elegido para implementar queda pendiente de la revisión del usuario; los otros son alternativas.
+
+L11. Sistema de diseño: `design/system.md` re-sincronizado el 2026-11-23 sobre las 17 hojas (3 313 líneas). El token layer no cambió: 6 custom properties, 69 colores, 16 tamaños, 10 radios, 10 sombras. `system.html` no requirió cambios.

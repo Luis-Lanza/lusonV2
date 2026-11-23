@@ -1,0 +1,42 @@
+{
+  "title": "Garantías y reparaciones de baterías",
+  "brief": "Circuito de una batería fuera de servicio: el cliente vuelve con una fallada o la sucursal la descubre en góndola. Se entrega una usada en préstamo, la batería viaja a fábrica y vuelve para el canje.",
+  "feature": "odd/tasks/battery-warranty.md",
+  "artboards": [
+    {
+      "file": "01-mostrador-canje.html",
+      "title": "Mostrador: el canje en una pantalla",
+      "tradeoff": "El camino de todos los días en una sola pantalla; la cola de pendientes queda relegada a una franja lateral",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-bandeja-de-casos.html",
+      "title": "Bandeja de casos con detalle al costado",
+      "tradeoff": "Máxima conciencia de lo pendiente y su antigüedad; registrar un caso nuevo cuesta un clic más",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-riel-de-etapas.html",
+      "title": "Riel de etapas y las tres unidades",
+      "tradeoff": "Se ve de un golpe dónde está cada batería y quién debe la respuesta; más navegación para el alta rápida",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "04-comprobante-prestamo.html",
+      "title": "Comprobante de préstamo en A4",
+      "tradeoff": "Documento que el cliente se lleva y que fija las condiciones del canje por escrito; no muestra el estado interno del caso",
+      "width": 794,
+      "height": 1123
+    },
+    {
+      "file": "05-mesa-almacen.html",
+      "title": "Mesa de fábrica del Almacén",
+      "tradeoff": "El Almacén ve qué verificar y qué está demorado en fábrica; no puede cerrar el caso ni hablar con el cliente",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}

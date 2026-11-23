@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mesa de fábrica · Almacén · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --ok:#047857; --reject:#991515; --warn-border:#E8CF86;
+    --shadow:0 1px 2px #2421240D;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  :focus-visible{outline:2px solid var(--wine);outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  .topbar{display:flex;align-items:center;gap:14px;height:56px;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+  .brand{font-weight:700;letter-spacing:.14em;font-size:13px;text-transform:uppercase}
+  .brand span{color:var(--wine)}
+  .where{color:var(--muted);font-size:13px}
+  .where b{color:var(--ink);font-weight:600}
+  .who{margin-left:auto;color:var(--muted);font-size:12px}
+  main{padding:22px 28px 40px}
+  .head{display:flex;align-items:flex-end;gap:16px}
+  h1{margin:0;font-size:24px;letter-spacing:-.01em}
+  .head p{margin:4px 0 0;color:var(--muted);font-size:13px}
+  .head .actions{margin-left:auto;display:flex;gap:8px}
+  .btn{height:38px;padding:0 16px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;font-size:13px;font-weight:600;cursor:pointer}
+  .btn-sm{height:30px;padding:0 11px;font-size:12px}
+  .btn-primary{background:var(--wine);border-color:var(--wine);color:#fff}
+  .btn-primary:hover{background:var(--hover)}
+  .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:20px 0 0}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px;box-shadow:var(--shadow)}
+  .stat dt{font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .stat dd{margin:4px 0 0;font-size:26px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  .stat .sub{display:block;margin-top:2px;font-size:11.5px;color:var(--muted);font-weight:400;letter-spacing:0}
+  .stat.hot dd{color:var(--wine)}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);margin-top:18px;overflow:hidden}
+  .panel-head{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--border);background:var(--page)}
+  .panel-head h2{margin:0;font-size:14px}
+  .panel-head .right{margin-left:auto;font-size:12px;color:var(--muted)}
+  .verify{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0}
+  .vcard{padding:16px 18px;border-bottom:1px solid var(--border)}
+  .vcard:nth-child(odd){border-right:1px solid var(--border)}
+  .vcard-top{display:flex;align-items:baseline;gap:8px}
+  .case-no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted)}
+  .vcard h3{margin:6px 0 1px;font-size:14px}
+  .vcard .meta{color:var(--muted);font-size:12px}
+  .vcard .acts{display:flex;gap:8px;margin-top:12px}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
+  .pill-ok{background:#E8F5F0;color:var(--ok)}
+  .pill-wine{background:var(--tint);color:var(--wine)}
+  .pill-quiet{background:#F1EEEF;color:var(--muted)}
+  .pill-warn{background:#FFFBEF;color:#5B4A16;box-shadow:inset 0 0 0 1px var(--warn-border)}
+  table{width:100%;border-collapse:collapse}
+  thead th{text-align:left;font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding:10px 18px;border-bottom:1px solid var(--border);background:var(--surface);white-space:nowrap}
+  tbody td{padding:12px 18px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+  tbody tr:last-child td{border-bottom:0}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted)}
+  .num{font-variant-numeric:tabular-nums}
+  .days{font-weight:600;font-variant-numeric:tabular-nums}
+  .days.hot{color:var(--wine)}
+  .two{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:start;margin-top:18px}
+  .side{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:16px 18px}
+  .side h2{margin:0 0 10px;font-size:14px}
+  .bucket{display:flex;align-items:baseline;gap:8px;padding:9px 0;border-top:1px solid var(--border);font-size:13px}
+  .bucket:first-of-type{border-top:0}
+  .bucket .n{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums}
+  .bucket small{display:block;color:var(--muted);font-size:11.5px;font-weight:400}
+  .side p.note{margin:12px 0 0;padding-top:12px;border-top:1px solid var(--border);color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Luson <span>·</span> Garantías</div>
+  <div class="where">Almacén · <b>Mesa de fábrica</b></div>
+  <div class="who">Diego Arce · almacen</div>
+</header>
+
+<main>
+  <div class="head">
+    <div>
+      <h1>Mesa de fábrica</h1>
+      <p>El Almacén mueve la batería. El caso sigue siendo de la sucursal que le debe la respuesta al cliente.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" type="button">Recepción</button>
+      <button class="btn btn-primary" type="button">Verificar una batería</button>
+    </div>
+  </div>
+
+  <dl class="stats">
+    <div class="stat"><dt>En tránsito</dt><dd>5<span class="sub">desde sucursales</span></dd></div>
+    <div class="stat"><dt>Para verificar</dt><dd>3<span class="sub">antes de gastar el flete</span></dd></div>
+    <div class="stat"><dt>En fábrica</dt><dd>11<span class="sub">2 con más de 30 días</span></dd></div>
+    <div class="stat hot"><dt>Devueltas sin decidir</dt><dd>4<span class="sub">esperan canje o liberación</span></dd></div>
+  </dl>
+
+  <div class="two">
+    <div>
+      <section class="panel" aria-labelledby="verificar-h">
+        <div class="panel-head">
+          <h2 id="verificar-h">Para verificar</h2>
+          <span class="right">Antes de fábrica</span>
+        </div>
+        <div class="verify">
+          <article class="vcard">
+            <div class="vcard-top"><span class="case-no">C-A-00039</span><span class="pill pill-warn">Stock fallado</span></div>
+            <h3>Moura 12N5L · 2 unidades</h3>
+            <p class="meta">Sucursal A · recibida 17/11 · probada por el vendedor</p>
+            <div class="acts">
+              <button class="btn btn-sm btn-primary" type="button">Enviar a fábrica</button>
+              <button class="btn btn-sm" type="button">Rechazar</button>
+            </div>
+          </article>
+          <article class="vcard">
+            <div class="vcard-top"><span class="case-no">C-B-00012</span><span class="pill pill-quiet">Garantía</span></div>
+            <h3>Bosch S4 75Ah</h3>
+            <p class="meta mono">BO-9920117 · Sucursal B · declaró "no retiene carga"</p>
+            <div class="acts">
+              <button class="btn btn-sm btn-primary" type="button">Enviar a fábrica</button>
+              <button class="btn btn-sm" type="button">Rechazar</button>
+            </div>
+          </article>
+          <article class="vcard">
+            <div class="vcard-top"><span class="case-no">C-A-00043</span><span class="pill pill-quiet">Garantía</span></div>
+            <h3>Willard NS60ZL</h3>
+            <p class="meta mono">WL-8842137 · Sucursal A · en tránsito</p>
+            <div class="acts">
+              <button class="btn btn-sm" type="button" disabled>Esperando recepción</button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="fabrica-h">
+        <div class="panel-head">
+          <h2 id="fabrica-h">En fábrica</h2>
+          <span class="right">Ordenado por antigüedad</span>
+        </div>
+        <table>
+          <caption style="position:absolute;left:-9999px">Casos en fábrica</caption>
+          <thead>
+            <tr><th scope="col">Caso</th><th scope="col">Sucursal</th><th scope="col">Unidad</th><th scope="col">Legajo</th><th scope="col" style="text-align:right">Días</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">C-A-00029</td><td>Sucursal A</td>
+              <td>Varta Blue 45Ah<span class="mono" style="display:block">VA-1180322</span></td>
+              <td class="mono">F-2185</td>
+              <td class="days hot" style="text-align:right">34</td>
+            </tr>
+            <tr>
+              <td class="mono">C-B-00009</td><td>Sucursal B</td>
+              <td>Moura 12N5L<span class="mono" style="display:block">MO-4410228</span></td>
+              <td class="mono">F-2199</td>
+              <td class="days hot" style="text-align:right">31</td>
+            </tr>
+            <tr>
+              <td class="mono">C-A-00041</td><td>Sucursal A</td>
+              <td>Bosch S4 75Ah<span class="mono" style="display:block">BO-2291043</span></td>
+              <td class="mono">F-2214</td>
+              <td class="days" style="text-align:right">12</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <aside class="side" aria-labelledby="custodia-h">
+      <h2 id="custodia-h">Qué hay acá adentro</h2>
+      <div class="bucket"><span>En custodia por garantía<small>Devueltas por fábrica, esperando canje</small></span><span class="n">4</span></div>
+      <div class="bucket"><span>En revisión<small>Sin enviar todavía</small></span><span class="n">3</span></div>
+      <div class="bucket"><span>En fábrica<small>Fuera del país del stock</small></span><span class="n">11</span></div>
+      <div class="bucket"><span>Usadas para préstamo<small>Por modelo, según compras y préstamos</small></span><span class="n">37</span></div>
+      <p class="note">Las usadas no tienen inventario: el número sale de las compras más las devueltas, menos los préstamos y la chatarra del período. Las unidades en custodia no son stock vendible y no se cuentan en el conteo físico.</p>
+    </aside>
+  </div>
+</main>
+</body>
+</html>
