@@ -7,8 +7,9 @@
       "queued": false,
       "sentAt": "2026-11-23T14:19:53.990Z",
       "startedAt": null,
-      "implementedAt": "2026-11-23T14:31:27.430Z",
-      "note": "Implementado en apps/web/src/Metrics.tsx + el bloque .metrics-* de style.css: cuatro cifras, línea de Hoy, mix, ranking y tira de chatarra; sin prosa, sin tablas de desglose y sin pie. 16 tests nuevos en verde, suite completa 4553 pasados, tsc limpio."
+      "implementedAt": "2026-11-23T14:36:09.087Z",
+      "note": "Rama feat/metricas-minimal: 5 commits (4 de diseño, 1 de implementación). Servidor local-trial levantado en http://localhost:8081 sirviendo el bundle nuevo; la pantalla real ya es esta.",
+      "previewUrl": "http://localhost:8081/"
     }
   }
 }

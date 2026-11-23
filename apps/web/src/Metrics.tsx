@@ -36,14 +36,6 @@ const metricsNotCounted = 'Sin contar';
 const metricsNoSheet =
   'El acumulado no tiene planilla: cada rendición se llevó la suya.';
 
-/** The average ticket of the period, computed in cents: the total divided by its sales. */
-function ticketCents(total: bigint, sales: number): bigint | null {
-  if (sales <= 0) return null;
-  const divisor = BigInt(sales);
-  // Rounded half up, so the canonical two decimals never read a cent below the period.
-  return (total * 2n + divisor) / (divisor * 2n);
-}
-
 /** The share of one amount in the period, in tenths: `43,0 %`. `—` when the period collected nothing. */
 function moneyShareText(part: bigint, whole: bigint): string {
   if (whole <= 0n) return '—';
@@ -125,14 +117,13 @@ function materialReading(
  */
 function PeriodFigures({ answer }: { answer: MetricsAnswer }) {
   const { sales } = answer;
-  const ticket = ticketCents(sales.total_cents, sales.sales);
   const cash = cashReading(answer.cash);
   const fund = fundReading(answer.fund);
   const materials = materialReading(answer.materials, answer.source === 'history');
   return <section className="metrics-figures" aria-label="Lo que dejó el período">
     <dl>
       <Figure title="Plata del período" value={money(sales.total_cents)}
-        note={`${sales.sales} venta${sales.sales === 1 ? '' : 's'} · ticket ${ticket === null ? '—' : money(ticket)}`} />
+        note={sales.sales === 1 ? '1 venta' : `${sales.sales} ventas`} />
       <Figure title="Caja entregada" value={cash.value} note={cash.note} />
       <Figure title="Fondo que queda" value={fund.value} note={fund.note} />
       <Figure title="Material entregado" value={materials.value} note={materials.note} />

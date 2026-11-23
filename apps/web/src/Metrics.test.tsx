@@ -161,7 +161,9 @@ describe('branch metrics screen', () => {
 
     const figures = panel('Lo que dejó el período');
     expect(within(figures).getByText('Bs 4.286.400,00')).toBeInTheDocument();
-    expect(within(figures).getByText('63 ventas · ticket Bs 68.038,10')).toBeInTheDocument();
+    expect(within(figures).getByText('63 ventas')).toBeInTheDocument();
+    // The ticket of the period is not a reading of this screen: the figure states the sales only.
+    expect(within(figures).queryByText(/ticket/i)).toBeNull();
     expect(within(figures).getByText('Bs 1.877.800,00')).toBeInTheDocument();
     expect(within(figures).getByText('contada · sin diferencia')).toBeInTheDocument();
     expect(within(figures).getByText('Bs 200.000,00')).toBeInTheDocument();
@@ -231,8 +233,7 @@ describe('branch metrics screen', () => {
     expect(rows[3]).toHaveTextContent('Bs 150.000,00');
     expect(rows[3]).not.toHaveTextContent('Ah');
     // The volume of the period is untouched by the ranking's kinds (S7).
-    expect(within(panel('Lo que dejó el período')).getByText('63 ventas · ticket Bs 68.038,10'))
-      .toBeInTheDocument();
+    expect(within(panel('Lo que dejó el período')).getByText('63 ventas')).toBeInTheDocument();
   });
 
   it('names the empty ranking in words instead of an empty table', async () => {
@@ -344,7 +345,7 @@ describe('branch metrics screen', () => {
     const select = screen.getByLabelText('Período') as HTMLSelectElement;
     fireEvent.change(select, { target: { value: '3' } });
     await waitFor(() => expect(calls()).toContain('/api/metrics?period=3'));
-    expect(await screen.findByText('10 ventas · ticket Bs 100.000,00')).toBeInTheDocument();
+    expect(await screen.findByText('10 ventas')).toBeInTheDocument();
   });
 
   it('refuses a payload the server could not have written and offers the same retry', async () => {
