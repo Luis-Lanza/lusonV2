@@ -23,8 +23,8 @@ const periods = [currentPeriod, closed, older, allPeriod];
 const livePeriods = [closed, live, allPeriod];
 
 const sales = {
-  total: '4286400.00', cash: '1842300.00', card: '1486900.00', transfer: '612200.00',
-  qr: '345000.00', commission: '192888.00', sales: 63, units: 78,
+  total: '4286400.00', batteries: '2100000.00', cash: '1842300.00', card: '1486900.00',
+  transfer: '612200.00', qr: '345000.00', commission: '192888.00', sales: 63, units: 78,
 };
 const cash = {
   opening: '120000.00', sales: '1842300.00', expenses: '84500.00', expected: '1877800.00',
@@ -84,8 +84,8 @@ const settlementBody = (overrides: Record<string, unknown> = {}) => JSON.stringi
 });
 const olderBody = () => settlementBody({
   period: older,
-  sales: { ...sales, total: '1000000.00', cash: '1000000.00', card: '0.00', transfer: '0.00',
-    qr: '0.00', commission: '45000.00', sales: 10, units: 12 },
+  sales: { ...sales, total: '1000000.00', batteries: '600000.00', cash: '1000000.00', card: '0.00',
+    transfer: '0.00', qr: '0.00', commission: '45000.00', sales: 10, units: 12 },
   cash: { opening: '0.00', sales: '1000000.00', expenses: '0.00', expected: '1000000.00',
     counted: '1000000.00', difference: '0.00' },
   fund: { opening: '0.00', purchases: '0.00', expected: '0.00', counted: '0.00',
@@ -109,8 +109,8 @@ const currentBody = () => JSON.stringify({
   periods: [currentPeriod, closed, older, allPeriod], period: currentPeriod, source: 'live', sales,
   cash: null, fund: null, materials: null,
   // One window, one total: the period collected what the line of today says was sold, and the battery
-  // base of that same window is stated beside it (S6).
-  today: { ...today, sold: sales.total, commission_base: sales.total, commission: '535800.00' },
+  // base of that same window is the `batteries` the period states beside it (S2, S6).
+  today: { ...today, sold: sales.total },
   top_models: topModels, stock, fund_today: fundToday,
 });
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -238,6 +238,88 @@ describe('branch metrics screen', () => {
     expect(within(mix).queryByText('Total')).toBeNull();
     // The commission of the period is not a row of this screen: it is settled with the acta.
     expect(within(mix).queryByText(/Bs 192\.888,00/)).toBeNull();
+  });
+
+  it('states what was sold by kind, with the total as the sum of the two readings', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
+    await selectPeriod('4');
+    const sold = panel('Qué se vendió');
+    // The three readings of the money sold, together and separated: the battery lines, the rest of the
+    // total and the total itself, which is their sum (S1, S4).
+    expect(within(sold).getByText('Baterías')).toBeInTheDocument();
+    expect(within(sold).getByText('Otros productos')).toBeInTheDocument();
+    expect(within(sold).getByText('Total')).toBeInTheDocument();
+    const readings = within(sold).getAllByRole('definition');
+    expect(readings).toHaveLength(3);
+    expect(readings[0]).toHaveTextContent('Bs 2.100.000,00');
+    expect(readings[1]).toHaveTextContent('Bs 2.186.400,00');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+  });
+
+  it('says the absence of battery sales in words and still states the others', async () => {    // A period that sold products and no battery: the row says it in words, never as a zero amount, and
+    // the other products and the total are still stated (S5).
+    setup(token => token === '4'
+      ? json(settlementBody({ sales: { ...sales, batteries: '0.00' } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const sold = panel('Qué se vendió');
+    const readings = within(sold).getAllByRole('definition');
+    expect(readings[0]).toHaveTextContent('Sin ventas');
+    expect(readings[1]).toHaveTextContent('Bs 4.286.400,00');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+    expect(within(sold).queryByText('Bs 0,00')).toBeNull();
+  });
+
+  it('derives the other products as the rest of the total', async () => {
+    // The screen subtracts the two readings it was handed: 4286400.00 − 1875000.00 = 2411400.00, a
+    // number the answer never published (S3).
+    setup(token => token === '4'
+      ? json(settlementBody({ sales: { ...sales, batteries: '1875000.00' } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const readings = within(panel('Qué se vendió')).getAllByRole('definition');
+    expect(readings[0]).toHaveTextContent('Bs 1.875.000,00');
+    expect(readings[1]).toHaveTextContent('Bs 2.411.400,00');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+  });
+
+  it('says a battery-only period sold no other product, without a zero amount', async () => {
+    setup(token => token === '4'
+      ? json(settlementBody({ sales: { ...sales, batteries: sales.total } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const sold = panel('Qué se vendió');
+    const readings = within(sold).getAllByRole('definition');
+    expect(readings[0]).toHaveTextContent('Bs 4.286.400,00');
+    expect(readings[1]).toHaveTextContent('Sin ventas');
+    expect(readings[2]).toHaveTextContent('Bs 4.286.400,00');
+    expect(within(sold).queryByText('Bs 0,00')).toBeNull();
+  });
+
+  it('places what was sold under Cómo se cobró, in the left column of the bottom area', async () => {
+    setup(token => token === 'all' ? json(historyBody()) : json(settlementBody()));
+    await selectPeriod('4');
+    const mix = panel('Cómo se cobró');
+    const sold = panel('Qué se vendió');
+    const ranking = panel('Más vendidas');
+    // The two readings of the money share the left column, the sold block under the mix, and the ranking
+    // keeps the right column it always had (S6).
+    expect(mix.parentElement).toBe(sold.parentElement);
+    expect(mix.parentElement?.parentElement).toBe(ranking.parentElement);
+    expect(mix.compareDocumentPosition(sold) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(sold.compareDocumentPosition(ranking) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('refuses a period whose battery money exceeds its total', async () => {
+    // The other products are the rest of the total, so a battery money above it is a payload the server
+    // could not have written: the whole answer is refused, not shown with a negative reading (S3).
+    setup(token => token === 'all'
+      ? json(historyBody({ sales: { ...sales, batteries: '4286400.01' } }))
+      : json(settlementBody()), notFound);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Respuesta inválida del servidor.');
+    expect(screen.queryByRole('region', { name: 'Qué se vendió' })).toBeNull();
+    expect(screen.queryByText('Bs 4.286.400,00')).toBeNull();
   });
 
   it('ranks the period by units with the money of each row and nothing else', async () => {

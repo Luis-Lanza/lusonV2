@@ -995,6 +995,20 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .metrics-mix-amount { text-align: right; }
 .metrics-mix-pct { color: var(--muted); font-size: 12px; text-align: right; }
 
+/* Qué se vendió: the money of the period by kind, under Cómo se cobró and in the same column (S4, S6).
+   The two readings are the parts and the total is their sum, so it carries a rule above it instead of
+   being a third headline; a kind the period did not sell reads in words and never as a zero amount. */
+.metrics-bottom-left { display: grid; gap: 26px; align-content: start; }
+.metrics-sold { padding-top: 22px; border-top: 1px solid var(--border); }
+.metrics-sold dl { margin: 0; }
+.metrics-sold dl > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline;
+  gap: 12px; font-size: 13px; }
+.metrics-sold dt { color: var(--muted); }
+.metrics-sold dd { margin: 0; font-variant-numeric: tabular-nums; }
+.metrics-sold-total { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  font-weight: 600; }
+.metrics-sold-total dt { color: inherit; }
+
 .metrics-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .metrics-table th { padding: 0 0 8px; border-bottom: 1px solid var(--border); color: var(--muted);
   font-size: 11px; font-weight: 600; letter-spacing: .03em; text-align: left; text-transform: uppercase; }
@@ -1043,6 +1057,7 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .metrics-today-line h2, .metrics-today-since, .metrics-today-line dl { grid-column: 1; }
   .metrics-today-line dl { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 12px; }
   .metrics-bottom { gap: 34px; }
+  .metrics-bottom-left { gap: 22px; }
   .metrics-mix li { grid-template-columns: minmax(0, 1fr) 96px 40px; }
   .metrics-mix-track { display: none; }
   .metrics-scrap { grid-template-columns: minmax(0, 1fr); gap: 10px; }

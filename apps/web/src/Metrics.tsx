@@ -216,6 +216,25 @@ function CollectionMix({ answer }: { answer: MetricsAnswer }) {
 }
 
 /**
+ * What the period sold, by kind of product: the battery lines, the other products the client derives
+ * from the total and the total that sums them (S1-S3). An amount the period never collected is said in
+ * words -- `Sin ventas`, never `Bs 0,00` -- and the total is stated once, as the sum of the two readings
+ * above it, so no figure of this block is repeated in prose (S4, S5).
+ */
+function SoldByKind({ answer }: { answer: MetricsAnswer }) {
+  const { sales } = answer;
+  const reading = (cents: bigint): ReactNode => cents === 0n ? 'Sin ventas' : money(cents);
+  return <section className="metrics-sold" aria-labelledby="metrics-sold-title">
+    <h2 id="metrics-sold-title">Qué se vendió</h2>
+    <dl>
+      <div><dt>Baterías</dt><dd>{reading(sales.batteries_cents)}</dd></div>
+      <div><dt>Otros productos</dt><dd>{reading(sales.other_cents)}</dd></div>
+      <div className="metrics-sold-total"><dt>Total</dt><dd>{reading(sales.total_cents)}</dd></div>
+    </dl>
+  </section>;
+}
+
+/**
  * The ranking of the period: units first, the money of each row as the secondary reading (S4). A row of
  * either catalogue kind is listed by its own identity, so a product is its name and carries no capacity
  * suffix (S6). The volume the rows take is one line under the table.
@@ -380,7 +399,11 @@ export default function Metrics({ fetcher = globalThis.fetch }: MetricsProps) {
       <PeriodFigures answer={answer} />
       <TodayLine today={answer.today} fundToday={answer.fund_today} />
       <div className="metrics-bottom">
-        <CollectionMix answer={answer} />
+        {/* The left column reads the money of the period: how it was collected and what was sold (S6). */}
+        <div className="metrics-bottom-left">
+          <CollectionMix answer={answer} />
+          <SoldByKind answer={answer} />
+        </div>
         <Ranking models={answer.top_models} total={answer.sales.units} />
       </div>
       <ScrapStrip materials={answer.materials} fundToday={answer.fund_today}

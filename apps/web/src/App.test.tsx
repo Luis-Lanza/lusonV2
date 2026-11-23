@@ -2044,8 +2044,8 @@ describe('branch metrics', () => {
     label: 'Desde el último corte' };
   const metricsBody = {
     periods: [closedPeriod, allPeriod], period: allPeriod, source: 'history',
-    sales: { total: '0.00', cash: '0.00', card: '0.00', transfer: '0.00', qr: '0.00',
-      commission: '0.00', sales: 0, units: 0 },
+    sales: { total: '0.00', batteries: '0.00', cash: '0.00', card: '0.00', transfer: '0.00',
+      qr: '0.00', commission: '0.00', sales: 0, units: 0 },
     cash: null, fund: null, materials: null, top_models: [], stock: { units: 0 },
     // The drawer of today is published whatever the period is, so even the history states it.
     // A branch the warehouse never configured and that sold nothing: the drawer, the base and the

@@ -57,6 +57,13 @@ export interface MetricsPeriod {
 /** The money of the period by source; the commission is reported beside the drawer, never inside it. */
 export interface MetricsSales {
   readonly total_cents: bigint;
+  /**
+   * The battery lines of the window, published by the server; every other line is the rest of the
+   * total. It is a reading of its own and never a third total (S1, S2).
+   */
+  readonly batteries_cents: bigint;
+  /** The other products of the window, `total − batteries`, derived here and never published (S3). */
+  readonly other_cents: bigint;
   readonly cash_cents: bigint;
   readonly card_cents: bigint;
   readonly transfer_cents: bigint;
@@ -464,11 +471,19 @@ function sourceValue(value: unknown, kind: MetricsPeriodKind): MetricsSource {
 // The accounts of the period
 // ---------------------------------------------------------------------------------
 
+/**
+ * The money of the period: its total, the battery lines the server published beside it and the other
+ * products the client derives as the rest of that total. A battery money above the total would leave a
+ * negative part, which is no answer this server could have written, so the whole answer is refused (S3).
+ */
 function salesValue(value: unknown): MetricsSales {
-  const record = fields(value, ['total', 'cash', 'card', 'transfer', 'qr', 'commission',
+  const record = fields(value, ['total', 'batteries', 'cash', 'card', 'transfer', 'qr', 'commission',
     'sales', 'units']);
+  const total_cents = wireMoney(record.total, false);
+  const batteries_cents = wireMoney(record.batteries, false);
+  if (batteries_cents > total_cents) return invalidResponse();
   return Object.freeze({
-    total_cents: wireMoney(record.total, false),
+    total_cents, batteries_cents, other_cents: total_cents - batteries_cents,
     cash_cents: wireMoney(record.cash, false),
     card_cents: wireMoney(record.card, false),
     transfer_cents: wireMoney(record.transfer, false),

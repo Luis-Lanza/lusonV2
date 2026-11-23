@@ -58,7 +58,7 @@ const closedPeriod = {
 const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
 const metricsAnswer = {
   periods: [closedPeriod, allPeriod], period: allPeriod, source: 'history',
-  sales: { total: '0.00', cash: '0.00', card: '0.00', transfer: '0.00', qr: '0.00',
+  sales: { total: '0.00', batteries: '0.00', cash: '0.00', card: '0.00', transfer: '0.00', qr: '0.00',
     commission: '0.00', sales: 0, units: 0 },
   cash: null, fund: null, materials: null, top_models: [], stock: { units: 0 },
   // A branch that sold nothing states the total and the battery base of its window, and no rate.
