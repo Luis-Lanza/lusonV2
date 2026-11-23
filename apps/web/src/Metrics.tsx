@@ -163,7 +163,12 @@ function boughtText(usedUnits: number, scrapMilli: bigint): string {
  * window -- what the branch sold since the last cut and the commission it is earning, never what it
  * collected (S12, S18, S19). The absence of a rate or of a sale is stated in words (S20).
  */
-function TodayLine({ today, fundToday }: { today: MetricsToday; fundToday: MetricsFundToday }) {
+function TodayLine({ today, fundToday, kind }: {
+  today: MetricsToday; fundToday: MetricsFundToday; kind: MetricsPeriodKind;
+}) {
+  // The window is the period on screen when the whole history is off: its own figure of the period
+  // already states the sales of this same stretch, so the line does not say it twice.
+  const salesAreThePeriod = kind === 'current';
   return <section className="metrics-today-line" aria-labelledby="metrics-today-title">
     <h2 id="metrics-today-title">Hoy</h2>
     {/* A branch without a closed settlement has no cut: its window is everything it ever did. */}
@@ -173,8 +178,8 @@ function TodayLine({ today, fundToday }: { today: MetricsToday; fundToday: Metri
     <dl>
       <div><dt>Efectivo en el cajón</dt><dd>{money(today.expected_cents)}</dd></div>
       <div><dt>Fondo de compras disponible</dt><dd>{money(fundToday.balance_cents)}</dd></div>
-      <div><dt>Vendido desde el corte</dt><dd>{today.sold_cents === 0n
-        ? 'Sin ventas' : money(today.sold_cents)}</dd></div>
+      {!salesAreThePeriod && <div><dt>Vendido desde el corte</dt><dd>{today.sold_cents === 0n
+        ? 'Sin ventas' : money(today.sold_cents)}</dd></div>}
       <div><dt>Comisión devengada</dt><dd>{today.rate_percent === null
         ? 'Sin tasa'
         : today.commission_cents > 0n
@@ -378,7 +383,7 @@ export default function Metrics({ fetcher = globalThis.fetch }: MetricsProps) {
 
     {answer !== null && <>
       <PeriodFigures answer={answer} />
-      <TodayLine today={answer.today} fundToday={answer.fund_today} />
+      <TodayLine today={answer.today} fundToday={answer.fund_today} kind={answer.period.kind} />
       <div className="metrics-bottom">
         <CollectionMix answer={answer} />
         <Ranking models={answer.top_models} total={answer.sales.units} />

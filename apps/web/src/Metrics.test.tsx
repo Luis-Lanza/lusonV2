@@ -385,6 +385,8 @@ describe('branch metrics screen', () => {
     expect(within(card).getByText('Bs 360.000,00')).toBeInTheDocument();
     expect(within(card).getByText('Bs 2.100.000,00')).toBeInTheDocument();
     expect(within(card).getByText('Bs 262.500,00')).toBeInTheDocument();
+    // A closed settlement is not the window: the sales since the cut are its own reading here.
+    expect(within(card).getByText('Vendido desde el corte')).toBeInTheDocument();
     // The purchases of the window, because the envelope is what pays them (S15, S17).
     expect(within(card).getByText('4 compras')).toBeInTheDocument();
     expect(within(card).getByText('11 u · 42,500 kg')).toBeInTheDocument();
@@ -482,6 +484,9 @@ describe('branch metrics screen', () => {
     expect(within(figures).getByText('Sin planilla')).toBeInTheDocument();
     expect(within(figures).getByText('se entrega al rendir')).toBeInTheDocument();
     expect(within(panel('Más vendidas')).getAllByRole('row')).toHaveLength(6);
+    // The window's own sales are the period's figure above: the line of today does not repeat them.
+    expect(within(panel('Hoy')).queryByText('Vendido desde el corte')).toBeNull();
+    expect(within(panel('Hoy')).getByText('Efectivo en el cajón')).toBeInTheDocument();
 
     // The stamp says which cut the window starts at, and that it moves with every sale.
     expect(await screen.findByText(/se mueve con cada venta/)).toBeInTheDocument();
