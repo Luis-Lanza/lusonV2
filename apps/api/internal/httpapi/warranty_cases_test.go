@@ -148,6 +148,7 @@ func TestWarrantyCaseFramesBeforeTheStore(t *testing.T) {
 		"/api/warranty-cases/1/notice":       "POST",
 		"/api/warranty-cases/1/release":      "POST",
 		"/api/warranty-cases/1/delivery":     "POST",
+		"/api/warranty-cases/1/receipt.pdf":  "GET",
 	} {
 		verb := "GET"
 		if allowed == "GET" {
@@ -168,6 +169,7 @@ func TestWarrantyCaseFramesBeforeTheStore(t *testing.T) {
 		"/api/warranty-cases/1":             "GET",
 		"/api/warranty-cases/1/delivery":    "POST",
 		"/api/warranty-cases/1/release":     "POST",
+		"/api/warranty-cases/1/receipt.pdf": "GET",
 	} {
 		w := httptest.NewRecorder()
 		base.ServeHTTP(w, anonymous(verb, path, "{}"))

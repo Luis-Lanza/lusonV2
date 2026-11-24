@@ -3,7 +3,8 @@
 One document per battery that leaves service: the client brought it back under the warranty of a sale
 (`warranty_claim`) or the branch found it failed on its own shelf (`stock_defect`). The case follows
 the battery to the warehouse, to the factory and back, lends the client a used battery in the
-meantime, registers the verdict the factory reaches, notifies the client and delivers the exchange.
+meantime and hands him the one-page receipt of that loan, registers the verdict the factory reaches,
+notifies the client and delivers the exchange.
 
 The branch **owns** the case and the relationship with the client; the warehouse moves the battery.
 Nothing of this contract charges money, writes a cash row, or creates a transfer: the finding on the
@@ -26,8 +27,9 @@ warehouse authorises it.
 | `/api/warranty-cases/{id}/notice` | POST | 200 with the case and the notice in its history |
 | `/api/warranty-cases/{id}/release` | POST | 200 with the case and the release in its history |
 | `/api/warranty-cases/{id}/delivery` | POST | 200 with the closed case and the settled loan |
+| `/api/warranty-cases/{id}/receipt.pdf` | GET | 200 with the loan receipt of the case, as a PDF download |
 
-No other method and no other path is served (`405 method_not_allowed` with `Allow: GET` on the two
+No other method and no other path is served (`405 method_not_allowed` with `Allow: GET` on the three
 reads and `Allow: POST` on every mutation). Every mutation requires the same-origin session cookie,
 `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`, and refuses a query string; every read requires the
 session only. Any other path below `/api/warranty-cases/` is `404 not_found` as JSON, and an
@@ -51,6 +53,7 @@ API directly is refused exactly like a screen that shows the wrong button.
 | Register the notice | yes, on a claim only | `403 forbidden` |
 | Authorise the release | `403 forbidden` | yes, on a claim only |
 | Deliver the exchange | yes | `403 forbidden` |
+| Download the loan receipt | its own cases | every case it moves |
 
 A case of another branch is `403 forbidden` for a branch session and readable by the warehouse. The
 notice and the release are a claim's two facts: a finding has no client to call and no unit in custody,
@@ -204,6 +207,34 @@ The instant of the decision is the database's own. A fate once decided is final
 (`409 loan_fate_final`), and a `failed` battery is replaced by another loan of the same case, never by
 rewriting the one that failed.
 
+## The loan receipt
+
+The paper the client leaves with when the branch hands the used battery over (S8). It is one A4 page
+rendered from the persisted case and never from a fresh calculation: the case number, the serial of
+the battery that stayed, the warranty number of the sale it came from, the model, the quantity and
+the source of every loan, the declared failure, the date, the branch and the client are the stored
+values, drawn unchanged.
+
+```
+GET /api/warranty-cases/1/receipt.pdf
+```
+
+* The download is named after the number the database wrote: `comprobante-C-2-000001.pdf`. The
+document prints that same persisted number (S20) and never the letter form of a mockup.
+* The date of the paper is the instant the database stamped on the handover, not the instant of the
+print. A case that lent more than one used battery prints one row per loan with its own date, in the
+order the counter handed them over (S7).
+* The conditions of the exchange are frozen product copy and state what this contract decides: the
+claimed battery stays in the branch for its review, the used one is a free loan, the exchange
+happens when the battery comes back from the factory, a client who does not come when told keeps the
+loan and the replacement is released, a factory that does not cover the damage leaves the loan with
+the client, and the original term neither extends nor restarts (S3).
+* A case with no loan to print is `409 no_loan`, and a finding on the shelf is `409 claim_only`: it
+names the client of a sale and a handover a finding never had.
+* The authority is the case read's own: the branch that owns the case and the warehouse that moves it.
+A case of another branch is `403 forbidden`. A query string is `400 invalid_request`, and the download
+is either the whole document or `503 service_unavailable`.
+
 ## The journey
 
 ```
@@ -337,7 +368,7 @@ The delivery hands the battery to the client and closes the case, in one act:
 | 409 | `warranty_expired` | The term of the claimed unit has run out |
 | 409 | `no_stock` | The branch does not have that many batteries to write off |
 | 409 | `reserved_stock` | The write-off would take stock the branch already promised |
-| 409 | `claim_only` | A finding on the shelf states no notice and no release: it has no client to call and no unit in custody |
+| 409 | `claim_only` | A finding on the shelf states no notice, no release and no loan receipt: it has no client to call, no unit in custody and no used battery handed over |
 | 409 | `transition_not_allowed` | The phase is not the next edge of the journey; the body names `from` and `to` |
 | 409 | `resolution_required` | A case reaches `resolved` through its resolution |
 | 409 | `resolution_final` | The resolution of a case is already stated |
@@ -348,6 +379,7 @@ The delivery hands the battery to the client and closes the case, in one act:
 | 409 | `already_released` | The notice or the release of this case was already recorded |
 | 409 | `nothing_to_release` | The case holds no unit: its battery never came back |
 | 409 | `loan_fate_final` | A decided loan fate is final |
+| 409 | `no_loan` | The case has not handed a used battery over, so it has no loan receipt to print |
 | 503 | `service_unavailable` | The store or the database could not answer |
 
 A refusal names nothing it did not do: every one of them writes no case, no loan, no tramo and no

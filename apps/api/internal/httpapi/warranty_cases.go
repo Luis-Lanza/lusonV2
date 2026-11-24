@@ -148,6 +148,9 @@ func (a *API) warrantyCaseRoutes(store *warrantycase.Store) http.Handler {
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}/notice", a.warrantyCaseNotice(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}/release", a.warrantyCaseRelease(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}/delivery", a.warrantyCaseDelivery(store))
+	// The loan receipt is the printable paper of the handover (S8): a literal suffix of the case,
+	// exactly like the warranty of a sale, so the case id stays one segment.
+	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}"+warrantyReceiptPath, a.warrantyCaseReceipt(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/", func(w http.ResponseWriter, r *http.Request) {
 		failure(w, 404, "not_found")
 	})
@@ -185,6 +188,10 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "reserved_stock")
 	case errors.Is(err, warrantycase.ErrClaimOnly):
 		failure(w, 409, "claim_only")
+	// The loan receipt of a claim that has not handed a used battery over has nothing to print
+	// (S8).
+	case errors.Is(err, warrantycase.ErrNoLoan):
+		failure(w, 409, "no_loan")
 	// The journey, its gates and its resolution (S9, S10, S11).
 	case errors.Is(err, warrantycase.ErrTransition):
 		failure(w, 409, "transition_not_allowed")

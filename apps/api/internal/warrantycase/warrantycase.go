@@ -70,8 +70,13 @@ var (
 
 	// ErrClaimOnly is the refusal of the two facts a finding on the shelf never states: it registers no
 	// notice, because it has no client to call, and it authorises no release, because its units are the
-	// branch's own and came back at its resolution (S11, S14, S19).
-	ErrClaimOnly = errors.New("only a warranty claim states a notice or a release")
+	// branch's own and came back at its resolution (S11, S14, S19). It is also the refusal of the loan
+	// receipt, which names the client of a sale and a handover a finding never had (S8).
+	ErrClaimOnly = errors.New("only a warranty claim states a notice, a release or a receipt")
+
+	// ErrNoLoan is the refusal of the receipt of a claim that has not handed a used battery over: the
+	// paper documents a loan, so a case without one has nothing to print (S8).
+	ErrNoLoan = errors.New("the case has no loan to print")
 
 	// ErrTransition is the refusal of a phase outside the frozen order (S9).
 	ErrTransition = errors.New("the phase transition is not allowed")
