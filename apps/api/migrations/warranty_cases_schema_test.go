@@ -23,6 +23,10 @@ import (
 // it adds no balance of used batteries anywhere (S18).
 const warrantyCaseMigration = "065_warranty_cases.sql"
 
+// The migrations of this vertical that may raise an `LW` SQLSTATE. The list is the one place that says
+// which files own the prefix, so a new file of the family joins it by name and no other file may.
+const usedModelMigration = "072_used_loan_requires_known_model.sql"
+
 // TestWarrantyCasesStructure reads the embedded version exactly as PostgreSQL receives it and
 // asserts the shape it installs: the case with its two exclusive entry doors, the loans with no
 // identity but a model and a quantity, and the append-only history of the journey.
@@ -244,7 +248,8 @@ func TestWarrantyCasesGuards(t *testing.T) {
 	for _, entry := range all {
 		if !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() == warrantyCaseMigration ||
 			entry.Name() == writeOffMigration || entry.Name() == noticeReleaseMigration ||
-			entry.Name() == stockResolutionMigration || entry.Name() == usedStockMigration {
+			entry.Name() == stockResolutionMigration || entry.Name() == usedStockMigration ||
+			entry.Name() == usedModelMigration {
 			continue
 		}
 		version, err := migrations.Files.ReadFile(entry.Name())
