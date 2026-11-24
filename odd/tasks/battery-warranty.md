@@ -80,7 +80,7 @@ T7 [S9,S10,S13,S14,S15] UI Almacén: mesa de casos, legajo, custodia y liberaci�
 T8 [S12,S15,S17,S18] Colas de trabajo y lectura del pool de usadas — route delegated; done en `808aa9d` y `ed52be8` (`066`, el pool firmado) y en las colas por fase de ambas pantallas; la cifra del pool no se publica todavía en la mesa del Almacén.
 T9 [S21,S22] Verificación integral y cierre con evidencia — route inline; done: `go build ./...`, `go vet ./...` y `go test ./...` completos sobre fixture limpio (todo `ok` tras `e1fa4e6`), más `typecheck`, `build` y la suite del frontend (4 653 tests).
 
-T10 [S30] Lista cerrada de modelos del préstamo: guarda `LW034`, la lista que se ofrece y la pantalla sin texto libre — route inline; done: pendiente.
+T10 [S30] Lista cerrada de modelos del préstamo: guarda `LW034`, la lista que se ofrece y las dos pantallas sin texto libre — route inline el servidor y delegada la pantalla; done: `0a02eca` (072, `used_battery_models()`, `LW034`, el mapeo HTTP y los tests sobre PostgreSQL real) y `073f7a2` (los dos formularios eligen de la lista del origen, sin input de modelo en toda la app); frontend 4 697 tests, typecheck y build en 0.
 
 ## Log
 
