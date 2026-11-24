@@ -515,25 +515,53 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 	}
 	f.refused(t, f.request(2, "GET", "/api/warranty-cases/999999", ""), 404, "not_found")
 
-	// The loan is the branch's, it names a model and a quantity, and it moves no stock (S5, S6).
+	// The loan is the branch's, it names a model and a quantity, it comes out of a stock the origin
+	// really holds (S25) and it moves no inventory (S5, S6). The branch bought one used battery of the
+	// model the counter lends.
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+ description,created_by_account_id) VALUES(2,'aporte',1000.00,'Fondo de compras del fixture',2)`); err != nil {
+		t.Fatalf("the fund of the branch could not be stated: %v", err)
+	}
+	buy, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatal("the purchase transaction could not start")
+	}
+	defer func() { _ = buy.Rollback(context.Background()) }()
+	var bought int64
+	if err := buy.QueryRow(f.ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,
+ paid_transfer,created_by_account_id) VALUES('warranty-journey-0001',2,10.00,10.00,0.00,2)
+ RETURNING id`).Scan(&bought); err != nil {
+		t.Fatalf("the used purchase of the fixture must be admitted: %v", err)
+	}
+	if _, err := buy.Exec(f.ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,
+ unit_price) VALUES($1,'NS60L',1,10.00)`, bought); err != nil {
+		t.Fatalf("the used line of the fixture must be admitted: %v", err)
+	}
+	if err := buy.Commit(f.ctx); err != nil {
+		t.Fatalf("the used purchase of the fixture must commit: %v", err)
+	}
 	loan := f.serve(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/loans", claim.ID),
-		`{"model":"NS60L","quantity":1,"serial_number":"","source_location_id":1}`))
+		`{"model":"NS60L","quantity":1,"serial_number":"","source_location_id":2}`))
 	if loan.Code != 201 {
 		t.Fatalf("the branch lends a used battery: %d %s", loan.Code, loan.Body.String())
 	}
 	var lent warrantyLoanWire
 	if err := json.Unmarshal(loan.Body.Bytes(), &lent); err != nil || lent.Ordinal != 1 ||
 		lent.Model != "NS60L" || lent.Quantity != 1 || lent.Fate != "open" ||
-		lent.SourceLocationID != 1 || lent.SerialNumber != "" || lent.FateDecidedAt != nil {
+		lent.SourceLocationID != 2 || lent.SerialNumber != "" || lent.FateDecidedAt != nil {
 		t.Fatalf("the loan is the used battery handed over: %s", loan.Body.String())
 	}
 	if got := f.balance(t, 2, variant); got != shelf || f.balance(t, 1, variant) != warehouseShelf {
 		t.Fatalf("a loan moves no stock: %d %d", got, f.balance(t, 1, variant))
 	}
 	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/warranty-cases/%d/loans", claim.ID),
-		`{"model":"NS60L","quantity":1,"serial_number":"","source_location_id":1}`), 403, "forbidden")
+		`{"model":"NS60L","quantity":1,"serial_number":"","source_location_id":2}`), 403, "forbidden")
 	f.refused(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/loans", claim.ID),
-		`{"model":" ","quantity":1,"serial_number":"","source_location_id":1}`), 400, "invalid_request")
+		`{"model":" ","quantity":1,"serial_number":"","source_location_id":2}`), 400, "invalid_request")
+	// The origin holds no second unit of that model, so the second loan is refused (S25).
+	f.refused(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/loans", claim.ID),
+		`{"model":"NS60L","quantity":1,"serial_number":"","source_location_id":2}`),
+		409, "loan_source_stock")
 
 	// The journey: the branch ships, the warehouse receives and ships to the factory with its file
 	// number, and neither role may record the other's tramo (S19).

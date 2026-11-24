@@ -234,8 +234,9 @@ func TestWarrantyCasesGuards(t *testing.T) {
 		t.Fatalf("the vertical states exactly its own LW codes, got %v", got)
 	}
 	// The prefix is this vertical's and nobody else's: the other versions of the same vertical are the
-	// write-off of S16 (067), the notice and release of S14 (068) and the resolution of a finding (069),
-	// which state their own next numbers and nothing of 065's.
+	// write-off of S16 (067), the notice and release of S14 (068), the resolution of a finding (069)
+	// and the stock and the loan refusal of S24 and S25 (071), which state their own next numbers and
+	// nothing of 065's.
 	all, err := migrations.Files.ReadDir(".")
 	if err != nil {
 		t.Fatal("embedded migrations are unreadable")
@@ -243,7 +244,7 @@ func TestWarrantyCasesGuards(t *testing.T) {
 	for _, entry := range all {
 		if !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() == warrantyCaseMigration ||
 			entry.Name() == writeOffMigration || entry.Name() == noticeReleaseMigration ||
-			entry.Name() == stockResolutionMigration {
+			entry.Name() == stockResolutionMigration || entry.Name() == usedStockMigration {
 			continue
 		}
 		version, err := migrations.Files.ReadFile(entry.Name())

@@ -170,6 +170,9 @@ func TestListReadsTheTrayOfTheBranch(t *testing.T) {
 // delivery closes the case, settles the loan and writes no stock.
 func TestNoticeReleaseAndDeliverySplitTheActors(t *testing.T) {
 	f := newFixture(t)
+	// The used battery the counter hands over is one the branch holds (S25).
+	f.fund(t, 2, "1000.00")
+	f.buyUsed(t, 2, "notice-loan-0001", "NS60L", 1, "10.00", "10.00")
 	f.sell(t, 2, "CUB-N/1", months(12), time.Now())
 	claim, err := f.store.OpenClaim(f.ctx, f.actor(2), warrantycase.OpenClaimInput{
 		SerialNumber: "CUB-N/1", DeclaredFailure: "No arranca"})

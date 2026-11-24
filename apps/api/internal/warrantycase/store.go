@@ -316,8 +316,11 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Case, 
 
 // AddLoan hands one used battery to the client of a case. The loan names a model and a
 // quantity and never a physical battery: its serial is optional free text that keys
-// nothing. The source is recorded and nothing moves -- no transfer, no balance, no used
-// stock -- because a used battery is not stock anywhere in this repository (S5, S6).
+// nothing. The source is recorded and nothing moves -- no transfer and no balance -- because a
+// used battery is not stock of any inventory (S5, S6): what moves is the derived stock of S24,
+// which is the sum of the loans themselves. The origin must hold the requested model, and the
+// database refuses the loan with LW033 when it does not, under a lock that keeps two loans from
+// consuming one unit (S25): a loan never invents the battery it hands over.
 func (s *Store) AddLoan(ctx context.Context, actor auth.Identity, caseID int64, input LoanInput) (Loan, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Loan{}, ErrUnavailable
@@ -1121,6 +1124,10 @@ func mapFailure(ctx context.Context, err error) error {
 	// LW019: a case registers its notice and its release once each (S14).
 	case "LW019":
 		return ErrAlreadyReleased
+	// LW033: the origin of a loan does not hold the requested model (S25). The database states the
+	// shortage inside the same transaction, so the refused loan leaves no row and no unit lent.
+	case "LW033":
+		return ErrLoanSourceStock
 	// LW020: the release requires a recorded notice, and LW021 states that the factory has not
 	// answered yet, so there is nothing to notify and nothing to release.
 	case "LW020":
