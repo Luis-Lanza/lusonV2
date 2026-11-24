@@ -11,13 +11,13 @@ const json = (body: unknown, status = 200) => new Response(
 
 const countedLine = (overrides: Record<string, unknown> = {}) => ({
   variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: '45',
-  polarity: 'L', expected_quantity: 12, counted_quantity: 12, ...overrides,
+  polarity: 'L', expected_quantity: 12, counted_quantity: 12, held_in_case_quantity: 0, ...overrides,
 });
 
 /** One line of the second kind: the name of the product and the detail of its typed fields (S3). */
 const productCountedLine = (overrides: Record<string, unknown> = {}) => ({
   variant_id: 40, catalog_entry_id: 20, name: 'Agua acidulada', detail: '1 L',
-  expected_quantity: 5, counted_quantity: 5, ...overrides,
+  expected_quantity: 5, counted_quantity: 5, held_in_case_quantity: 0, ...overrides,
 });
 
 /** One product of the branch catalogue as the inventory read publishes it (S3, S4). */

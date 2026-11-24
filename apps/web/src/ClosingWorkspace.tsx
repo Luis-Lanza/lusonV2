@@ -662,10 +662,11 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                   const label = closingLineLabel(closingIsBatteryLine(chosen)
                     ? { variant_id: chosen.variant_id, catalog_entry_id: chosen.catalog_entry_id,
                       brand: chosen.brand, model: chosen.model, capacity_ah: chosen.capacity_ah,
-                      polarity: chosen.polarity, expected_quantity: 0, counted_quantity: null }
+                      polarity: chosen.polarity, expected_quantity: 0, counted_quantity: null,
+                      held_in_case_quantity: 0 }
                     : { variant_id: chosen.variant_id, catalog_entry_id: chosen.catalog_entry_id,
                       name: chosen.name, detail: chosen.detail, expected_quantity: 0,
-                      counted_quantity: null });
+                      counted_quantity: null, held_in_case_quantity: 0 });
                   return <li key={option.variant.variant_id} data-variant-id={option.variant.variant_id}
                     data-state={option.state}>
                     <span>{label}</span>
@@ -720,7 +721,11 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                       Quitar
                     </button>}
                   </td>
-                  <td className="num">{outside ? '—' : line.expected_quantity}</td>
+                  <td className="num">{outside ? '—' : line.expected_quantity}
+                    {!outside && (line.held_in_case_quantity ?? 0) > 0
+                      && <small className="closing-muted held-in-case">
+                        {` · ${line.held_in_case_quantity} en garantía`}
+                      </small>}</td>
                   <td className="num">{editable
                     ? <input className="count" inputMode="numeric" placeholder="—"
                       aria-label={`Contado de ${closingLineLabel(line)}`} value={typed ?? ''}

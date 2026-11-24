@@ -2298,7 +2298,8 @@ describe('branch settlement decision', () => {
   const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
   const countLine = (variant_id: number, expected: number, counted: number, extra: Record<string, unknown> = {}) => ({
     variant_id, catalog_entry_id: variant_id, brand: 'Bosch', model: 'S4', capacity_ah: '45',
-    polarity: 'L', expected_quantity: expected, counted_quantity: counted, ...extra });
+    polarity: 'L', expected_quantity: expected, counted_quantity: counted,
+    held_in_case_quantity: 0, ...extra });
   const settlement = {
     id: 1, branch_location_id: 2, branch_name: 'Sucursal A', status: 'proposed',
     period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,

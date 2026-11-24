@@ -249,9 +249,9 @@ function counted(value: unknown): number {
 // kind and omits the other kind's attributes altogether, so a product line carries no polarity and no
 // capacity at all (S3).
 const countLineBatteryKeys = ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah',
-  'polarity', 'expected_quantity', 'counted_quantity'] as const;
+  'polarity', 'expected_quantity', 'counted_quantity', 'held_in_case_quantity'] as const;
 const countLineProductKeys = ['variant_id', 'catalog_entry_id', 'name', 'detail',
-  'expected_quantity', 'counted_quantity'] as const;
+  'expected_quantity', 'counted_quantity', 'held_in_case_quantity'] as const;
 
 /**
  * One line of the sheet: the identity of its one kind, the snapshot the database took at the cut and
@@ -273,6 +273,9 @@ function countLine(value: unknown, previous: number): ClosingCountLine {
     catalog_entry_id: integer(line.catalog_entry_id, 1, closingMaxID),
     expected_quantity: counted(line.expected_quantity),
     counted_quantity: optionalInteger(line.counted_quantity, 0, closingMaxCounted),
+    // The units a warranty case holds out of the branch's stock: read-only, never a term of the count
+    // and never sellable, so the operator does not count what is not on the shelf.
+    held_in_case_quantity: counted(line.held_in_case_quantity),
   };
   return Object.freeze(battery
     ? { ...key, brand: text(line.brand), model: text(line.model),
