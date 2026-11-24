@@ -23,8 +23,17 @@
 //
 // A claim resolution states the verdict and where the reported battery and the lent battery
 // end (S11). The stock destination is never stated by a claim, because a claim never had
-// branch stock in play, and this package writes no `inventory_balances` at all. The frozen
-// vocabulary of S23 is the only one this package accepts; the database refuses it too.
+// branch stock in play. The frozen vocabulary of S23 is the only one this package accepts; the
+// database refuses it too.
+//
+// Three facts of a case are not phases of its journey (S13, S14, S19): the notice the branch
+// registers for the client, the release the warehouse authorises and the delivery that closes the
+// case. They are tramos of the same append-only history with a kind of their own, so a notice never
+// reads as a step of the journey and S23's six phases stay frozen. The branch that owns the case
+// registers the notice and delivers the exchange; the warehouse authorises the release and never does
+// either, because the warehouse moves the battery and answers to no client. The release is the one
+// stock write of the claim door and the exact mirror of the finding's write-off (067): the units the
+// case holds in custody become sellable stock of the case's own branch, once.
 package warrantycase
 
 import (
@@ -84,6 +93,22 @@ var (
 	ErrLoanFateFinal = errors.New("a decided loan fate is final")
 	// ErrLoanFateOpen says only a decided fate is recorded: the loan is born open.
 	ErrLoanFateOpen = errors.New("a loan is born open and its fate is decided afterwards")
+	// ErrNoStock is the refusal of a finding the branch does not have on its shelf (LW016): a
+	// write-off never invents a balance and never leaves negative stock.
+	ErrNoStock = errors.New("the branch does not have that many batteries in stock")
+	// ErrReservedStock is the refusal of a write-off that would leave the balance below the stock the
+	// branch already promised (LW017).
+	ErrReservedStock = errors.New("the write-off would take stock the branch already reserved")
+
+	// The facts of S13, S14 and S19 that are not phases. A case registers its notice and its release
+	// once each, the release requires the notice, and neither is stated before the factory answered.
+	ErrAlreadyReleased   = errors.New("a case registers one notice and one release")
+	ErrNoticeRequired    = errors.New("a release requires a registered notice")
+	ErrResolutionPending = errors.New("the factory has not answered the case yet")
+	// ErrReleaseUnavailable is the refusal of a release of a unit that never came back to the branch:
+	// a battery the factory kept, scrapped or sent to the used pool is not the branch's sellable stock.
+	ErrReleaseUnavailable = errors.New("the case holds no unit to release")
+
 	// ErrMatrix says the destinations do not match the verdict the factory reached. The
 	// named usages check accepts only the combinations S11 states; a claim never states a
 	// stock destination, and `not_covered` leaves the loan with the client.
@@ -134,6 +159,25 @@ func (p Phase) Valid() bool {
 		return true
 	}
 	return false
+}
+
+// EventKind is what one tramo of the history states: a step of the journey, the notice the branch
+// registers for the client, or the release the warehouse authorises. A notice and a release carry the
+// phase the case already holds, because neither of them moves it.
+type EventKind string
+
+const (
+	// KindPhase is a tramo of the journey: it enters a phase the case was not in (S9).
+	KindPhase EventKind = "phase"
+	// KindNotice is the notice the branch registers for the client of the case (S14).
+	KindNotice EventKind = "notice"
+	// KindRelease is the release the warehouse authorises: custody becomes sellable stock (S14).
+	KindRelease EventKind = "release"
+)
+
+// Valid reports whether the kind is one of the frozen three.
+func (k EventKind) Valid() bool {
+	return k == KindPhase || k == KindNotice || k == KindRelease
 }
 
 // Verdict is the decision the warehouse or the factory reached (S11, S23).
@@ -217,13 +261,19 @@ type Case struct {
 	LoanDestination     *Destination
 	StockDestination    *Destination
 	SaleID              *int64
-	VariantID           int64
-	SerialNumber        *string
-	Quantity            *int64
-	DeclaredFailure     string
-	CreatedByAccountID  int64
-	CreatedAt           time.Time
-	// Loans and Events are filled by Read; the write methods answer the case header.
+	// WarrantyNumber is the printed number of the claimed sale, which is what the receipt of the loan
+	// prints beside the case number (S8) and null on a finding, which was never sold.
+	WarrantyNumber  *string
+	VariantID       int64
+	SerialNumber    *string
+	Quantity        *int64
+	DeclaredFailure string
+	// Reason is the motive of the write-off of a finding on the shelf (S16) and null on a claim.
+	Reason             *string
+	CreatedByAccountID int64
+	CreatedAt          time.Time
+	// Loans and Events are filled by every read and by every write that answers a case, so one contract
+	// shape is one answer: the case a caller receives carries the loans and the history it just wrote.
 	Loans  []Loan
 	Events []Event
 }
@@ -248,6 +298,7 @@ type Loan struct {
 type Event struct {
 	CaseID            int64
 	Ordinal           int
+	Kind              EventKind
 	Phase             Phase
 	FactoryCaseNumber string
 	ActorAccountID    int64
@@ -270,6 +321,30 @@ type LoanInput struct {
 	Quantity         int64
 	SerialNumber     string
 	SourceLocationID int
+}
+
+// StockDefectInput is the shelf door: the variant the branch found failed, how many batteries of it,
+// what failed in the branch's own words and the motive of the write-off (S1, S16). The branch, the
+// case number and the balance are not the caller's to state.
+type StockDefectInput struct {
+	VariantID       int64
+	Quantity        int64
+	DeclaredFailure string
+	Reason          string
+}
+
+// ListFilter is the read of a tray: the phase and the origin of the frozen vocabulary (S23), each
+// absent when the caller states none.
+type ListFilter struct {
+	Phase  Phase
+	Origin Origin
+}
+
+// DeliveryInput is the delivery of the exchange to the client: what became of the lent battery and
+// the words of the counter. The delivery closes the case and writes no stock (S13, S19).
+type DeliveryInput struct {
+	LoanFate LoanFate
+	Note     string
 }
 
 // AdvanceInput is one tramo of the journey. The factory file number is stated on the
@@ -299,6 +374,16 @@ const (
 	maxFactoryCaseNumber = 200
 	// maxNote is the bound of a tramo's reason.
 	maxNote = 500
+	// maxReason is the bound of the motive of a write-off, in the shape 022 states for an adjustment.
+	maxReason = 500
+	// MaxVariantID is the catalogue variant bound, restated so an impossible id never reaches the
+	// store.
+	MaxVariantID int64 = math.MaxInt32
+	// MaxQuantity is the bound of a finding on the shelf: whole batteries, never zero.
+	MaxQuantity int64 = 1_000_000
+	// MaxListed is how many cases one tray read publishes: the newest of them, because the tray is a
+	// work queue and never a history to page through.
+	MaxListed = 200
 	// MinLoanQuantity and MaxLoanQuantity are the frozen bounds of one loan.
 	MinLoanQuantity int64 = 1
 	MaxLoanQuantity int64 = 10000
@@ -333,6 +418,12 @@ func canonicalNote(text string) (string, bool) {
 func canonicalFactoryNumber(text string) (string, bool) {
 	trimmed := strings.TrimSpace(text)
 	return trimmed, boundedText(trimmed, 0, maxFactoryCaseNumber)
+}
+
+// canonicalReason trims the motive of a write-off and refuses an empty or oversized one.
+func canonicalReason(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	return trimmed, boundedText(trimmed, 1, maxReason)
 }
 
 // canonicalLoanSerial trims the optional free serial of a used battery. It is never an

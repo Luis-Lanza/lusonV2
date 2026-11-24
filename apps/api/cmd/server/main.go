@@ -22,6 +22,7 @@ import (
 	"luson/api/internal/stockadjustments"
 	"luson/api/internal/stockentries"
 	"luson/api/internal/suppliers"
+	"luson/api/internal/warrantycase"
 	"luson/api/internal/transfers"
 	"luson/api/internal/webui"
 	"net"
@@ -160,6 +161,13 @@ func run() (result error) {
 	// the only surface that writes a supplier and its offer set, and every composed surface
 	// keeps its exact behavior.
 	api, err = httpapi.NewWithSuppliers(api, service, httpCfg, suppliers.New(pool))
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The warranty case mounts after every document it reads and writes: it owns only its
+	// own path, and its two stock writes cross the boundary a case keeps between the shelf
+	// and its custody.
+	api, err = httpapi.NewWithWarrantyCases(api, service, httpCfg, warrantycase.New(pool))
 	if err != nil {
 		return errors.New("API initialization failed")
 	}

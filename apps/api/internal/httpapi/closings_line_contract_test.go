@@ -66,7 +66,7 @@ func TestCountLineContractBatteryBytes(t *testing.T) {
 		t.Fatal("a complete battery line must be admitted")
 	}
 	want := `{"variant_id":3,"catalog_entry_id":2,"brand":"TOYO","model":"NS60L","capacity_ah":"45",` +
-		`"polarity":"L","expected_quantity":12,"counted_quantity":12}`
+		`"polarity":"L","expected_quantity":12,"counted_quantity":12,"held_in_case_quantity":0}`
 	if published != want {
 		t.Fatalf("the battery line of the acta changed:\n got %s\nwant %s", published, want)
 	}
@@ -77,7 +77,8 @@ func TestCountLineContractBatteryBytes(t *testing.T) {
 		t.Fatal("a pending battery line must be admitted")
 	}
 	wantPending := `{"variant_id":3,"catalog_entry_id":2,"brand":"TOYO","model":"NS60L",` +
-		`"capacity_ah":"45","polarity":"L","expected_quantity":12,"counted_quantity":null}`
+		`"capacity_ah":"45","polarity":"L","expected_quantity":12,"counted_quantity":null,` +
+		`"held_in_case_quantity":0}`
 	if pending != wantPending {
 		t.Fatalf("the pending battery line of the acta changed:\n got %s\nwant %s", pending, wantPending)
 	}
@@ -95,7 +96,7 @@ func TestCountLineContractProductKeys(t *testing.T) {
 		t.Fatal("a complete product line must be admitted")
 	}
 	want := `{"variant_id":4,"catalog_entry_id":3,"name":"Agua acidulada","detail":"volumen: 2 L",` +
-		`"expected_quantity":5,"counted_quantity":4}`
+		`"expected_quantity":5,"counted_quantity":4,"held_in_case_quantity":0}`
 	if published != want {
 		t.Fatalf("the product line of the acta changed:\n got %s\nwant %s", published, want)
 	}
@@ -111,13 +112,13 @@ func TestCountLineContractProductKeys(t *testing.T) {
 		}
 	}
 	for _, key := range []string{"variant_id", "catalog_entry_id", "name", "detail",
-		"expected_quantity", "counted_quantity"} {
+		"expected_quantity", "counted_quantity", "held_in_case_quantity"} {
 		if _, present := keys[key]; !present {
 			t.Fatalf("a product line must state %q: %s", key, published)
 		}
 	}
-	if len(keys) != 6 {
-		t.Fatalf("a product line states exactly its six keys: %s", published)
+	if len(keys) != 7 {
+		t.Fatalf("a product line states exactly its seven keys: %s", published)
 	}
 }
 
@@ -157,6 +158,35 @@ func TestCountLineContractRefusals(t *testing.T) {
 	} {
 		if published, ok := wireCountLine(t, line); ok {
 			t.Fatalf("%s must be refused, not published: %s", name, published)
+		}
+	}
+}
+
+// TestCountLineContractHeldInCase pins the number the case added to the count line (S13, S16): the
+// units of the variant a stock defect of the branch holds instead of the branch having them in stock
+// travel as the read model derived them and are never recomputed here, and a quantity this database
+// could not have read is refused instead of published.
+func TestCountLineContractHeldInCase(t *testing.T) {
+	line := countLineBattery(3, 2, "TOYO", "NS60L", "45", "L", 12, ptrInt64(11))
+	line.HeldInCaseQuantity = 2
+	published, ok := wireCountLine(t, line)
+	if !ok {
+		t.Fatal("a line whose case holds two units must be admitted")
+	}
+	want := `{"variant_id":3,"catalog_entry_id":2,"brand":"TOYO","model":"NS60L","capacity_ah":"45",` +
+		`"polarity":"L","expected_quantity":12,"counted_quantity":11,"held_in_case_quantity":2}`
+	if published != want {
+		t.Fatalf("the held quantity of the line is published as read:\n got %s\nwant %s",
+			published, want)
+	}
+	for name, held := range map[string]int64{
+		"a negative quantity":        -1,
+		"a quantity above the bound": closings.MaxCounted + 1,
+	} {
+		bad := countLineBattery(3, 2, "TOYO", "NS60L", "45", "L", 12, ptrInt64(11))
+		bad.HeldInCaseQuantity = held
+		if _, ok := wireCountLine(t, bad); ok {
+			t.Fatalf("%s is not a count this database could have read", name)
 		}
 	}
 }
