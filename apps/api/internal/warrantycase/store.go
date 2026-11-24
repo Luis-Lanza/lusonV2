@@ -226,6 +226,58 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, filter ListFilter
 	return tray, nil
 }
 
+// Pending counts the cases whose next act is this actor's and never an act the actor cannot
+// take (S14, S19). A branch counts the cases it still has to ship (`received`, whichever door
+// they came through) and the claims it owes its client an answer: the notice and the delivery
+// both wait on a resolved claim. The warehouse counts the battery it is moving -- in transit,
+// waiting verification, waiting the factory's verdict -- and the release it may authorise, which
+// is the single unit a claim got back for its client, already notified and not released yet. A
+// finding on the shelf holds no unit in custody and a battery the factory kept never comes back,
+// so neither is ever counted for the warehouse. The count is one aggregate of the read-only
+// snapshot: it never loads a case, and a case of another branch is never counted.
+func (s *Store) Pending(ctx context.Context, actor auth.Identity) (int64, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return 0, ErrUnavailable
+	}
+	if !provisioned(actor) {
+		return 0, ErrForbidden
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return 0, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	warehouse := actor.Location.ID == warehouseLocationID
+	var pending int64
+	err = tx.QueryRow(ctx, `SELECT count(*) FROM warranty_cases case_row
+ WHERE CASE WHEN $1 THEN
+   case_row.phase IN ('in_transit','at_warehouse','at_factory')
+   OR (case_row.phase='resolved' AND case_row.origin='warranty_claim'
+       AND case_row.reported_destination='customer'
+       AND EXISTS (SELECT 1 FROM warranty_case_events noticed
+         WHERE noticed.case_id=case_row.id AND noticed.kind='notice')
+       AND NOT EXISTS (SELECT 1 FROM warranty_case_events released
+         WHERE released.case_id=case_row.id AND released.kind='release'))
+ ELSE
+   case_row.branch_location_id=$2
+   AND (case_row.phase='received'
+     OR (case_row.phase='resolved' AND case_row.origin='warranty_claim'))
+ END`, warehouse, int16(actor.Location.ID)).Scan(&pending)
+	if err != nil {
+		return 0, fail(ctx)
+	}
+	if tx.Commit(ctx) != nil {
+		return 0, fail(ctx)
+	}
+	return pending, nil
+}
+
 // Read reads one case with its loans and its append-only history. A branch reads its own
 // cases and the warehouse reads the cases it moves; a case of another branch is refused.
 func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Case, error) {

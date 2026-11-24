@@ -67,20 +67,21 @@ func TestR03BrokerContract(t *testing.T) {
 		payload  string
 		event    Event
 		audience int
-	}{{"inventory:0", Inventory, 0}, {"transfers:1", Transfers, 1}, {"transfers:2", Transfers, 2}, {"transfers:3", Transfers, 3}} {
+	}{{"inventory:0", Inventory, 0}, {"transfers:1", Transfers, 1}, {"transfers:2", Transfers, 2}, {"transfers:3", Transfers, 3}, {"warranty:1", Warranty, 1}, {"warranty:2", Warranty, 2}, {"warranty:32767", Warranty, 32767}} {
 		event, audience, ok := parsePayload(tc.payload)
 		if !ok || event != tc.event || audience != tc.audience {
 			t.Fatal("known metadata rejected")
 		}
 	}
-	for _, payload := range []string{"", "resync:0", "inventory:1", "transfers:0", "transfers:32768", "transfers:01", "transfers:+1", "transfers:1\n", " transfers:1", "transfers:1:2", `{"topic":"transfers","audience":1}`, strings.Repeat("x", 8192), "transfers:\xff"} {
+	for _, payload := range []string{"", "resync:0", "inventory:1", "transfers:0", "transfers:32768", "transfers:01", "transfers:+1", "transfers:1\n", " transfers:1", "transfers:1:2", "warranty:0", "warranty:32768", "warranty:01", "warranty:+1", "warranty:1\n", " warranty:1", "warranty:1:2", "warranty:", `{"topic":"transfers","audience":1}`, strings.Repeat("x", 8192), "transfers:\xff"} {
 		if _, _, ok := parsePayload(payload); ok {
 			t.Fatal("unknown/oversized/ambiguous metadata accepted")
 		}
 	}
 	ready := func() *Broker {
 		return &Broker{ctx: context.Background(), ready: true, subscribers: make(map[uint64]*Subscription),
-			versions: map[string]int64{"inventory": 0, "catalogue": 0, "transfers:1": 0, "transfers:2": 0, "transfers:3": 0}}
+			versions: map[string]int64{"inventory": 0, "catalogue": 0, "transfers:1": 0, "transfers:2": 0, "transfers:3": 0,
+				"warranty:1": 0, "warranty:2": 0, "warranty:3": 0}}
 	}
 	t.Run("capacity", func(t *testing.T) {
 		b := ready()
@@ -117,6 +118,34 @@ func TestR03BrokerContract(t *testing.T) {
 		slow.Close()
 		fast.Close()
 		fast.Close()
+	})
+	t.Run("warranty_audience_is_participant_private", func(t *testing.T) {
+		b := ready()
+		all := make([]*Subscription, 3)
+		for i := range all {
+			s, err := b.Subscribe(i + 1)
+			if err != nil || <-s.Events != Resync {
+				t.Fatal("warranty subscription failed")
+			}
+			all[i] = s
+		}
+		if b.install(b.versions, Warranty, 2) != true {
+			t.Fatal("known warranty audience refused")
+		}
+		expectEvent(t, all[1], Warranty)
+		for _, i := range []int{0, 2} {
+			select {
+			case event := <-all[i].Events:
+				t.Fatalf("warranty event reached a non-participant: %q", event)
+			default:
+			}
+		}
+		if b.install(b.versions, Warranty, 99) {
+			t.Fatal("warranty event without a counter admitted")
+		}
+		for _, s := range all {
+			s.Close()
+		}
 	})
 	t.Run("close_fanout_race", func(t *testing.T) {
 		b := ready()
@@ -271,7 +300,7 @@ func (f *brokerFixture) revisions(t *testing.T) map[string]int64 {
 		}
 		out[key] = revision
 	}
-	if rows.Err() != nil || len(out) != 5 {
+	if rows.Err() != nil || len(out) != 8 {
 		t.Fatal("revision set incomplete")
 	}
 	return out

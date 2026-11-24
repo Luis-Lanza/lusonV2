@@ -23,6 +23,7 @@ const (
 	Inventory      Event = "inventory"
 	Transfers      Event = "transfers"
 	Catalogue      Event = "catalogue"
+	Warranty       Event = "warranty"
 	channel              = "luson_realtime"
 	maxSubscribers       = 128
 	queueSize            = 8
@@ -185,15 +186,24 @@ func parsePayload(payload string) (Event, int, bool) {
 	if payload == "catalogue:0" {
 		return Catalogue, 0, true
 	}
-	if !strings.HasPrefix(payload, "transfers:") || len(payload) > len("transfers:32767") {
-		return "", 0, false
+	// The two participant-private audiences of one location: transfers, and the battery case that
+	// a branch and the warehouse share (070).
+	for _, audience := range []struct {
+		prefix string
+		event  Event
+	}{{"transfers:", Transfers}, {"warranty:", Warranty}} {
+		if !strings.HasPrefix(payload, audience.prefix) ||
+			len(payload) > len(audience.prefix)+len("32767") {
+			continue
+		}
+		raw := strings.TrimPrefix(payload, audience.prefix)
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 32767 || strconv.Itoa(n) != raw {
+			return "", 0, false
+		}
+		return audience.event, n, true
 	}
-	raw := strings.TrimPrefix(payload, "transfers:")
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 || n > 32767 || strconv.Itoa(n) != raw {
-		return "", 0, false
-	}
-	return Transfers, n, true
+	return "", 0, false
 }
 func readRevisions(ctx context.Context, conn *pgx.Conn) (map[string]int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -202,7 +212,9 @@ func readRevisions(ctx context.Context, conn *pgx.Conn) (map[string]int64, error
  UNION ALL SELECT '',-1 WHERE EXISTS (
    (SELECT 'transfers:' || id FROM locations EXCEPT SELECT scope FROM realtime_revisions)
    UNION ALL
-   (SELECT scope FROM realtime_revisions EXCEPT (SELECT 'inventory' UNION ALL SELECT 'catalogue' UNION ALL SELECT 'transfers:' || id FROM locations))
+   (SELECT 'warranty:' || id FROM locations EXCEPT SELECT scope FROM realtime_revisions)
+   UNION ALL
+   (SELECT scope FROM realtime_revisions EXCEPT (SELECT 'inventory' UNION ALL SELECT 'catalogue' UNION ALL SELECT 'transfers:' || id FROM locations UNION ALL SELECT 'warranty:' || id FROM locations))
  ) ORDER BY scope`)
 	if err != nil {
 		return nil, ErrUnavailable
@@ -243,6 +255,11 @@ func (b *Broker) install(versions map[string]int64, event Event, audience int) b
 			return false
 		}
 	}
+	if event == Warranty {
+		if _, exists := versions["warranty:"+strconv.Itoa(audience)]; !exists {
+			return false
+		}
+	}
 	for key, old := range b.versions {
 		if current, exists := versions[key]; !exists || current < old {
 			return false
@@ -259,6 +276,9 @@ func (b *Broker) install(versions map[string]int64, event Event, audience int) b
 	}
 	for id, s := range b.subscribers {
 		if event == Transfers && s.location != audience {
+			continue
+		}
+		if event == Warranty && s.location != audience {
 			continue
 		}
 		select {

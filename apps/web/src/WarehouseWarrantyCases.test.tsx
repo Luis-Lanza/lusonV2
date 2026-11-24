@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import WarehouseWarrantyCases from './WarehouseWarrantyCases';
+import { notifyWarrantyInvalidation } from './useInventory';
 
 const csrf = 'c'.repeat(43);
 const locations = [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }];
@@ -386,6 +387,18 @@ describe('the actor split of the desk (S19)', () => {
     // The desk offers no door of its own: it only moves what a branch already opened.
     expect(screen.queryByRole('button', { name: /Registrar canje/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Hallazgo en góndola/ })).not.toBeInTheDocument();
+    expect(h.posts()).toHaveLength(0);
+  });
+});
+
+describe('the factory desk on the warranty invalidation', () => {
+  it('asks its four questions again when the branch writes, without a reload', async () => {
+    const h = desk();
+    renderDesk(h);
+    await screen.findByRole('table');
+    await waitFor(() => expect(h.trayReads()).toHaveLength(4));
+    act(() => notifyWarrantyInvalidation());
+    await waitFor(() => expect(h.trayReads()).toHaveLength(8));
     expect(h.posts()).toHaveLength(0);
   });
 });

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InventoryView } from './App';
 import type { Metadata, Query, Session } from './model';
@@ -65,7 +65,7 @@ describe('InventoryView hook order across an authentication transition', () => {
     const navigation = await screen.findByRole('navigation', { name: 'Navegación principal' });
     expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
     // The count lane settling proves the authenticated children mounted, not just the shell div.
-    await waitFor(() => expect(within(navigation).getByRole('status')).toHaveTextContent('Acciones requeridas: 0'));
+    await waitFor(() => expect(navigation.querySelector('[id$="transfer-count"]')).toHaveTextContent('Acciones requeridas: 0'));
     expect(fetchMock).toHaveBeenCalled();
   });
 });

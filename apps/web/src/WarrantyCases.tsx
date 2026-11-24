@@ -21,6 +21,7 @@ import {
   type WarrantyLoanFateStated,
   type WarrantyOriginFilter, type WarrantyPhaseFilter,
 } from './warrantyCasesModel';
+import { subscribeWarrantyInvalidation } from './useInventory';
 import './warranty-cases.css';
 
 /**
@@ -171,6 +172,13 @@ export default function WarrantyCases({ csrf, branch, locations, fetcher = globa
     })();
     return () => { alive = false; controller.abort(); };
   }, [api, selected, detailRevision]);
+
+  // The other side's write reaches this screen without a reload: the participant invalidation of the
+  // case re-reads the tray and the open case, and it never carries a record (S19, 070).
+  useEffect(() => subscribeWarrantyInvalidation(() => {
+    setTrayRevision(value => value + 1);
+    setDetailRevision(value => value + 1);
+  }), []);
 
   // The client of a claim is the sale's own: the case publishes the sale it was judged against and the
   // branch reads its own sale. A sale of another branch leaves the case readable and says so.

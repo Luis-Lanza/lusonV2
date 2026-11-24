@@ -21,6 +21,7 @@ import {
   type WarehousePhase,
 } from './warehouseWarrantyModel';
 import './warranty-cases.css';
+import { subscribeWarrantyInvalidation } from './useInventory';
 import './warehouse-warranty.css';
 
 /**
@@ -166,6 +167,13 @@ export default function WarehouseWarrantyCases({ csrf, locations, fetcher = glob
     })();
     return () => { alive = false; controller.abort(); };
   }, [api, selected, detailRevision]);
+
+  // The branch's write reaches the desk without a reload: the participant invalidation re-reads the
+  // four questions of the desk and the open case, and it never carries a record (S19, 070).
+  useEffect(() => subscribeWarrantyInvalidation(() => {
+    setRevision(value => value + 1);
+    setDetailRevision(value => value + 1);
+  }), []);
 
   const current = detail?.phase === 'ready' ? detail.record : null;
   const today = now();

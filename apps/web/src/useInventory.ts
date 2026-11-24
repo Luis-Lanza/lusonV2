@@ -111,6 +111,20 @@ export function notifyCatalogueInvalidation(): void {
     try { listener(); } catch { /* No subscriber payload or error is logged. */ }
   }
 }
+// The battery case is a participant audience of its own (S19, 070): the branch that owns the case
+// and the warehouse that moves it share one document, so the frame is delivered by location and
+// carries no record. Every warranty screen re-reads what it was showing, and one that fails cannot
+// interrupt another reader of the same frame.
+const warrantyListeners = new Set<() => void>();
+export function subscribeWarrantyInvalidation(listener: () => void): () => void {
+  warrantyListeners.add(listener);
+  return () => { warrantyListeners.delete(listener); };
+}
+export function notifyWarrantyInvalidation(): void {
+  for (const listener of [...warrantyListeners]) {
+    try { listener(); } catch { /* No subscriber payload or error is logged. */ }
+  }
+}
 // The kind selection belongs to the caller's own listing, which now holds both
 // kinds of stock. Consulting another location stays the read-only consultation it
 // already is, so that listing keeps the battery-only read it has today.
@@ -436,10 +450,11 @@ export function useInventory() {
   const confirmTransferDispatchReconciliation = useCallback((owner: DecisionOwner, operation: DispatchReconciliationOperation) => reconciliationEffects.current(owner, operation), []);
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && session.identity.must_change_password === false && !authBusy, epoch: realtimeEpoch,
-    resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); notifyCatalogueInvalidation(); },
+    resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); notifyCatalogueInvalidation(); notifyWarrantyInvalidation(); },
     inventory: () => { invalidate(false); notifySourceInventory(realtimeEpoch); },
     transfers: () => notifyTransfers(realtimeEpoch), error: validate,
-    catalogue: () => notifyCatalogueInvalidation() });
+    catalogue: () => notifyCatalogueInvalidation(),
+    warranty: () => notifyWarrantyInvalidation() });
 
   useEffect(() => {
     mounted.current = true; void restore();

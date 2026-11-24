@@ -92,6 +92,7 @@ export const warrantyMaxListed = 200;
 export const warrantyMaxLocation = 32767;
 export const warrantyMaxVariant = 2_147_483_647;
 const maxID = 9_007_199_254_740_991;
+const maxInt64 = 9_223_372_036_854_775_807n;
 /** The model contract of a used battery: trimmed, upper-cased, no brand and no serial (S5). */
 const loanModelPattern = /^[A-Z0-9][A-Z0-9 .,_/-]{0,39}$/;
 const caseNumberPattern = /^C-[1-9][0-9]{0,4}-[0-9]{6,12}$/;
@@ -328,6 +329,20 @@ function record(value: unknown): WarrantyCase {
 export function parseWarrantyCase(raw: string): WarrantyCase { return record(decode(raw)); }
 export function parseWarrantyLoan(raw: string): WarrantyLoan { return loan(decode(raw)); }
 
+/**
+ * The notification of the section: the cases whose next act is this actor's (S19). It is one
+ * decimal string, exactly as Go publishes an int64, and it says nothing about which case it is:
+ * the badge is a count, never a record.
+ */
+export function parseWarrantyPending(raw: string): bigint {
+  const value = object(decode(raw), ['action_count']);
+  const count = value.action_count;
+  if (typeof count !== 'string' || count.length > 19 || !/^(0|[1-9][0-9]*)$/.test(count)) return invalid();
+  const parsed = BigInt(count);
+  if (parsed > maxInt64) return invalid();
+  return parsed;
+}
+
 // ---------------------------------------------------------------------------------
 // What the screen derives from the published facts, and nothing else
 // ---------------------------------------------------------------------------------
@@ -421,6 +436,8 @@ export function warrantyPhaseTone(phase: WarrantyPhase): WarrantyTone {
 
 export const warrantyClaimPath = '/api/warranty-cases/claims';
 export const warrantyDefectPath = '/api/warranty-cases/stock-defects';
+/** The count of cases waiting for the session's own side; one read, no filter and no record. */
+export const warrantyPendingPath = '/api/warranty-cases/counts';
 
 export type WarrantyPhaseFilter = WarrantyPhase | 'all';
 export type WarrantyOriginFilter = WarrantyOrigin | 'all';

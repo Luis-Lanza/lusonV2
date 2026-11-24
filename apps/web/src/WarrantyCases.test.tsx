@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import WarrantyCases from './WarrantyCases';
+import { notifyWarrantyInvalidation } from './useInventory';
 
 const csrf = 'c'.repeat(43);
 const locations = [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }];
@@ -400,5 +401,38 @@ describe('the battery the branch found failed on its own shelf', () => {
     fireEvent.change(screen.getByLabelText('Motivo de la baja de stock'), { target: { value: 'Probada' } });
     fireEvent.click(screen.getByRole('button', { name: 'Registrar el hallazgo' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('La sucursal no tiene esa cantidad de baterías');
+  });
+});
+
+describe('the branch tray on the warranty invalidation', () => {
+  it('re-reads the tray and the open case when the other side writes, without a reload', async () => {
+    let moved = false;
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') {
+        return tray([row({ phase: moved ? 'in_transit' : 'received' })]);
+      }
+      if (url === '/api/warranty-cases/1') {
+        return json(receivedCase(moved ? {
+          phase: 'in_transit',
+          events: [event({ ordinal: 1, phase: 'received' }), event({ ordinal: 2, phase: 'in_transit' })],
+        } : {}));
+      }
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('En la sucursal')).toBeInTheDocument();
+    fireEvent.click(within(table).getByRole('button', { name: 'Ver el caso C-2-000001' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    const reads = () => h.calls.filter(call => call.url === '/api/warranty-cases').length;
+    const before = reads();
+    moved = true;
+    act(() => notifyWarrantyInvalidation());
+    await waitFor(() => expect(reads()).toBe(before + 1));
+    await waitFor(() => expect(within(screen.getByRole('table')).getByText('En viaje')).toBeInTheDocument());
+    // The open case is read again as well: the detail is not left stating the phase the tray lost.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Marta Giménez' })).toBeInTheDocument());
+    expect(h.posts()).toHaveLength(0);
   });
 });

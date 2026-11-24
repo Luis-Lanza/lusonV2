@@ -138,6 +138,7 @@ func warrantyCasePath(r *http.Request) bool {
 func (a *API) warrantyCaseRoutes(store *warrantycase.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(warrantyCaseCollectionPath, a.warrantyCaseTray(store))
+	mux.HandleFunc(warrantyCaseCollectionPath+"/counts", a.warrantyCasePending(store))
 	mux.HandleFunc(warrantyCaseClaimPath, a.warrantyClaim(store))
 	mux.HandleFunc(warrantyCaseDefectPath, a.warrantyDefect(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}", a.warrantyCaseDetail(store))
@@ -342,6 +343,42 @@ func warrantyCaseTrayQuery(raw string) (warrantycase.ListFilter, error) {
 		}
 	}
 	return filter, nil
+}
+
+// warrantyCasePending serves the notification of the section: the count of cases whose next act is
+// the session's own (S14, S19). It is one aggregate of the store, never the tray, because the badge
+// beside the navigation entry has to be honest while the list is not open, and a case the actor could
+// not act on is never counted. The payload is one decimal string, exactly like the transfer count.
+func (a *API) warrantyCasePending(store *warrantycase.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		if _, valid := passiveMode(r); !valid {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		// The badge reads in the background even when no selector is supplied: clone the request
+		// instead of changing the caller's header ownership, exactly like the transfer count.
+		passive := r.Clone(r.Context())
+		passive.Header.Set(passiveHeader, "1")
+		actor, ok := a.warrantyActorOf(w, passive)
+		if !ok {
+			return
+		}
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		count, err := store.Pending(r.Context(), actor)
+		if err != nil {
+			warrantyFailure(w, err)
+			return
+		}
+		respond(w, 200, struct {
+			ActionCount string `json:"action_count"`
+		}{strconv.FormatInt(count, 10)})
+	}
 }
 
 // warrantyClaim serves the first door: the serial the client brought under warranty (S1, S2).

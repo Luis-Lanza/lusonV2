@@ -1,7 +1,7 @@
 import {
-  parseWarrantyCase, parseWarrantyLoan, parseWarrantyTray,
+  parseWarrantyCase, parseWarrantyLoan, parseWarrantyPending, parseWarrantyTray,
   warrantyAdvancePath, warrantyCasePath, warrantyClaimPath, warrantyDefectPath, warrantyDeliveryPath,
-  warrantyLoanFatePath, warrantyLoansPath, warrantyNoticePath, warrantyTrayPath,
+  warrantyLoanFatePath, warrantyLoansPath, warrantyNoticePath, warrantyPendingPath, warrantyTrayPath,
   type WarrantyAdvanceInput, type WarrantyCase, type WarrantyCaseRow, type WarrantyClaimInput,
   type WarrantyDefectInput, type WarrantyDeliveryInput, type WarrantyLoan, type WarrantyLoanFateStated,
   type WarrantyLoanInput, type WarrantyTrayFilter,
@@ -107,11 +107,13 @@ function refusal(raw: string, status: number): WarrantyCaseErrorCode {
 export type WarrantyCasesAPI = ReturnType<typeof createWarrantyCasesAPI>;
 
 export function createWarrantyCasesAPI(fetch: typeof globalThis.fetch = globalThis.fetch) {
-  async function read(path: string, signal?: AbortSignal): Promise<string> {
+  async function read(path: string, signal?: AbortSignal, passive = false): Promise<string> {
     let reply: Response;
     let raw: string;
     try {
-      reply = await fetch(path, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal });
+      reply = await fetch(path, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal,
+        // The badge of the section reads in the background: a passive read never slides the session.
+        ...(passive ? { headers: { 'X-Luson-Passive': '1' } } : {}) });
       raw = await reply.text();
     } catch (error) {
       if (error instanceof WarrantyCaseAPIError) throw error;
@@ -166,6 +168,12 @@ export function createWarrantyCasesAPI(fetch: typeof globalThis.fetch = globalTh
       try { path = warrantyTrayPath(filter); } catch { throw new WarrantyCaseAPIError('invalid_request', null); }
       const raw = await read(path, signal);
       try { return parseWarrantyTray(raw); } catch { throw new WarrantyCaseAPIError('invalid_response', null); }
+    },
+
+    /** The cases whose next act is the session's own side: one count and no record (S19). */
+    async pending(signal?: AbortSignal): Promise<bigint> {
+      const raw = await read(warrantyPendingPath, signal, true);
+      try { return parseWarrantyPending(raw); } catch { throw new WarrantyCaseAPIError('invalid_response', null); }
     },
 
     /** One case with its loans and its append-only history. */

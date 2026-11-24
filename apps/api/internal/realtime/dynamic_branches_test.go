@@ -13,7 +13,13 @@ func TestDynamicRealtimePayload(t *testing.T) {
 			t.Fatal("dynamic payload rejected", payload)
 		}
 	}
-	for _, payload := range []string{"transfers:0", "transfers:04", "transfers:32768", "transfers:+4", "transfers:4\n"} {
+	for payload := range map[string]Event{"warranty:1": Warranty, "warranty:4": Warranty} {
+		if e, _, ok := parsePayload(payload); !ok || e != Warranty {
+			t.Fatal("dynamic warranty payload rejected", payload)
+		}
+	}
+	for _, payload := range []string{"transfers:0", "transfers:04", "transfers:32768", "transfers:+4", "transfers:4\n",
+		"warranty:0", "warranty:04", "warranty:32768", "warranty:+4", "warranty:4\n"} {
 		if _, _, ok := parsePayload(payload); ok {
 			t.Fatal("invalid payload", payload)
 		}
