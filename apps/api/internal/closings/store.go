@@ -2599,11 +2599,27 @@ func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
 // its brand, model, capacity and polarity, and a product row its name and the detail the catalogue
 // composes of its typed fields. Nothing is scanned into a non-nullable battery value, so a product
 // line is read instead of failing the whole settlement closed (S2, S3).
+//
+// Every line states, beside the snapshot and the count, how many units of its variant a stock defect
+// of this branch holds instead of the branch having them in stock (S13, S16). The case writes the
+// quantity off `existing` in the transaction that admits it (067) and writes no transfer, because the
+// battery stays physically on the shelf until it ships -- so the snapshot the opener seeded is one
+// unit short of what the operator can touch, and this number is that difference. It is derived here,
+// from the cases of the settlement's own branch, and stored nowhere: an open `stock_defect` case whose
+// battery has not left yet holds its units, and a case on its way to the warehouse holds none because
+// the unit is no longer on the shelf. Nothing of it enters the expected quantity, the seeded sheet or
+// the closure's arithmetic, which is why it is read and not written: the document states the fact and
+// takes no decision with it.
 func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, error) {
 	rows, err := q.Query(ctx, `SELECT line.variant_id,variant.catalog_entry_id,entry.kind,
   coalesce(entry.brand,''),coalesce(entry.model,''),entry.capacity_ah::text,coalesce(variant.polarity,''),
-  coalesce(entry.name,''),line.expected_quantity,line.counted_quantity
+  coalesce(entry.name,''),line.expected_quantity,line.counted_quantity,
+  coalesce((SELECT sum(held.quantity) FROM warranty_cases held
+   WHERE held.branch_location_id=closing.branch_location_id
+     AND held.variant_id=line.variant_id
+     AND held.origin='stock_defect' AND held.phase='received'),0)::bigint
  FROM closing_count_lines line
+ JOIN branch_closings closing ON closing.id=line.closing_id
  JOIN catalog_variants variant ON variant.id=line.variant_id
  JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
  WHERE line.closing_id=$1 ORDER BY line.variant_id`, id)
@@ -2615,6 +2631,7 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 		variant         catalog.Row
 		expected        int64
 		countedQuantity *int64
+		heldInCase      int64
 	}
 	sheet := make([]sheetLine, 0, 8)
 	entries := make([]int32, 0, 4)
@@ -2623,7 +2640,7 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 		var capacity *string
 		if rows.Scan(&line.variant.VariantID, &line.variant.CatalogEntryID, &line.variant.Kind,
 			&line.variant.Brand, &line.variant.Model, &capacity, &line.variant.Polarity,
-			&line.variant.Name, &line.expected, &line.countedQuantity) != nil {
+			&line.variant.Name, &line.expected, &line.countedQuantity, &line.heldInCase) != nil {
 			return nil, fail(ctx)
 		}
 		// A numeric column never travels as a float: its own text is parsed back into the canonical
@@ -2634,6 +2651,7 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 		if line.variant.VariantID < 1 || line.variant.CatalogEntryID < 1 || line.expected < 0 ||
 			line.expected > MaxCounted ||
 			(line.countedQuantity != nil && (*line.countedQuantity < 0 || *line.countedQuantity > MaxCounted)) ||
+			line.heldInCase < 0 ||
 			(len(sheet) > 0 && int64(line.variant.VariantID) <= int64(sheet[len(sheet)-1].variant.VariantID)) {
 			return nil, ErrUnavailable
 		}
@@ -2665,7 +2683,7 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 		// line is never published with two different variants.
 		lines = append(lines, CountLine{VariantID: int64(identity.VariantID), Identity: identity,
 			CatalogEntryID: int64(line.variant.CatalogEntryID), ExpectedQuantity: line.expected,
-			CountedQuantity: line.countedQuantity})
+			CountedQuantity: line.countedQuantity, HeldInCaseQuantity: line.heldInCase})
 	}
 	return lines, nil
 }

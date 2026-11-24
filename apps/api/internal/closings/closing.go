@@ -340,6 +340,17 @@ type CountLine struct {
 	CatalogEntryID   int64
 	ExpectedQuantity int64
 	CountedQuantity  *int64
+	// HeldInCaseQuantity is how many units of this variant a stock defect of this branch holds instead
+	// of the branch having them in stock (S13, S16): the open cases of the branch that opened for this
+	// variant and whose battery has not left yet. A failed battery given off the shelf leaves
+	// `existing` in the same transaction that admits the case (067) but stays physically on the shelf
+	// until it ships, and the case writes no transfer, so the snapshot the opener seeds counts one unit
+	// fewer than the shelf holds. This is that difference, per line, derived on read from the cases
+	// themselves: it is neither stored nor seeded, it is no term of the expected quantity and the
+	// closure applies nothing of it -- the document states the fact, and no policy is taken with it,
+	// because a branch that counts what it sees is the branch that has to be able to explain the
+	// number.
+	HeldInCaseQuantity int64
 }
 
 // CashDraft is exactly what the admin reads off the drawer at the cut: what it counted, the
