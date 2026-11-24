@@ -97,6 +97,17 @@ describe('T6 private navigation and existing transfer paths', () => {
       expect(readNavigation()).toEqual({ section: 'inventory' });
     }
   });
+  it('gives the branch guarantee tray its own hash, apart from the rest of its sections', () => {
+    expect(navigationHash({ section: 'warranty' })).toBe('#/garantias');
+    writeNavigation({ section: 'warranty' });
+    expect(window.location.hash).toBe('#/garantias');
+    expect(readNavigation()).toEqual({ section: 'warranty' });
+    // The tray never swallows a sibling section, and a path below it is not a screen.
+    for (const hash of ['/#/garantias/4', '/#/garantias/casos', '/#/ventas']) {
+      window.history.replaceState(null, '', hash);
+      expect(readNavigation()).toEqual(hash === '/#/ventas' ? { section: 'sales' } : { section: 'inventory' });
+    }
+  });
   it('preserves list/detail navigation and malformed-path refusal', () => {
     expect(navigationHash({ section: 'transfers', id: null })).toBe('#/transferencias');
     writeNavigation({ section: 'transfers', id: '9007199254740993' });
