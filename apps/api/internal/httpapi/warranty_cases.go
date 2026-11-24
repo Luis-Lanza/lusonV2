@@ -192,6 +192,10 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "no_stock")
 	case errors.Is(err, warrantycase.ErrLoanSourceStock):
 		failure(w, 409, "loan_source_stock")
+	// The model of a loan is one the pool already knows, and the origin holds it (S25, S30): a model
+	// nobody bought and an empty shelf are two refusals and never one.
+	case errors.Is(err, warrantycase.ErrLoanModelUnknown):
+		failure(w, 409, "loan_model_unknown")
 	case errors.Is(err, warrantycase.ErrReservedStock):
 		failure(w, 409, "reserved_stock")
 	case errors.Is(err, warrantycase.ErrClaimOnly):

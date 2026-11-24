@@ -1128,6 +1128,11 @@ func mapFailure(ctx context.Context, err error) error {
 	// shortage inside the same transaction, so the refused loan leaves no row and no unit lent.
 	case "LW033":
 		return ErrLoanSourceStock
+	// LW034: the model of a loan is not one the used pool knows (S30). Judged before the stock of the
+	// origin, because a code nobody ever bought is refused for being unknown even when the shelf it
+	// names is empty too.
+	case "LW034":
+		return ErrLoanModelUnknown
 	// LW020: the release requires a recorded notice, and LW021 states that the factory has not
 	// answered yet, so there is nothing to notify and nothing to release.
 	case "LW020":

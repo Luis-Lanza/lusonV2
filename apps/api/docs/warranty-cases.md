@@ -192,10 +192,18 @@ POST /api/warranty-cases/1/loans
 * All four keys are required; `serial_number` is the explicit empty text when nobody wrote the used
   battery's serial down. `model` follows the model contract of a used battery — trimmed and
   upper-cased, `1` to `40` characters — and `quantity` is from `1` to `10000`.
+* `model` must also be one the used pool already knows (S30): the closed list is what the flows that
+  bring a battery into the pool ever stated — the used batteries bought, the used lines of a closed
+  settlement and the batteries the factory refused and sent back — and a loan is never one of those
+  sources, so a model cannot enter the system by being lent. A code outside that list is refused with
+  `409 loan_model_unknown`, and no row is written. The list is judged before the shelf, so a typo is
+  refused for being unknown and not for naming an empty origin.
 * `source_location_id` is the case's branch, the warehouse or another branch. The origin must hold the
   requested model: it is the derived stock of [the stock of used batteries](#the-stock-of-used-batteries)
   and the database refuses the loan with `409 loan_source_stock` when it does not, inside the
-  transaction of the handover (S25). Two loans never consume one unit: the write takes a lock on the
+  transaction of the handover (S25). Existence and availability are two questions and never one: a
+  model the pool knows with nothing left in that origin is `loan_source_stock`, and a model it never
+  saw is `loan_model_unknown`. Two loans never consume one unit: the write takes a lock on the
   origin and the model before it reads the stock. The loan still writes no transfer and no balance —
   the battery it takes out is the loan itself, and the stock is what those loans sum.
 * A loan is born `open`; a case holds as many loans as it needs, and a failed used battery is marked
@@ -420,6 +428,7 @@ The delivery hands the battery to the client and closes the case, in one act:
 | 409 | `already_released` | The notice or the release of this case was already recorded |
 | 409 | `nothing_to_release` | The case holds no unit: its battery never came back |
 | 409 | `loan_fate_final` | A decided loan fate is final |
+| 409 | `loan_model_unknown` | The model of the loan is one the used pool never saw; the closed list is the one the flows state |
 | 409 | `loan_source_stock` | The origin of the loan does not hold the requested model, or another loan already took the last unit |
 | 409 | `no_loan` | The case has not handed a used battery over, so it has no loan receipt to print |
 | 503 | `service_unavailable` | The store or the database could not answer |

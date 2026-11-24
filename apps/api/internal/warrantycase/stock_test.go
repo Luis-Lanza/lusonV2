@@ -173,13 +173,14 @@ func TestUsedStockRefusesALoanTheOriginCannotCover(t *testing.T) {
 	f.buyUsed(t, 2, "used-stock-loans-0001", "NS60ZL", 1, "10.00", "10.00")
 	claim := f.openClaim(t, "USADAS/2")
 	loans := f.count(t, "warranty_case_loans")
-	// The warehouse holds nothing, the branch holds nothing of that other model, and a branch that
-	// bought nothing holds nothing at all: three origins without the requested model.
+	// The warehouse holds nothing, and a branch that bought nothing holds nothing at all: two origins
+	// without the requested model. A model nobody ever bought is not a shortage but an unknown model
+	// (S30), and the test below pins that apart.
 	for _, refused := range []struct {
 		source int
 		model  string
 	}{
-		{1, "NS60ZL"}, {2, "NS40ZL"}, {3, "NS60ZL"},
+		{1, "NS60ZL"}, {3, "NS60ZL"},
 	} {
 		_, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
 			Model: refused.model, Quantity: 1, SourceLocationID: refused.source})
@@ -212,6 +213,37 @@ func TestUsedStockRefusesALoanTheOriginCannotCover(t *testing.T) {
 	if _, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
 		Model: "NS60ZL", Quantity: 1, SourceLocationID: 1}); !errors.Is(err, warrantycase.ErrLoanSourceStock) {
 		t.Fatalf("the warehouse holds nothing of that model, got %v", err)
+	}
+}
+
+// TestUsedStockRefusesAModelThePoolNeverSaw pins S30: the model of a loan is chosen from the closed
+// list the pool already knows, so a code nobody ever bought, counted in a closed settlement or had
+// refused by the factory is refused for being unknown and not for being out of stock, and the refusal
+// writes no row at all.
+func TestUsedStockRefusesAModelThePoolNeverSaw(t *testing.T) {
+	f := newFixture(t)
+	f.fund(t, 2, "1000.00")
+	f.buyUsed(t, 2, "used-model-unknown-0001", "NS60ZL", 1, "10.00", "10.00")
+	claim := f.openClaim(t, "USADAS/30")
+	loans := f.count(t, "warranty_case_loans")
+	// `CAR` is the mistake the counter made: a brand of the catalogue written where the model goes.
+	for _, model := range []string{"CAR", "NS40ZL"} {
+		_, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
+			Model: model, Quantity: 1, SourceLocationID: 2})
+		if !errors.Is(err, warrantycase.ErrLoanModelUnknown) {
+			t.Fatalf("a loan of %s must be refused as an unknown model, got %v", model, err)
+		}
+	}
+	if got := f.count(t, "warranty_case_loans"); got != loans {
+		t.Fatalf("a refused loan writes nothing: %d loans became %d", loans, got)
+	}
+	if got := len(f.usedStock(t, 2)); got != 1 {
+		t.Fatalf("an unknown model creates no stock row, got %d rows", got)
+	}
+	// The model the pool knows is admitted, so the closed list refuses only what it does not know.
+	if _, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
+		Model: "NS60ZL", Quantity: 1, SourceLocationID: 2}); err != nil {
+		t.Fatalf("the model the pool knows must be admitted: %v", err)
 	}
 }
 

@@ -116,6 +116,10 @@ var (
 	// (S25, LW033): a used battery is lent out of a stock that exists, and two loans never consume
 	// one unit.
 	ErrLoanSourceStock = errors.New("the origin of the loan holds no stock of that model")
+	// ErrLoanModelUnknown is the refusal of a loan whose model the used pool never saw (S30, LW034):
+	// the model is chosen from a closed list, so a code nobody bought is not a shelf that is empty
+	// but a model that does not exist, and a loan never creates one.
+	ErrLoanModelUnknown = errors.New("the used pool does not know that model")
 	// ErrReservedStock is the refusal of a write-off that would leave the balance below the stock the
 	// branch already promised (LW017).
 	ErrReservedStock = errors.New("the write-off would take stock the branch already reserved")

@@ -66,6 +66,8 @@ S28. Fuera de alcance, por decisión del usuario: la venta de chatarra y todo mo
 
 S29. Sin regresiones sobre lo entregado. Check: el esperado de la rendición (`066`) sigue cuadrando con el stock nuevo cuando la sucursal entrega todo en el cierre; las suites de compras, cierres y garantías pasan.
 
+S30. El préstamo de una usada sólo se registra con un modelo de la lista cerrada, sin escape. La lista son los modelos que ya existen en los flujos de usadas de la instalación: compras de usadas, conteos de una rendición cerrada y devoluciones de fábrica al pool. Los préstamos no alimentan la lista, así que un modelo no puede entrar al sistema por el camino del préstamo. Un modelo que no está en la lista se rechaza con `LW034` y no crea ningún modelo. El stock en el origen (`LW033`) es otra pregunta y se sigue exigiendo: primera la existencia, después la disponibilidad.
+
 ## Tasks
 
 T1 [S1–S22] Documento y direcciones visuales, canvas abierto y artboard elegido — route inline (diseño); done: `design/battery-warranty/` con manifest y artboards.
@@ -77,6 +79,8 @@ T6 [S4,S5,S6,S7] UI sucursal: registrar el canje, elegir el préstamo y emitir e
 T7 [S9,S10,S13,S14,S15] UI Almacén: mesa de casos, legajo, custodia y liberación — route delegated; done en `85f0b87` (mesa de fábrica, gated por lado).
 T8 [S12,S15,S17,S18] Colas de trabajo y lectura del pool de usadas — route delegated; done en `808aa9d` y `ed52be8` (`066`, el pool firmado) y en las colas por fase de ambas pantallas; la cifra del pool no se publica todavía en la mesa del Almacén.
 T9 [S21,S22] Verificación integral y cierre con evidencia — route inline; done: `go build ./...`, `go vet ./...` y `go test ./...` completos sobre fixture limpio (todo `ok` tras `e1fa4e6`), más `typecheck`, `build` y la suite del frontend (4 653 tests).
+
+T10 [S30] Lista cerrada de modelos del préstamo: guarda `LW034`, la lista que se ofrece y la pantalla sin texto libre — route inline; done: pendiente.
 
 ## Log
 
@@ -182,3 +186,5 @@ L29. User, ante la pantalla de Compras con saldo 0: "pero como me dejo prestar s
 L30. User: "entonces debemos manejar mejor el stock de baterias usadas. como hacemos esto? stock de baterias usadas de cada sucursal y de almacen". Respuestas del usuario a las tres preguntas de diseño: (1) la chatarra se vende; (2) "Osea siempre es chatarra solo que la diferenciamos como bateria usada para que no sea como aluminio cobre etc" — la usada es la misma corriente de salida, contada por unidad y modelo en vez de por kilo; (3) "Solo por modelo esta bien. porque por el modelo se puede estimar la capacidad por ejemplo NS60ZL es de 60AH".
 
 L31. User: "AUn no dejemos, la venta de chatarra por parte de almacen para otra vertical. 1. esto aun no va en esta vertical 2. AUN NO 3. AUN NO". Alcance de esta vertical: el stock de usadas por local y modelo, la validación del origen del préstamo y la pantalla del Almacén. La venta de material, sus dos tipos de línea, el fondo de materiales del Almacén y todo movimiento de dinero por material quedan para otra vertical.
+
+L32. User, ante la pantalla de Stock de usadas que muestra una fila `Sucursal A · CAR · 0 unidades`: "porque me dejo crear un modelo de bateria llamado CAR, si no existe? me explicas". Diagnóstico: el modelo del préstamo se valida por forma (`^[A-Z0-9][A-Z0-9 .,_/-]{0,39}$` en `065`, `CanonicalModel` en Go) y nunca por existencia, porque el pool de usadas vive fuera del catálogo y el sistema aprende los modelos de sus propios hechos. `CAR` es una marca del catálogo escrita en el campo del modelo. Decisión del usuario, entre tres opciones: "correcto B. solo lista cerrada" — sin texto libre y sin alta de modelos nuevos desde el préstamo.
