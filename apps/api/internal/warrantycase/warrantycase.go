@@ -23,17 +23,20 @@
 //
 // A claim resolution states the verdict and where the reported battery and the lent battery
 // end (S11). The stock destination is never stated by a claim, because a claim never had
-// branch stock in play. The frozen vocabulary of S23 is the only one this package accepts; the
-// database refuses it too.
+// branch stock in play. A finding on the shelf resolves by the matrix of its own units: the
+// verdict returns them to the branch's sellable stock when it repairs or replaces them, and
+// leaves the write-off of its admission standing when it does not. The frozen vocabulary of S23
+// is the only one this package accepts; the database refuses it too.
 //
 // Three facts of a case are not phases of its journey (S13, S14, S19): the notice the branch
 // registers for the client, the release the warehouse authorises and the delivery that closes the
 // case. They are tramos of the same append-only history with a kind of their own, so a notice never
 // reads as a step of the journey and S23's six phases stay frozen. The branch that owns the case
 // registers the notice and delivers the exchange; the warehouse authorises the release and never does
-// either, because the warehouse moves the battery and answers to no client. The release is the one
-// stock write of the claim door and the exact mirror of the finding's write-off (067): the units the
-// case holds in custody become sellable stock of the case's own branch, once.
+// either, because the warehouse moves the battery and answers to no client. Both facts are a claim's:
+// a finding on the shelf has no client to call and no unit in custody. The release is the one stock
+// write of the claim door and the exact mirror of the finding's write-off (067); the resolution of a
+// finding is the other half of the same boundary, and it is the finding's own (069).
 package warrantycase
 
 import (
@@ -65,9 +68,10 @@ var (
 	ErrNoWarranty      = errors.New("the claimed unit was sold without a warranty term")
 	ErrWarrantyExpired = errors.New("the warranty term of the claimed unit has expired")
 
-	// ErrClaimOnly is the refusal of a resolution on the stock-defect door, which this
-	// package does not handle: the branch's shelf is another slice's document.
-	ErrClaimOnly = errors.New("only a warranty claim is resolved here")
+	// ErrClaimOnly is the refusal of the two facts a finding on the shelf never states: it registers no
+	// notice, because it has no client to call, and it authorises no release, because its units are the
+	// branch's own and came back at its resolution (S11, S14, S19).
+	ErrClaimOnly = errors.New("only a warranty claim states a notice or a release")
 
 	// ErrTransition is the refusal of a phase outside the frozen order (S9).
 	ErrTransition = errors.New("the phase transition is not allowed")
@@ -355,8 +359,11 @@ type AdvanceInput struct {
 	Note              string
 }
 
-// ResolutionInput is the decision the warehouse or the factory reached: the verdict and
-// where the reported battery and the lent battery end. A claim states no stock destination.
+// ResolutionInput is the decision the warehouse or the factory reached: the verdict and where the units
+// of the case end (S11). A claim states the reported battery and the lent one, and never a stock
+// destination. A finding states the units it wrote off its own shelf and nothing else: it lends no
+// battery, so `LoanDestination` is empty, and its shelf destination is the database's own reading of the
+// verdict, which no caller states.
 type ResolutionInput struct {
 	Verdict             Verdict
 	ReportedDestination Destination

@@ -614,31 +614,4 @@ func TestResolveStatesTheVerdictAndTheDestinationsOfTheClaim(t *testing.T) {
 	if got := f.count(t, "sale_units"); got != units {
 		t.Fatalf("a resolution never writes a sold unit: %d became %d", units, got)
 	}
-
-	// The stock-defect door is another slice's document: this package refuses its resolution.
-	var defect int64
-	var hasReason bool
-	if err := f.pool.QueryRow(f.ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
- WHERE table_name='warranty_cases' AND column_name='reason')`).Scan(&hasReason); err != nil {
-		t.Fatalf("the case shape could not be read: %v", err)
-	}
-	if hasReason {
-		err = f.pool.QueryRow(f.ctx, `INSERT INTO warranty_cases(branch_location_id,origin,
- variant_id,quantity,declared_failure,reason,created_by_account_id)
- VALUES(2,'stock_defect',1,1,'No retiene carga','Falla de góndola',$1) RETURNING id`,
-			f.accounts[2]).Scan(&defect)
-	} else {
-		err = f.pool.QueryRow(f.ctx, `INSERT INTO warranty_cases(branch_location_id,origin,
- variant_id,quantity,declared_failure,created_by_account_id)
- VALUES(2,'stock_defect',1,1,'No retiene carga',$1) RETURNING id`,
-			f.accounts[2]).Scan(&defect)
-	}
-	if err != nil {
-		t.Fatalf("the stock defect fixture could not be stored: %v", err)
-	}
-	if _, err := f.store.Resolve(f.ctx, f.actor(2), defect, warrantycase.ResolutionInput{
-		Verdict: warrantycase.VerdictReplaced, ReportedDestination: warrantycase.DestinationCustomer,
-		LoanDestination: warrantycase.DestinationStock}); !errors.Is(err, warrantycase.ErrClaimOnly) {
-		t.Fatalf("a stock defect is not resolved here, got %v", err)
-	}
 }

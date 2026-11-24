@@ -497,11 +497,14 @@ func insertEvent(ctx context.Context, tx pgx.Tx, caseID int64, kind EventKind, p
 	return event, nil
 }
 
-// Resolve records the verdict and the destination of the reported and the lent battery.
-// The warehouse refuses before the factory and only with `refused_at_warehouse`, with its
-// motive; the factory verdicts arrive at the factory. `not_covered` leaves the loan with the
-// client and the damaged unit in the used pool, and a claim never states a stock destination
-// (S10, S11). The resolution is final and this store writes no inventory balance.
+// Resolve records the verdict and the destination of each unit the case has. The warehouse refuses
+// before the factory and only with `refused_at_warehouse`, with its motive; the factory verdicts arrive
+// at the factory (S10). The two doors resolve by their own matrix: a claim states the reported battery
+// and the lent one -- `not_covered` leaves the loan with the client and the damaged unit in the used
+// pool, and a claim never states a stock destination -- while a finding states the units of its shelf,
+// which come back to its own branch when the verdict returns them repaired or replaced and stay written
+// off when it does not (S11). The resolution is final, and the stock it returns is the database's own
+// statement in the same transaction (069).
 func (s *Store) Resolve(ctx context.Context, actor auth.Identity, caseID int64,
 	input ResolutionInput) (Case, error) {
 	if ctx == nil || s == nil || s.pool == nil {
@@ -510,8 +513,13 @@ func (s *Store) Resolve(ctx context.Context, actor auth.Identity, caseID int64,
 	if !provisioned(actor) {
 		return Case{}, ErrForbidden
 	}
-	if err := judgeResolution(input); err != nil {
-		return Case{}, err
+	// The frozen vocabulary is refused before anything is read, exactly as before; which door states which
+	// destination is judged once the case's own origin is known.
+	if !input.Verdict.Valid() || !input.ReportedDestination.Valid() {
+		return Case{}, ErrInvalid
+	}
+	if input.LoanDestination != "" && !input.LoanDestination.Valid() {
+		return Case{}, ErrInvalid
 	}
 	note, ok := canonicalNote(input.Note)
 	if !ok {
@@ -535,9 +543,19 @@ func (s *Store) Resolve(ctx context.Context, actor auth.Identity, caseID int64,
 	if !mayActOn(actor, header.BranchLocationID) {
 		return Case{}, ErrForbidden
 	}
-	// This package owns the claim door: the branch's failed shelf is another document.
-	if header.Origin != OriginWarrantyClaim {
-		return Case{}, ErrClaimOnly
+	// This package owns both doors, and each resolves by the matrix its units state: the claim by the
+	// two batteries it has, the finding by the shelf it wrote off.
+	switch header.Origin {
+	case OriginWarrantyClaim:
+		if err := judgeResolution(input); err != nil {
+			return Case{}, err
+		}
+	case OriginStockDefect:
+		if err := judgeStockResolution(input); err != nil {
+			return Case{}, err
+		}
+	default:
+		return Case{}, ErrInvalid
 	}
 	if header.Verdict != nil || header.Phase == PhaseResolved || header.Phase == PhaseClosed {
 		return Case{}, ErrResolutionFinal
@@ -558,9 +576,18 @@ func (s *Store) Resolve(ctx context.Context, actor auth.Identity, caseID int64,
 	default:
 		return Case{}, &PhaseRefusal{From: header.Phase, To: PhaseResolved}
 	}
+	// The shelf of a finding is where its units end, and no caller states it: the verdict is what decides
+	// whether they come back, and the store states the column the database reads under its lock (069).
+	shelf := ""
+	if header.Origin == OriginStockDefect {
+		if destination, returns := shelfDestination(input.Verdict); returns {
+			shelf = string(destination)
+		}
+	}
 	if _, err := tx.Exec(ctx, `UPDATE warranty_cases SET verdict=$2,reported_destination=$3,
- loan_destination=$4 WHERE id=$1`, caseID, string(input.Verdict),
-		string(input.ReportedDestination), string(input.LoanDestination)); err != nil {
+ loan_destination=NULLIF($4,''),stock_destination=NULLIF($5,'') WHERE id=$1`, caseID,
+		string(input.Verdict), string(input.ReportedDestination), string(input.LoanDestination),
+		shelf); err != nil {
 		return Case{}, mapFailure(ctx, err)
 	}
 	if _, err := insertEvent(ctx, tx, caseID, KindPhase, PhaseResolved, "",
@@ -612,6 +639,11 @@ func (s *Store) RegisterNotice(ctx context.Context, actor auth.Identity, caseID 
 	}
 	if actor.Location.ID != header.BranchLocationID {
 		return Case{}, ErrForbidden
+	}
+	// A finding on the shelf has no client to call: the notice of this vertical is the claim's, and the
+	// branch that found its own battery failed answers to no one (S14, S19, 069).
+	if header.Origin != OriginWarrantyClaim {
+		return Case{}, ErrClaimOnly
 	}
 	if header.Phase != PhaseResolved && header.Phase != PhaseClosed {
 		return Case{}, ErrResolutionPending
@@ -665,6 +697,11 @@ func (s *Store) AuthorizeRelease(ctx context.Context, actor auth.Identity, caseI
 	}
 	if !mayActOn(actor, header.BranchLocationID) {
 		return Case{}, ErrForbidden
+	}
+	// A finding holds no unit in custody: its units are the branch's own and came back at its resolution,
+	// so a release would move them a second time (S13, S14, 069).
+	if header.Origin != OriginWarrantyClaim {
+		return Case{}, ErrClaimOnly
 	}
 	if header.Phase != PhaseResolved && header.Phase != PhaseClosed {
 		return Case{}, ErrResolutionPending
@@ -768,6 +805,48 @@ func judgeResolution(input ResolutionInput) error {
 		}
 	}
 	return nil
+}
+
+// judgeStockResolution applies the resolution matrix of a finding on the shelf (S11). A finding has no
+// client and lends no battery, so it states the units it wrote off and nothing else: a repair and a
+// replacement are the branch's own sellable stock again, and a refusal of the factory leaves those
+// damaged units in the used pool or out as scrap with the write-off of 067 standing. The shelf's own
+// destination is not the caller's either -- it is the verdict's reading, which the database reads under
+// its lock (069).
+func judgeStockResolution(input ResolutionInput) error {
+	if !input.Verdict.Valid() || !input.ReportedDestination.Valid() {
+		return ErrInvalid
+	}
+	// A finding lends no battery, so a loan destination is a value this door could not have written.
+	if input.LoanDestination != "" {
+		return ErrInvalid
+	}
+	switch input.Verdict {
+	case VerdictRepaired, VerdictReplaced:
+		// The units come back repaired or a replacement enters in their place, either way into the
+		// branch that found them deficient: a finding has no client to deliver them to.
+		if input.ReportedDestination != DestinationStock {
+			return ErrMatrix
+		}
+	case VerdictNotCovered:
+		// The factory refused the warranty: the damaged units stay in the used pool or leave as scrap.
+		if input.ReportedDestination != DestinationStock &&
+			input.ReportedDestination != DestinationScrap {
+			return ErrMatrix
+		}
+	}
+	return nil
+}
+
+// shelfDestination is where the units of a finding end when its verdict returns them: the branch's own
+// sellable stock for a repair and for a replacement, and nowhere for every other verdict, which leaves
+// the write-off of the admission standing (S11).
+func shelfDestination(verdict Verdict) (Destination, bool) {
+	switch verdict {
+	case VerdictRepaired, VerdictReplaced:
+		return DestinationStock, true
+	}
+	return "", false
 }
 
 // scanLoan rebuilds one persisted loan and maps the database's refusal when the row is not
@@ -1000,6 +1079,16 @@ func mapFailure(ctx context.Context, err error) error {
 	// branch's, the release is the warehouse's.
 	case "LW022", "LW023", "LW026":
 		return ErrForbidden
+	// LW030 and LW031: a finding on the shelf registers no notice and authorises no release, because
+	// there is no client to call and its units already returned at its resolution (S14, S19, 069).
+	case "LW030", "LW031":
+		return ErrClaimOnly
+	// LW027, LW028, LW029 and LW032 restate what this store writes when it resolves a finding: the
+	// verdict, the shelf destination, the balance row and the bound of the units that return. Reaching
+	// one of them means the row is not what this domain wrote, so they fail closed instead of inventing
+	// a balance.
+	case "LW027", "LW028", "LW029", "LW032":
+		return ErrUnavailable
 	// LW024 restates an invariant the admission of the finding already enforced; reaching it means the
 	// balance of the branch is not what this domain wrote, so it fails closed instead of inventing one.
 	case "LW024":

@@ -574,6 +574,10 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 		`"loan_destination":"customer","note":"No cubre"}`), 409, "warehouse_verdict")
 	f.refused(t, resolution(`{"verdict":"not_covered","reported_destination":"stock",`+
 		`"loan_destination":"stock","note":"No cubre"}`), 409, "resolution_matrix")
+	// A claim states the two units it has: a resolution without `loan_destination` is a malformed body,
+	// exactly as before, and a finding never states one.
+	f.refused(t, resolution(`{"verdict":"repaired","reported_destination":"customer",`+
+		`"note":"Reparada"}`), 400, "invalid_request")
 	resolved := f.caseWire(t, f.serve(t, resolution(`{"verdict":"repaired",`+
 		`"reported_destination":"customer","loan_destination":"stock","note":"Reparada"}`)), 200)
 	if resolved.Phase != "resolved" || resolved.Verdict == nil || *resolved.Verdict != "repaired" ||
@@ -691,5 +695,75 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 	read := f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", settlement.ID), ""))
 	if read.Code != 200 || !strings.Contains(read.Body.String(), `"held_in_case_quantity":1`) {
 		t.Fatalf("the settlement read publishes the held quantity: %d %s", read.Code, read.Body.String())
+	}
+
+	// The stock door finishes the circuit it opened: the branch ships its own finding, the warehouse
+	// receives it and ships it to the factory, the factory answers, the resolution returns the units to
+	// the branch's shelf and the branch closes the case it owns (S11, S19). No notice and no release:
+	// there is no client to call and the unit is the branch's own.
+	before := f.balance(t, 2, variant)
+	second := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/stock-defects",
+		fmt.Sprintf(`{"variant_id":%d,"quantity":2,"declared_failure":"No retiene carga",`+
+			`"reason":"Probada en mostrador"}`, variant))), 201)
+	if got := f.balance(t, 2, variant); got != before-2 {
+		t.Fatalf("the second finding writes its units off the shelf: %d became %d", before, got)
+	}
+	findingAdvance := func(actor int, body string) *http.Request {
+		return f.request(actor, "POST",
+			fmt.Sprintf("/api/warranty-cases/%d/advance", second.ID), body)
+	}
+	for _, tramo := range []struct {
+		actor int
+		body  string
+	}{
+		{2, `{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`},
+		{1, `{"phase":"at_warehouse","factory_case_number":"","note":"Recibida"}`},
+		{1, `{"phase":"at_factory","factory_case_number":"LEG-88","note":"A fábrica"}`},
+	} {
+		if w := f.serve(t, findingAdvance(tramo.actor, tramo.body)); w.Code != 200 {
+			t.Fatalf("the finding walks its journey: %d %s", w.Code, w.Body.String())
+		}
+	}
+	// The verdict is the warehouse's on both doors (S19), and a finding states the units it has: no
+	// lent battery and, on a repair, its own shelf.
+	findingResolution := func(body string) *http.Request {
+		return f.request(1, "POST",
+			fmt.Sprintf("/api/warranty-cases/%d/resolution", second.ID), body)
+	}
+	f.refused(t, f.request(2, "POST",
+		fmt.Sprintf("/api/warranty-cases/%d/resolution", second.ID),
+		`{"verdict":"repaired","reported_destination":"stock","note":"Reparada"}`),
+		403, "forbidden")
+	f.refused(t, findingResolution(`{"verdict":"repaired","reported_destination":"stock",`+
+		`"loan_destination":"stock","note":"Reparada"}`), 400, "invalid_request")
+	f.refused(t, findingResolution(`{"verdict":"repaired","reported_destination":"customer",`+
+		`"note":"Reparada"}`), 409, "resolution_matrix")
+	answered := f.caseWire(t, f.serve(t, findingResolution(`{"verdict":"repaired",`+
+		`"reported_destination":"stock","note":"Reparadas por fábrica"}`)), 200)
+	if answered.Phase != "resolved" || answered.Verdict == nil || *answered.Verdict != "repaired" ||
+		answered.ReportedDestination == nil || *answered.ReportedDestination != "stock" ||
+		answered.StockDestination == nil || *answered.StockDestination != "stock" ||
+		answered.LoanDestination != nil {
+		t.Fatalf("the finding states its verdict and its own shelf: %+v", answered)
+	}
+	if got := f.balance(t, 2, variant); got != before {
+		t.Fatalf("the resolution returns the units to the branch: %d became %d", before, got)
+	}
+	if other := f.balance(t, 3, variant); other != branchThree {
+		t.Fatalf("a resolution returns the shelf of its own branch only: %d %d", other, branchThree)
+	}
+	// A finding registers no notice and authorises no release (S14, S19).
+	f.refused(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/notice", second.ID),
+		`{"note":"Avisado el cliente"}`), 409, "claim_only")
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/warranty-cases/%d/release", second.ID),
+		`{"note":"Vuelven a la góndola"}`), 409, "claim_only")
+	// The branch closes the case it owns and the warehouse never closes one (S19).
+	f.refused(t, findingAdvance(1,
+		`{"phase":"closed","factory_case_number":"","note":"Cerrado por el Almacén"}`),
+		403, "forbidden")
+	closed := f.caseWire(t, f.serve(t, findingAdvance(2,
+		`{"phase":"closed","factory_case_number":"","note":"Vuelven a la góndola"}`)), 200)
+	if closed.Phase != "closed" {
+		t.Fatalf("the branch closes its own finding: %+v", closed)
 	}
 }
