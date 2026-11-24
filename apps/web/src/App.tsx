@@ -28,6 +28,7 @@ import Purchases from './Purchases';
 import Cash from './Cash';
 import Metrics from './Metrics';
 import WarrantyCases from './WarrantyCases';
+import WarehouseWarrantyCases from './WarehouseWarrantyCases';
 
 function Login({ state }: { state: Controller }) {
   const [username, setUsername] = useState('');
@@ -258,8 +259,10 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   // The metrics of the branch publish one branch: its own. The warehouse consolidated read belongs
   // to another vertical, so this identity never sees the section nor reaches it with a typed hash.
   const metrics = branch && route.section === 'metrics';
-  // The guarantee tray is the branch's own: it owns the case and the relationship with the client (S19).
-  const warranty = branch && route.section === 'warranty';
+  // The guarantee section has two sides of the same case: the branch owns it and answers its client
+  // (S19), and the warehouse moves the battery through its own factory desk. Neither reaches the
+  // other's acts: the section is gated per identity, like every other warehouse/branch pair.
+  const warranty = (branch || warehouse) && route.section === 'warranty';
   const session = state.session;
   const csrf = session !== null && session.authenticated ? session.csrf_token : '';
   const administration = route.section === 'administration' && adminOwner !== null;
@@ -383,7 +386,7 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     purchases: branch, purchasesActive: purchases, onPurchases: navigatePurchases,
     cash: branch, cashActive: cash, onCash: navigateCash,
     metrics: branch, metricsActive: metrics, onMetrics: navigateMetrics,
-    warranty: branch, warrantyActive: warranty, onWarranty: navigateWarranty,
+    warranty: branch || warehouse, warrantyActive: warranty, onWarranty: navigateWarranty,
     onAdmin: () => navigatePrivate('administration'), onPassword: () => navigatePrivate('password'), onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '') + (privateSection ? ' private-shell' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
@@ -420,9 +423,12 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         : cash ? <p role="status">Verificando la sesión de la sucursal…</p>
         : metrics && ownerTag ? <Metrics key={`metricas-${ownerTag}`} branch={identity.location.name} />
         : metrics ? <p role="status">Verificando la sesión de la sucursal…</p>
+        : warranty && warehouse && adminOwner && metadata ? <WarehouseWarrantyCases
+          key={`garantias-almacen-${adminOwner}`} csrf={csrf} locations={metadata.locations} />
         : warranty && ownerTag && metadata ? <WarrantyCases key={`garantias-${ownerTag}`} csrf={csrf}
           branch={identity.location.name} locations={metadata.locations} />
-        : warranty ? <p role="status">Verificando la sesión de la sucursal…</p>
+        : warranty ? <p role="status">{warehouse
+          ? 'Verificando la sesión del Almacén…' : 'Verificando la sesión de la sucursal…'}</p>
         : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
         <button type="button" disabled={!creationAvailable} onClick={openCreation}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>

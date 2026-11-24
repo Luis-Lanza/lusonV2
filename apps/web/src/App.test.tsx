@@ -2095,6 +2095,59 @@ describe('branch metrics', () => {
   });
 });
 
+describe('the guarantee section of each side', () => {
+  const warrantyTray = () => new Response(JSON.stringify({ cases: [] }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const warrantySetup = (current: unknown = session) => setup(current,
+    url => url.startsWith('/api/warranty-cases') ? Promise.resolve(warrantyTray()) : undefined);
+  const warrantyCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/warranty-cases'));
+  const branchSession = { ...session, identity: { ...identity, account_id: 20, username: 'sucursala',
+    location: metadata.locations[1] } };
+
+  it('offers the factory desk to the warehouse identity and opens it without any write', async () => {
+    const mock = warrantySetup();
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Garantías' }));
+    await screen.findByRole('heading', { name: 'Mesa de fábrica' });
+    expect(window.location.hash).toBe('#/garantias');
+    expect(screen.getByText('Luson Garantías')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Garantías' })).toHaveAttribute('aria-current', 'page');
+    // The desk asks the four questions of its own contract and never opens a case of its own.
+    const desk = await screen.findByRole('group', { name: 'Figuras de la mesa por etapa' });
+    expect(within(desk).getAllByRole('button')).toHaveLength(4);
+    expect(warrantyCalls(mock).map(([url]) => String(url)).sort()).toEqual([
+      '/api/warranty-cases?phase=at_factory', '/api/warranty-cases?phase=at_warehouse',
+      '/api/warranty-cases?phase=in_transit', '/api/warranty-cases?phase=resolved',
+    ]);
+    expect(warrantyCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+    expect(screen.queryByRole('heading', { name: 'Casos de garantía' })).not.toBeInTheDocument();
+  });
+
+  it('restores the desk from a typed #/garantias hash after a reload', async () => {
+    window.history.replaceState(null, '', '/#/garantias');
+    const mock = warrantySetup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Mesa de fábrica' });
+    expect(screen.getByRole('button', { name: 'Garantías' })).toHaveAttribute('aria-current', 'page');
+    expect(warrantyCalls(mock)).toHaveLength(4);
+    expect(warrantyCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('keeps the branch tray for the branch identity, with no desk in it (S19)', async () => {
+    const mock = warrantySetup(branchSession);
+    render(<App />); await inventory();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+      .getByRole('button', { name: 'Garantías' }));
+    await screen.findByRole('heading', { name: 'Casos de garantía' });
+    // The branch reads its own tray and never the desk's four questions.
+    expect(screen.queryByRole('group', { name: 'Figuras de la mesa por etapa' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Mesa de fábrica' })).not.toBeInTheDocument();
+    expect(warrantyCalls(mock).map(([url]) => String(url))).toEqual(['/api/warranty-cases']);
+  });
+});
+
 describe('warehouse settlement workspace', () => {
   const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
   const closingCalls = (mock: ReturnType<typeof setup>) =>

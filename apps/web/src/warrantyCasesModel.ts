@@ -487,7 +487,9 @@ export interface WarrantyLoanInput {
   readonly source_location_id: number;
 }
 export interface WarrantyAdvanceInput {
-  readonly phase: 'in_transit' | 'closed';
+  /** The tramo the contract's edge admits: the branch records the departure and the close, the
+   *  warehouse the arrival and the shipment to the factory (S9, S19). */
+  readonly phase: 'in_transit' | 'at_warehouse' | 'at_factory' | 'closed';
   readonly factory_case_number: string;
   readonly note: string;
 }
