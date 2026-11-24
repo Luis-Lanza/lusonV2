@@ -3,13 +3,13 @@
   "chosen": "02-bandeja-de-casos.html",
   "handoffs": {
     "02-bandeja-de-casos.html": {
-      "status": "in_progress",
+      "status": "implemented",
       "queued": false,
       "sentAt": "2026-11-23T21:16:20.850Z",
       "startedAt": "2026-11-23T21:16:58.144Z",
-      "implementedAt": null,
+      "implementedAt": "2026-11-24T16:13:12.849Z",
       "feature": "odd/tasks/battery-warranty.md",
-      "note": "Arrancando por la base: migración 065 con el caso, los préstamos y los eventos append-only. La pantalla se implementa sobre ese contrato."
+      "note": "Bandeja de sucursal implementada: cola con filtros por fase y origen, detalle con línea de tiempo, custodia, préstamos, comprobante en PDF, aviso y entrega del canje. Falta la pantalla del Almacén."
     }
   }
 }

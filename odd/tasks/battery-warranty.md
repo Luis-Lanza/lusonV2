@@ -146,3 +146,9 @@ L21. T5 detenida por el worker con tres hallazgos correctos: el store expone sei
 - Las operaciones faltantes van al store (`internal/warrantycase/`), nunca a `httpapi`.
 - Nuevo `068`: `warranty_case_events.kind` con `phase | notice | release`, y `LW006` pasa a exigir que un evento de fase cambie la fase y que un aviso o una liberación no la cambien. Un solo historial, sin fases nuevas.
 - La liberación **sí escribe el balance**: S14 ya dice que la unidad liberada pasa a stock vendible, y es el espejo exacto de la baja de `067`. Son las dos únicas escrituras de stock de la vertical, y las dos son el caso cruzando la frontera entre stock y custodia. La instrucción previa de "no mover stock fuera de la puerta de baja" era mía y estaba de más.
+
+L22. Comprobante en PDF (`1f1e5c5`): una A4 desde datos persistidos, con las condiciones del canje y el número persistido del caso. Sin migración: todo lo que imprime ya existía.
+
+L23. Pantalla de sucursal (`0aa2b70`): bandeja con filtros por fase y origen, detalle con línea de tiempo, custodia y préstamos, alta del canje con búsqueda por serial, comprobante descargable, aviso y entrega. Verificado acá: 61 tests de los archivos nuevos y de navegación, typecheck y build en verde.
+
+L24. Brecha aceptada y no tapada: la fila de la bandeja no lleva el nombre del cliente ni el instante del aviso, porque el contrato publica sólo la cabecera del caso. El artboard los mostraba por fila y ahora viven en el detalle. Va como seguimiento: sumar la referencia de la venta a la fila cuesta un join en el store, el DTO, el documento y el decodificador estricto del frontend; no bloquea el circuito y no se hace en este slice para no abrir el contrato a mitad de camino.
