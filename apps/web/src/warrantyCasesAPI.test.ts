@@ -116,6 +116,13 @@ describe('the transport of the case contract', () => {
     const wrong = createWarrantyCasesAPI(stub(json(loan({ model: 'OTRO' }), 201)));
     await expect(wrong.addLoan(1, () => ({ model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1 }), csrf))
       .rejects.toMatchObject({ code: 'invalid_response' });
+    // The two questions a loan answers apart (S25, S30): a model the pool never saw and an origin that
+    // does not hold it. Each keeps its own code, so neither is ever published as the other.
+    for (const code of ['loan_model_unknown', 'loan_source_stock']) {
+      await expect(createWarrantyCasesAPI(stub(failure(code, 409)))
+        .addLoan(1, () => ({ model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1 }), csrf))
+        .rejects.toMatchObject({ code, status: 409 });
+    }
   });
   it('states the fate of one lent battery and keeps the decision final (S7)', async () => {
     const failed = loan({ fate: 'failed', fate_decided_at: '2026-03-09T12:00:00Z' });

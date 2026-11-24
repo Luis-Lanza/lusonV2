@@ -4,6 +4,7 @@ import type { Location } from './model';
 import TransferDate from './shared/TransferDate';
 import { warrantyLabel } from './pointOfSaleModel';
 import { createSalesAPI, type SaleDetail } from './salesAPI';
+import { usedStockUnavailable, type UsedStockRow } from './usedStockModel';
 import {
   WarrantyCaseAPIError, createWarrantyCasesAPI, warrantyCaseErrorMessages, warrantyCaseUnavailable,
   warrantyCatalogueUnavailable, warrantySaleUnavailable, warrantyTrayUnavailable,
@@ -633,8 +634,23 @@ function LendForm({ record, api, csrf, locations, onCancel, onChanged }: {
 }) {
   const [draft, setDraft] = useState({ model: '', quantity: '1', serial: '', source: record.branch_location_id });
   const [state, setState] = useState({ busy: false, problem: '' });
-  const field = useRef<HTMLInputElement>(null);
-  useEffect(() => { field.current?.focus(); }, []);
+  // The closed list of S30, the same read the counter uses: a model the pool never saw cannot be lent.
+  const [stock, setStock] = useState<{ phase: 'loading' | 'ready' | 'error'; rows: readonly UsedStockRow[] }>({ phase: 'loading', rows: [] });
+  const field = useRef<HTMLSelectElement>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setStock({ phase: 'loading', rows: [] });
+    void api.usedStock(controller.signal).then(
+      rows => { if (!controller.signal.aborted) setStock({ phase: 'ready', rows }); },
+      () => { if (!controller.signal.aborted) setStock({ phase: 'error', rows: [] }); });
+    return () => controller.abort();
+  }, [api]);
+  // The model field is the first thing the operator has to answer, and it waits for its own list.
+  useEffect(() => { if (stock.phase === 'ready') field.current?.focus(); }, [stock.phase]);
+  const lendable = useMemo(() => stock.rows
+    .filter(row => row.location_id === draft.source && row.available > 0)
+    .slice()
+    .sort((left, right) => left.model.localeCompare(right.model)), [stock.rows, draft.source]);
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (state.busy) return;
@@ -650,9 +666,24 @@ function LendForm({ record, api, csrf, locations, onCancel, onChanged }: {
   }
   return <form className="warranty-action" onSubmit={submit}>
     <h4>Prestar una usada</h4>
-    <label htmlFor={`lend-model-${record.id}`}>Modelo de la usada</label>
-    <input ref={field} id={`lend-model-${record.id}`} value={draft.model} maxLength={40} required
-      onChange={event => setDraft(current => ({ ...current, model: event.target.value }))} />
+    {stock.phase === 'loading' && <p className="warranty-note" role="status">Consultando el stock de usadas…</p>}
+    {stock.phase === 'error' && <p className="warranty-problem" role="alert">{usedStockUnavailable}</p>}
+    {/* The label travels with its control: an origin with nothing to lend publishes no field at
+        all, so the form says why instead of pointing at a model that cannot be chosen (S30). */}
+    {stock.phase === 'ready' && (lendable.length === 0
+      ? <p className="warranty-problem" role="alert">
+        {`${locationName(locations, draft.source)} no tiene usadas de ningún modelo. El préstamo sale del stock de usadas que el origen ya tiene: probá con otro origen.`}
+      </p>
+      : <>
+        <label htmlFor={`lend-model-${record.id}`}>Modelo de la usada</label>
+        <select ref={field} id={`lend-model-${record.id}`} value={draft.model} required
+          onChange={event => setDraft(current => ({ ...current, model: event.target.value }))}>
+          <option value="">Elegí el modelo</option>
+          {lendable.map(row => <option key={row.model} value={row.model}>
+            {`${row.model} · ${units(row.available)}`}
+          </option>)}
+        </select>
+      </>)}
     <label htmlFor={`lend-quantity-${record.id}`}>Cantidad</label>
     <input id={`lend-quantity-${record.id}`} inputMode="numeric" value={draft.quantity} required
       onChange={event => setDraft(current => ({ ...current, quantity: event.target.value }))} />
@@ -661,12 +692,13 @@ function LendForm({ record, api, csrf, locations, onCancel, onChanged }: {
       onChange={event => setDraft(current => ({ ...current, serial: event.target.value }))} />
     <label htmlFor={`lend-source-${record.id}`}>De dónde sale</label>
     <select id={`lend-source-${record.id}`} value={draft.source}
-      onChange={event => setDraft(current => ({ ...current, source: Number(event.target.value) }))}>
+      onChange={event => setDraft(current => ({ ...current, source: Number(event.target.value), model: '' }))}>
       {locations.map(entry => <option key={entry.id} value={entry.id}>{entry.id === record.branch_location_id ? `${entry.name} (sucursal del caso)` : entry.name}</option>)}
     </select>
-    <p className="warranty-note">El préstamo no mueve stock ni crea una transferencia: registra de dónde salió la usada.</p>
+    <p className="warranty-note">El préstamo no mueve stock ni crea una transferencia: registra de dónde salió la usada. Sólo se presta un modelo que el sistema ya conoce, y sólo si el origen lo tiene.</p>
     <div className="warranty-action-row">
-      <button type="submit" className="primary" disabled={state.busy}>Registrar préstamo</button>
+      <button type="submit" className="primary"
+        disabled={state.busy || draft.model === '' || stock.phase !== 'ready'}>Registrar préstamo</button>
       <button type="button" onClick={onCancel} disabled={state.busy}>Cancelar</button>
     </div>
     {state.problem !== '' && <p className="warranty-problem" role="alert">{state.problem}</p>}
@@ -691,10 +723,32 @@ function ExchangeDialog({ api, sales, csrf, branch, locations, onClose, onCase }
   const [created, setCreated] = useState<WarrantyCase | null>(null);
   const [sale, setSale] = useState<{ phase: 'loading' | 'ready' | 'error'; value: SaleDetail | null; problem: string }>({ phase: 'loading', value: null, problem: '' });
   const [loan, setLoan] = useState({ model: '', quantity: '1', serial: '', source: 0 });
+  // The closed list of S30: the models the used pool already knows, with what the origin holds of each.
+  const [stock, setStock] = useState<{ phase: 'loading' | 'ready' | 'error'; rows: readonly UsedStockRow[] }>({ phase: 'loading', rows: [] });
   const [state, setState] = useState({ busy: false, problem: '' });
   const serialField = useRef<HTMLInputElement>(null);
-  const modelField = useRef<HTMLInputElement>(null);
+  const modelField = useRef<HTMLSelectElement>(null);
   const dialog = useDialogFocus(onClose);
+  useEffect(() => {
+    if (step !== 'loan') return;
+    const controller = new AbortController();
+    setStock({ phase: 'loading', rows: [] });
+    void api.usedStock(controller.signal).then(
+      rows => { if (!controller.signal.aborted) setStock({ phase: 'ready', rows }); },
+      () => { if (!controller.signal.aborted) setStock({ phase: 'error', rows: [] }); });
+    return () => controller.abort();
+  }, [api, step]);
+  // The case's own branch is where the counter looks first, and the list follows the origin it picks.
+  useEffect(() => {
+    if (created !== null) {
+      setLoan(current => current.source === 0
+        ? { ...current, source: created.branch_location_id } : current);
+    }
+  }, [created]);
+  const lendable = useMemo(() => stock.rows
+    .filter(row => row.location_id === loan.source && row.available > 0)
+    .slice()
+    .sort((left, right) => left.model.localeCompare(right.model)), [stock.rows, loan.source]);
   useEffect(() => {
     if (step === 'claim') serialField.current?.focus();
     else if (step === 'loan') modelField.current?.focus();
@@ -785,9 +839,24 @@ function ExchangeDialog({ api, sales, csrf, branch, locations, onClose, onCase }
           </dl>;
         })()}
         <form onSubmit={submitLoan}>
-          <label htmlFor="warranty-loan-model">Modelo de la usada</label>
-          <input ref={modelField} id="warranty-loan-model" value={loan.model} maxLength={40} required autoComplete="off"
-            onChange={event => setLoan(current => ({ ...current, model: event.target.value }))} />
+          {stock.phase === 'loading' && <p className="warranty-note" role="status">Consultando el stock de usadas…</p>}
+          {stock.phase === 'error' && <p className="warranty-problem" role="alert">{usedStockUnavailable}</p>}
+          {/* The label travels with its control: an origin with nothing to offer publishes no field at
+              all, so the form says why instead of pointing at a model that cannot be chosen (S30). */}
+          {stock.phase === 'ready' && (lendable.length === 0
+            ? <p className="warranty-problem" role="alert">
+              {`${locationName(locations, loan.source)} no tiene usadas de ningún modelo. El préstamo sale del stock de usadas que el origen ya tiene: probá con otro origen.`}
+            </p>
+            : <>
+              <label htmlFor="warranty-loan-model">Modelo de la usada</label>
+              <select ref={modelField} id="warranty-loan-model" value={loan.model} required
+                onChange={event => setLoan(current => ({ ...current, model: event.target.value }))}>
+                <option value="">Elegí el modelo</option>
+                {lendable.map(row => <option key={row.model} value={row.model}>
+                  {`${row.model} · ${units(row.available)}`}
+                </option>)}
+              </select>
+            </>)}
           <label htmlFor="warranty-loan-quantity">Cantidad</label>
           <input id="warranty-loan-quantity" inputMode="numeric" value={loan.quantity} required
             onChange={event => setLoan(current => ({ ...current, quantity: event.target.value }))} />
@@ -796,12 +865,13 @@ function ExchangeDialog({ api, sales, csrf, branch, locations, onClose, onCase }
             onChange={event => setLoan(current => ({ ...current, serial: event.target.value }))} />
           <label htmlFor="warranty-loan-source">De dónde sale la usada</label>
           <select id="warranty-loan-source" value={loan.source}
-            onChange={event => setLoan(current => ({ ...current, source: Number(event.target.value) }))}>
+            onChange={event => setLoan(current => ({ ...current, source: Number(event.target.value), model: '' }))}>
             {locations.map(entry => <option key={entry.id} value={entry.id}>{entry.id === created.branch_location_id ? `${entry.name} (sucursal del caso)` : entry.name}</option>)}
           </select>
-          <p className="warranty-note">La usada se identifica por modelo y cantidad: el serial es texto libre y no es identidad. El préstamo no mueve stock.</p>
+          <p className="warranty-note">La usada se identifica por modelo y cantidad: el serial es texto libre y no es identidad. Sólo se presta un modelo que el sistema ya conoce, y sólo si el origen lo tiene; el préstamo no mueve stock.</p>
           <div className="warranty-action-row">
-            <button type="submit" className="primary" disabled={state.busy}>Registrar el préstamo</button>
+            <button type="submit" className="primary"
+              disabled={state.busy || loan.model === '' || stock.phase !== 'ready'}>Registrar el préstamo</button>
             <button type="button" onClick={onClose} disabled={state.busy}>Dejarlo para después</button>
           </div>
           {state.problem !== '' && <p className="warranty-problem" role="alert">{state.problem}</p>}

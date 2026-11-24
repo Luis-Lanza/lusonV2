@@ -64,6 +64,8 @@ function harness(handler: Handler) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
     const url = String(input);
+    // The loan form asks for the closed list of models before anything is typed (S30).
+    if (url === '/api/warranty-cases/used-stock') return usedStock();
     calls.push({ url, init });
     const reply = handler(url, init);
     if (!reply) throw new Error('Unexpected mocked URL: ' + url);
@@ -78,6 +80,19 @@ function renderScreen(h: ReturnType<typeof harness>) {
   render(<WarrantyCases csrf={csrf} branch="Sucursal A" locations={locations} fetcher={h.fetcher} now={frozenNow} />);
 }
 const tray = (cases: readonly unknown[]) => json({ cases });
+
+// The closed list of S30: only the models the pool knows, with what each origin holds of them. The
+// wire orders its rows by origin and then by model, so the fixture is written in that order.
+const usedStockRow = (location_id: number, model: string, available: number) => ({
+  location_id, model, purchased: String(available), factory_returns: '0', loans_returned: '0',
+  delivered: '0', loans_given: '0', available: String(available),
+});
+const usedStock = () => json({ stock: [
+  usedStockRow(1, 'NS60L', 4),
+  usedStockRow(2, 'NS40L', 1),
+  usedStockRow(2, 'NS60L', 3),
+  usedStockRow(3, 'NS60L', 6),
+] });
 const receiptLink = () => screen.getByRole('link', { name: /comprobante de préstamo/ });
 
 describe('the branch guarantee tray', () => {
@@ -187,7 +202,8 @@ describe('the branch guarantee tray', () => {
     expect(await screen.findByText('Falló')).toBeInTheDocument();
     // The case is still one case: the failed battery is replaced by another loan of the same case.
     fireEvent.click(screen.getByRole('button', { name: 'Registrar préstamo' }));
-    fireEvent.change(screen.getByLabelText('Modelo de la usada'), { target: { value: 'NS40L' } });
+    // The list is read before the loan is stated, so the field waits for the stock of the origin.
+    fireEvent.change(await screen.findByLabelText('Modelo de la usada'), { target: { value: 'NS40L' } });
     fireEvent.click(screen.getByRole('button', { name: 'Registrar préstamo' }));
     await screen.findByText(/Usada registrada en C-2-000002/);
     expect(h.posts().at(-1)?.url).toBe('/api/warranty-cases/2/loans');
@@ -198,6 +214,61 @@ describe('the branch guarantee tray', () => {
     expect(await screen.findByText('NS60L')).toBeInTheDocument();
     expect(screen.getByText('NS40L')).toBeInTheDocument();
     expect(screen.queryByText('C-2-000003')).not.toBeInTheDocument();
+  });
+
+  it('lends only a model the chosen origin holds, and says so when it holds none (S30)', async () => {
+    // A fourth branch of the session: it never bought, received or got back a used battery of any model.
+    const branches = [...locations, { id: 4, name: 'Sucursal C' }];
+    let refused = true;
+    const handed = loan({ model: 'NS40L', quantity: 1, source_location_id: 2 });
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(resolvedCase({ loans: false }));
+      if (url === '/api/sales/12') return json(saleBody);
+      if (url === '/api/warranty-cases/2/loans' && init.method === 'POST') {
+        if (refused) { refused = false; return failure('loan_model_unknown', 409); }
+        return json(handed, 201);
+      }
+      return undefined;
+    });
+    render(<WarrantyCases csrf={csrf} branch="Sucursal A" locations={branches} fetcher={h.fetcher} now={frozenNow} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar préstamo' }));
+    // The model is never typed: the case's own branch offers what it holds, and nothing else.
+    const models = await screen.findByLabelText('Modelo de la usada');
+    expect(models.tagName).toBe('SELECT');
+    expect(screen.queryByRole('textbox', { name: 'Modelo de la usada' })).toBeNull();
+    expect(within(models).getAllByRole('option').map(option => option.textContent))
+      .toEqual(['Elegí el modelo', 'NS40L · 1 unidad', 'NS60L · 3 unidades']);
+    const submit = () => screen.getByRole('button', { name: 'Registrar préstamo' });
+    expect(submit()).toBeDisabled();
+    // An origin that holds no used battery of any model offers no model at all and names itself.
+    fireEvent.change(screen.getByLabelText('De dónde sale'), { target: { value: '4' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Sucursal C no tiene usadas de ningún modelo');
+    expect(screen.queryByText('Modelo de la usada')).toBeNull();
+    expect(screen.queryByLabelText('Modelo de la usada')).toBeNull();
+    expect(submit()).toBeDisabled();
+    // Another origin is another list: the model chosen before is gone with it.
+    fireEvent.change(screen.getByLabelText('De dónde sale'), { target: { value: '2' } });
+    const again = await screen.findByLabelText('Modelo de la usada');
+    expect(again).toHaveValue('');
+    expect(submit()).toBeDisabled();
+    fireEvent.change(again, { target: { value: 'NS40L' } });
+    fireEvent.click(submit());
+    // A model the pool refuses is stated in the contract's own words, never as a transport error.
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent('Ese modelo no está en el stock de usadas: elegí uno de la lista. No se registró nada.');
+    expect(JSON.parse(String(h.posts().at(-1)!.init.body))).toEqual({
+      model: 'NS40L', quantity: 1, serial_number: '', source_location_id: 2,
+    });
+    // The chosen model and its origin are what the case records, and the form goes with the loan.
+    fireEvent.click(submit());
+    await screen.findByText(/Usada registrada en C-2-000002/);
+    expect(h.posts().at(-1)?.url).toBe('/api/warranty-cases/2/loans');
+    expect(JSON.parse(String(h.posts().at(-1)!.init.body))).toEqual({
+      model: 'NS40L', quantity: 1, serial_number: '', source_location_id: 2,
+    });
+    expect(screen.queryByLabelText('Modelo de la usada')).toBeNull();
   });
 
   it('delivers the exchange only when the used battery is registered, and settles the loan (S4)', async () => {
@@ -268,9 +339,12 @@ describe('registering the exchange from the tray', () => {
     expect(await within(dialog).findByText('Marta Giménez')).toBeInTheDocument();
     expect(within(dialog).getByText(/2-000126/)).toBeInTheDocument();
     expect(within(dialog).getByText('12 meses')).toBeInTheDocument();
-    fireEvent.change(within(dialog).getByLabelText('Modelo de la usada'), { target: { value: 'ns60l' } });
-    fireEvent.change(within(dialog).getByLabelText('Cantidad'), { target: { value: '2' } });
     fireEvent.change(within(dialog).getByLabelText('De dónde sale la usada'), { target: { value: '3' } });
+    // The list is the one of the chosen origin, and every option is already canonical.
+    const models = await within(dialog).findByLabelText('Modelo de la usada');
+    expect(within(models).queryByRole('option', { name: /NS40L/ })).toBeNull();
+    fireEvent.change(models, { target: { value: 'NS60L' } });
+    fireEvent.change(within(dialog).getByLabelText('Cantidad'), { target: { value: '2' } });
     fireEvent.click(screen.getByRole('button', { name: 'Registrar el préstamo' }));
     const [claimPost, loanPost] = h.posts();
     expect(claimPost.url).toBe('/api/warranty-cases/claims');
@@ -301,6 +375,47 @@ describe('registering the exchange from the tray', () => {
     // The refusal wrote nothing: one claim attempt and no case behind it.
     expect(h.posts()).toHaveLength(1);
     expect(h.calls.some(call => call.url === '/api/sales/12')).toBe(false);
+  });
+
+  it('offers no model at all when the chosen origin holds no used battery, and never a typed one (S30)', async () => {
+    // A fourth branch of the session: it never bought, received or got back a used battery of any model.
+    const branches = [...locations, { id: 4, name: 'Sucursal C' }];
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([]);
+      if (url === '/api/warranty-cases/claims' && init.method === 'POST') return json(receivedCase(), 201);
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    render(<WarrantyCases csrf={csrf} branch="Sucursal A" locations={branches} fetcher={h.fetcher} now={frozenNow} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar canje' }));
+    fireEvent.change(screen.getByLabelText('Número de serie de la batería reclamada'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Qué falló'), { target: { value: 'No arranca el motor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Buscar la venta y abrir el caso' }));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByText('12 meses');
+    // The model is never typed: the case's own branch offers the models it holds, and nothing else.
+    const models = await within(dialog).findByLabelText('Modelo de la usada');
+    expect(models.tagName).toBe('SELECT');
+    expect(within(dialog).queryByRole('textbox', { name: 'Modelo de la usada' })).toBeNull();
+    expect(within(models).getAllByRole('option').map(option => option.textContent))
+      .toEqual(['Elegí el modelo', 'NS40L · 1 unidad', 'NS60L · 3 unidades']);
+    fireEvent.change(models, { target: { value: 'NS60L' } });
+    expect(within(dialog).getByRole('button', { name: 'Registrar el préstamo' })).toBeEnabled();
+    // An origin that holds no used battery of any model offers no model at all, says so by name and
+    // forgets the model the other origin had chosen.
+    fireEvent.change(within(dialog).getByLabelText('De dónde sale la usada'), { target: { value: '4' } });
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Sucursal C no tiene usadas de ningún modelo');
+    // No model field at all, not even a label pointing at one that is not there.
+    expect(within(dialog).queryByText('Modelo de la usada')).toBeNull();
+    expect(within(dialog).queryByLabelText('Modelo de la usada')).toBeNull();
+    expect(within(dialog).queryByRole('combobox', { name: 'Modelo de la usada' })).toBeNull();
+    expect(within(dialog).queryByRole('textbox', { name: 'Modelo de la usada' })).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Registrar el préstamo' })).toBeDisabled();
+    // Nothing is posted: not by the button, and not by forcing the form to submit without a model.
+    expect(h.posts()).toHaveLength(1);
+    fireEvent.submit(within(dialog).getByRole('button', { name: 'Registrar el préstamo' }).closest('form')!);
+    expect(h.posts()).toHaveLength(1);
+    expect(h.calls.some(call => call.url === '/api/warranty-cases/1/loans')).toBe(false);
   });
 });
 
