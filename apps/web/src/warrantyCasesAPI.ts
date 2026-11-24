@@ -10,6 +10,7 @@ import {
   warehouseReleasePath, warehouseResolutionPath,
   type WarrantyClaimResolutionInput, type WarrantyDefectResolutionInput,
 } from './warehouseWarrantyModel';
+import { parseUsedStock, usedStockPath, type UsedStockRow } from './usedStockModel';
 
 /**
  * Transport of the branch's side of the battery warranty case. Every answer is admitted only when it is
@@ -174,6 +175,16 @@ export function createWarrantyCasesAPI(fetch: typeof globalThis.fetch = globalTh
     async pending(signal?: AbortSignal): Promise<bigint> {
       const raw = await read(warrantyPendingPath, signal, true);
       try { return parseWarrantyPending(raw); } catch { throw new WarrantyCaseAPIError('invalid_response', null); }
+    },
+
+    /**
+     * The derived stock of used batteries of every location and model (S24). It is one read of a sum
+     * the database states and the screen recomposes no term of it; the warehouse reads what it holds and
+     * the branch what it can lend, so the counter sees the three locations before promising a battery.
+     */
+    async usedStock(signal?: AbortSignal): Promise<readonly UsedStockRow[]> {
+      const raw = await read(usedStockPath, signal);
+      try { return parseUsedStock(raw); } catch { throw new WarrantyCaseAPIError('invalid_response', null); }
     },
 
     /** One case with its loans and its append-only history. */

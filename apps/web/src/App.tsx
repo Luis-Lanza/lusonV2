@@ -29,7 +29,7 @@ import Purchases from './Purchases';
 import Cash from './Cash';
 import Metrics from './Metrics';
 import WarrantyCases from './WarrantyCases';
-import WarehouseWarrantyCases from './WarehouseWarrantyCases';
+import WarehouseWarrantySection from './WarehouseWarrantySection';
 
 function Login({ state }: { state: Controller }) {
   const [username, setUsername] = useState('');
@@ -279,6 +279,9 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   // (S19), and the warehouse moves the battery through its own factory desk. Neither reaches the
   // other's acts: the section is gated per identity, like every other warehouse/branch pair.
   const warranty = (branch || warehouse) && route.section === 'warranty';
+  // The warehouse's side of the guarantee has two screens of its own: the factory desk and the derived
+  // stock of used batteries (S24). A branch never reaches either of them: its side is the tray.
+  const usedStock = warehouse && route.section === 'warranty' && route.screen === 'used-stock';
   const session = state.session;
   const csrf = session !== null && session.authenticated ? session.csrf_token : '';
   const administration = route.section === 'administration' && adminOwner !== null;
@@ -390,6 +393,12 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     if (navDisabled || warranty || latest !== ownerTag) return;
     changeRoute({ section: 'warranty' });
   }
+  // The two screens of the warehouse side are one route each, so a reload lands back on the same one.
+  function navigateWarrantyScreen(screen: 'desk' | 'used-stock') {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (navDisabled || !warehouse || latest !== ownerTag) return;
+    changeRoute(screen === 'used-stock' ? { section: 'warranty', screen: 'used-stock' } : { section: 'warranty' });
+  }
   const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, warrantyCount, warrantyUnavailable, privateSection, admin: adminOwner !== null,
     stock: warehouse, stockActive: stock, onStock: navigateStock,
     adjustments: warehouse, adjustmentsActive: adjustments, onAdjustments: navigateAdjustments,
@@ -433,14 +442,15 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         : sales ? <p role="status">Verificando la sesión de la sucursal…</p>
         : salesHistory && ownerTag ? <SalesSectionBoundary key={`historial-${ownerTag}`} message={salesHistoryFailureMessage}><SalesHistory key={ownerTag} branch={identity.location.name} /></SalesSectionBoundary>
         : salesHistory ? <p role="status">Verificando la sesión de la sucursal…</p>
-        : purchases && ownerTag ? <Purchases key={`compras-${ownerTag}`} csrf={csrf} branch={identity.location.name} />
+        : purchases && ownerTag ? <Purchases key={`compras-${ownerTag}`} csrf={csrf} branch={identity.location.name} location={identity.location.id} />
         : purchases ? <p role="status">Verificando la sesión de la sucursal…</p>
         : cash && ownerTag ? <Cash key={`caja-${ownerTag}`} csrf={csrf} branch={identity.location.name} />
         : cash ? <p role="status">Verificando la sesión de la sucursal…</p>
         : metrics && ownerTag ? <Metrics key={`metricas-${ownerTag}`} branch={identity.location.name} />
         : metrics ? <p role="status">Verificando la sesión de la sucursal…</p>
-        : warranty && warehouse && adminOwner && metadata ? <WarehouseWarrantyCases
-          key={`garantias-almacen-${adminOwner}`} csrf={csrf} locations={metadata.locations} />
+        : warranty && warehouse && adminOwner && metadata ? <WarehouseWarrantySection
+          key={`garantias-almacen-${adminOwner}`} screen={usedStock ? 'used-stock' : 'desk'}
+          onScreen={navigateWarrantyScreen} csrf={csrf} locations={metadata.locations} />
         : warranty && ownerTag && metadata ? <WarrantyCases key={`garantias-${ownerTag}`} csrf={csrf}
           branch={identity.location.name} locations={metadata.locations} />
         : warranty ? <p role="status">{warehouse
