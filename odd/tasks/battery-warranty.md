@@ -54,6 +54,18 @@ S22. Verificación. Migraciones probadas contra PostgreSQL real, stores y HTTP c
 
 S23. Vocabulario congelado, para que la migración, el backend y el frontend se construyan por separado. `origin`: `warranty_claim` | `stock_defect`. `phase`: `received` | `in_transit` | `at_warehouse` | `at_factory` | `resolved` | `closed`. `verdict`: nulo o `repaired` | `replaced` | `unrepairable` | `not_covered` | `lost` | `refused_at_warehouse`. Destino por unidad: nulo o `customer` | `stock` | `scrap` | `retained_by_factory`. Desenlace del préstamo: `open` | `returned` | `kept_by_customer` | `failed` | `lost`. Los códigos de error de esta vertical usan el prefijo `LW`, que este repositorio no usa, y nunca repiten un número. Check: un valor fuera de esas listas es rechazado por la base y no por la aplicación solamente.
 
+S24. Stock real de usadas por local y por modelo, derivado de los hechos ya registrados. User, L30: "entonces debemos manejar mejor el stock de baterias usadas... stock de baterias usadas de cada sucursal y de almacen". No se guarda un saldo: se calcula. Sucursal = compradas + devueltas de fábrica + préstamos devueltos − entregadas en rendiciones cerradas − préstamos otorgados. Almacén = entregadas por las sucursales en rendiciones cerradas + devueltas de fábrica − préstamos otorgados. Check: el número de una sucursal sin compras y sin devoluciones es cero; una rendición cerrada suma al Almacén y resta a la sucursal por el mismo importe; un préstamo devuelto vuelve al local que lo recibió.
+
+S25. El préstamo valida el origen. User, L29: "pero como me dejo prestar si aqui hay 0? no entiendo". Un préstamo cuyo local de origen no tiene stock del modelo pedido es rechazado con un código propio y no escribe nada. Check: con stock cero el préstamo se rechaza; con stock uno se acepta y el stock del origen baja en uno; dos préstamos sobre una sola unidad no pueden convivir.
+
+S26. La usada se identifica sólo por modelo. User, L30: "Solo por modelo esta bien. porque por el modelo se puede estimar la capacidad por ejemplo NS60ZL es de 60AH". El modelo es texto, comparado sin distinguir mayúsculas y sin espacios sobrantes, igual que en las compras. Check: `ns60zl` y ` NS60ZL ` son el mismo modelo a los ojos del stock.
+
+S27. Las devueltas de fábrica no cubiertas entran al Almacén, que es quien las envió y quien las recibe de vuelta. Check: resolver un caso como `not_covered` con destino al pool suma al stock del Almacén y no al de la sucursal del caso.
+
+S28. Fuera de alcance, por decisión del usuario: la venta de chatarra y todo movimiento de dinero por material. User, L31: "AUn no dejemos, la venta de chatarra por parte de almacen para otra vertical." Check: no se agrega documento de venta, ni fondo, ni caja, ni movimiento de dinero por material.
+
+S29. Sin regresiones sobre lo entregado. Check: el esperado de la rendición (`066`) sigue cuadrando con el stock nuevo cuando la sucursal entrega todo en el cierre; las suites de compras, cierres y garantías pasan.
+
 ## Tasks
 
 T1 [S1–S22] Documento y direcciones visuales, canvas abierto y artboard elegido — route inline (diseño); done: `design/battery-warranty/` con manifest y artboards.
@@ -164,3 +176,9 @@ L27. Verificación integral sobre fixture limpio desde cero, con la rama ya orde
 - Los tests de `TransferPending` y `AccountAdministration` son inestables por carga y ya lo eran en la base: el worker lo probó copiando la base y fallando 2 de 5 corridas sin este cambio.
 
 L28. Estado final: el circuito completo funciona de punta a punta y está verificado. Queda afuera, por decisión y anotado: el nombre del cliente en la fila de la bandeja, el desenlace de `refused_at_warehouse` en un hallazgo de góndola, el documento de conversión de usadas a chatarra, la cifra del pool en la mesa del Almacén, y el aviso previo a la liberación cuando el caso ya está cerrado.
+
+L29. User, ante la pantalla de Compras con saldo 0: "pero como me dejo prestar si aqui hay 0? no entiendo". Diagnóstico: el préstamo declaraba el origen sin validarlo; la sucursal tenía 0 compradas y el sistema lo aceptó igual. El saldo que ya existe es compradas menos entregadas al Almacén, y como la sucursal entrega todo en cada cierre, su saldo normal es 0 y el stock vive en el Almacén, que no registra nada.
+
+L30. User: "entonces debemos manejar mejor el stock de baterias usadas. como hacemos esto? stock de baterias usadas de cada sucursal y de almacen". Respuestas del usuario a las tres preguntas de diseño: (1) la chatarra se vende; (2) "Osea siempre es chatarra solo que la diferenciamos como bateria usada para que no sea como aluminio cobre etc" — la usada es la misma corriente de salida, contada por unidad y modelo en vez de por kilo; (3) "Solo por modelo esta bien. porque por el modelo se puede estimar la capacidad por ejemplo NS60ZL es de 60AH".
+
+L31. User: "AUn no dejemos, la venta de chatarra por parte de almacen para otra vertical. 1. esto aun no va en esta vertical 2. AUN NO 3. AUN NO". Alcance de esta vertical: el stock de usadas por local y modelo, la validación del origen del préstamo y la pantalla del Almacén. La venta de material, sus dos tipos de línea, el fondo de materiales del Almacén y todo movimiento de dinero por material quedan para otra vertical.
