@@ -7,17 +7,18 @@
 -- and sends the damaged battery back (S11), so the pool grows with nothing writing a purchase
 -- either. This version teaches the seed those two facts, and only them.
 --
--- The four flows of one model, which is the whole rule of this file:
+-- The five flows of one model, which is the whole rule of this file:
 --
 --   what the branch bought of it before the cut (047, kept)
 -- + the units the factory returned as not covered and destined to the used pool (065)
 -- - the units this branch lent of it before the cut (065)
+-- + the units of those loans the branch got back before the cut (065)
 -- - the units its closed settlements already delivered of it (047, kept)
 --
 -- and only a positive sum is a line of the sheet, exactly as 045 and 047 seed: a model the branch
 -- bought and lent whole, or bought and delivered whole, is not a position the pool holds and gets no
 -- row, and nothing negative is ever stated because an expectation is a quantity that exists. The
--- four terms are one signed UNION ALL per model and one GROUP BY, so the arithmetic of the pool is
+-- five terms are one signed UNION ALL per model and one GROUP BY, so the arithmetic of the pool is
 -- stated once, in the same expression, and a reader cannot mistake one of them for a second rule.
 --
 -- Which columns of 065 are the two facts, and why. A factory return is a `warranty_cases` row whose
@@ -36,13 +37,23 @@
 -- settlement that cannot open because a catalogue row it never mentions has a character the sheet
 -- refuses.
 --
--- A loan is a `warranty_case_loans` row of 065 and its date is `given_at`, the instant the counter
--- handed the battery over. It reduces the sheet of the location it came from, which is
--- `source_location_id`: a loan taken from the warehouse or from another branch is that location's
--- outflow and never this branch's (S6), and the sheet of a settlement is the pool of its own branch.
--- The loan's fate is not part of this arithmetic on purpose: 065 records the fate but not when it
--- was decided, so a returned loan cannot be put back in the window it belongs to, and inventing a
--- date would be inventing a column. S17 names the loans given, and that is the fact this file reads.
+-- A loan is a `warranty_case_loans` row of 065 and its term is signed, because the same battery
+-- crosses the pool twice. It leaves the pool when the counter hands it to the client of a warranty
+-- case: `given_at` -- the instant of the handing over -- subtracts its units from the sheet of its
+-- `source_location_id`, because a loan taken from the warehouse or from another branch is that
+-- location's outflow and never this branch's (S6), and the sheet of a settlement is the pool of its
+-- own branch. It comes back when the client returns it, and 065 dates exactly that: a loan whose
+-- `fate` is `returned` came back to the branch at `fate_decided_at`, the instant the fate left
+-- `open` as the database wrote it and never as the caller stated it. That instant adds the same
+-- units back to the same signed sum, because that battery is in the branch again and the pool holds
+-- it again: a version that only subtracted the loan would state a pool permanently short by every
+-- battery the counter got back. The other three fates are dated too and add nothing, because a
+-- battery kept by the client, one marked `failed` and one `lost` never come back to this branch and
+-- their outflow stands. Both loan terms are read before the same cut and not inside a window of
+-- their own, for the same reason the purchases are: the sheet is the pool at the cut, so the net
+-- outflow of the whole history is what the pool does not hold, and a battery returned after the cut
+-- was still out of the branch at the cut. No lower bound of `given_at` is needed on the return,
+-- because a loan can never come back before it was handed over.
 --
 -- What this file cannot state. S17's formula also subtracts the used batteries liquidated to scrap
 -- -- "menos liquidaciones a chatarra" -- and this repository records no such document: there is no
@@ -80,7 +91,7 @@
 CREATE OR REPLACE FUNCTION seed_closing_material_lines() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     PERFORM set_config('luson.closing_material_seed', NEW.id::text, true);
-    -- The used pool of this branch, per model: the four flows as one signed sum, and only a pool
+    -- The used pool of this branch, per model: the five flows as one signed sum, and only a pool
     -- that holds something is a line of the sheet.
     INSERT INTO closing_material_lines(closing_id,kind,model,expected_quantity)
     SELECT NEW.id, 'used', flow.model, sum(flow.units)
@@ -125,6 +136,16 @@ BEGIN
         FROM warranty_case_loans loan
         WHERE loan.source_location_id = NEW.branch_location_id
           AND loan.given_at < NEW.cut_at
+        GROUP BY loan.model
+        UNION ALL
+        -- Plus the ones that came back to this branch before the same cut: a battery returned to
+        -- the branch is in the pool again, so its own outflow is undone by the instant 065 stamped
+        -- on the fate -- a loan kept by the client, failed or lost has no such instant to read.
+        SELECT loan.model AS model, sum(loan.quantity) AS units
+        FROM warranty_case_loans loan
+        WHERE loan.source_location_id = NEW.branch_location_id
+          AND loan.fate = 'returned'
+          AND loan.fate_decided_at < NEW.cut_at
         GROUP BY loan.model
     ) flow
     GROUP BY flow.model

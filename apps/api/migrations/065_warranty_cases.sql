@@ -29,6 +29,15 @@
 -- it writes no transfer and it changes no inventory_balances, because a used battery is not stock
 -- anywhere in this repository (032, 045) and this migration adds no balance of its own (S18).
 --
+-- Why the fate carries its own instant (S17). A loan leaves the pool when the counter hands it over
+-- and it is back in the branch the moment the client returns it, and the used pool of a settlement
+-- (066) can only put a loan back in the window it came back in if that fact is dated. So a loan is
+-- open and undated, and the instant its fate leaves open the guard of this file writes the date: an
+-- open loan states no instant and a decided one states it, the guard refusing both directions and
+-- the check of the row stating the same fact as its last authority. The date is stamped for every
+-- fate, not only for `returned`: `kept_by_customer`, `failed` and `lost` are dated too, and 066 is
+-- the one that reads `returned`, because those three are batteries that never come back.
+--
 -- Why the events are append-only and the phase is theirs (S9). Every tramo of the journey --
 -- received, in transit, at the warehouse, at the factory, resolved, closed -- is a row with its
 -- actor, its instant, its note and, when the tramo is the factory shipment, the file number the
@@ -157,6 +166,12 @@ CREATE TABLE warranty_case_loans (
     -- case, and a fate once decided is final (LW012).
     fate text NOT NULL DEFAULT 'open'
         CHECK (fate IN ('open','returned','kept_by_customer','failed','lost')),
+    -- When that fate was decided, and null exactly while the loan is open: the instant the fate
+    -- leaves open is written by guard_warranty_case_loan() and never stated by the caller, so the
+    -- used pool can put a returned battery back in the window it came back in (066, S17). The two
+    -- directions of the fact are one check of the row, exactly as the case states its own.
+    fate_decided_at timestamptz,
+    CHECK ((fate = 'open') = (fate_decided_at IS NULL)),
     given_by_account_id integer NOT NULL REFERENCES auth_accounts(id),
     PRIMARY KEY (case_id, loan_ordinal)
 );
@@ -165,6 +180,10 @@ CREATE TABLE warranty_case_loans (
 -- one source are what a branch or the warehouse reviews.
 CREATE INDEX warranty_case_loans_by_given_at ON warranty_case_loans(given_at DESC);
 CREATE INDEX warranty_case_loans_by_source ON warranty_case_loans(source_location_id, given_at DESC);
+-- The loans that came back are the other half of the same read (066, S17): a return is looked up by
+-- the instant it was decided, and an open loan is not in that read at all.
+CREATE INDEX warranty_case_loans_by_return ON warranty_case_loans(source_location_id, fate_decided_at)
+WHERE fate_decided_at IS NOT NULL;
 
 -- One tramo of the journey (S9): the phase the case enters, who did it, when, why and -- on the
 -- factory shipment -- the file number the warehouse transcribes by hand. Append-only: no UPDATE,
@@ -386,6 +405,10 @@ BEGIN
     NEW.loan_ordinal := coalesce((
         SELECT max(loan.loan_ordinal) FROM warranty_case_loans loan
         WHERE loan.case_id=NEW.case_id),0)+1;
+    -- A loan is born open and undated, whatever the caller promised about what became of it: the
+    -- battery was just handed over, and what happened to it afterwards is stated afterwards (S17).
+    NEW.fate := 'open';
+    NEW.fate_decided_at := NULL;
     RETURN NEW;
 END;
 $$;
@@ -412,6 +435,21 @@ BEGIN
     IF OLD.fate <> 'open' AND NEW.fate IS DISTINCT FROM OLD.fate THEN
         RAISE EXCEPTION USING ERRCODE='LW012',
             MESSAGE='A decided loan fate is final: a failed loan is replaced by another loan',
+            DETAIL=OLD.fate;
+    END IF;
+    -- The instant of the decision is the database's and nobody else's (S17): it arrives with the
+    -- fate that leaves open -- the counter states what became of the battery and never when -- and
+    -- a loan that keeps its fate can neither move it nor state it while it is still open.
+    IF NEW.fate IS DISTINCT FROM OLD.fate THEN
+        IF NEW.fate_decided_at IS NOT NULL THEN
+            RAISE EXCEPTION USING ERRCODE='LW015',
+                MESSAGE='A loan states the fate that was decided and never the instant',
+                DETAIL=NEW.fate;
+        END IF;
+        NEW.fate_decided_at := now();
+    ELSIF NEW.fate_decided_at IS DISTINCT FROM OLD.fate_decided_at THEN
+        RAISE EXCEPTION USING ERRCODE='LW015',
+            MESSAGE='A loan states the fate that was decided and never the instant',
             DETAIL=OLD.fate;
     END IF;
     RETURN NEW;

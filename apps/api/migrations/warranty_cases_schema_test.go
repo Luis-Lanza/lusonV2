@@ -81,6 +81,10 @@ func TestWarrantyCasesStructure(t *testing.T) {
 		"given_at timestamptz NOT NULL DEFAULT now()",
 		"fate text NOT NULL DEFAULT 'open'",
 		"CHECK (fate IN ('open','returned','kept_by_customer','failed','lost'))",
+		// The instant of the fate: an open loan carries no date and a decided one carries it, and
+		// the date is the database's, so a returned battery can be put back in its own window (S17).
+		"fate_decided_at timestamptz",
+		"CHECK ((fate = 'open') = (fate_decided_at IS NULL))",
 		"given_by_account_id integer NOT NULL REFERENCES auth_accounts(id)",
 		"PRIMARY KEY (case_id, loan_ordinal)",
 
@@ -100,6 +104,7 @@ func TestWarrantyCasesStructure(t *testing.T) {
 		"CREATE INDEX warranty_cases_phase_queue ON warranty_cases(phase, id)",
 		"CREATE INDEX warranty_cases_claimed_serial ON warranty_cases(upper(btrim(serial_number)))",
 		"CREATE INDEX warranty_case_loans_by_given_at ON warranty_case_loans(given_at DESC)",
+		"CREATE INDEX warranty_case_loans_by_return ON warranty_case_loans(source_location_id, fate_decided_at)",
 		"CREATE INDEX warranty_case_events_by_case ON warranty_case_events(case_id, event_ordinal)",
 
 		// Every rule of the vertical is the database's, in triggers of its own.
@@ -196,6 +201,14 @@ func TestWarrantyCasesGuards(t *testing.T) {
 		// A loan is frozen except for its fate, and a decided fate is final (S7).
 		"RAISE EXCEPTION USING ERRCODE='LW011'",
 		"IF OLD.fate <> 'open' AND NEW.fate IS DISTINCT FROM OLD.fate THEN",
+		// The instant of the fate is nobody's statement but the database's, in both directions: a
+		// loan that keeps its fate cannot move the date, and a fate that leaves open cannot arrive
+		// with one (S17).
+		"IF NEW.fate IS DISTINCT FROM OLD.fate THEN",
+		"IF NEW.fate_decided_at IS NOT NULL THEN",
+		"NEW.fate_decided_at := now();",
+		"ELSIF NEW.fate_decided_at IS DISTINCT FROM OLD.fate_decided_at THEN",
+		"RAISE EXCEPTION USING ERRCODE='LW015'",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("the warranty case guard is incomplete: missing %s", required)
@@ -210,7 +223,7 @@ func TestWarrantyCasesGuards(t *testing.T) {
 	}
 	declared := []string{
 		"LW001", "LW002", "LW003", "LW004", "LW005", "LW006", "LW007",
-		"LW008", "LW009", "LW010", "LW011", "LW012", "LW013", "LW014",
+		"LW008", "LW009", "LW010", "LW011", "LW012", "LW013", "LW014", "LW015",
 	}
 	got := make([]string, 0, len(used))
 	for code := range used {
@@ -557,6 +570,81 @@ func TestWarrantyCasesLoansAndJourneyOnALiveDatabase(t *testing.T) {
 	if used := warrantyRowCount(t, ctx, p, "purchase_used_lines"); used != 0 {
 		t.Fatalf("the vertical buys no used battery of its own, got %d lines", used)
 	}
+}
+
+// TestWarrantyCasesLoanFateIsDated proves the fact the used pool reads (S17): a loan is open and
+// undated, and the instant its fate leaves open the database records when, so a battery that came
+// back can be put back in the window it came back in. The instant is the database's in both
+// directions -- an open loan cannot state one and a decided loan cannot be undated -- and a refused
+// statement writes nothing.
+func TestWarrantyCasesLoanFateIsDated(t *testing.T) {
+	ctx, p, _ := warrantyFixture(t)
+	claim := warrantyDefect(t, ctx, p, 2, 1, 1, 2)
+	// A loan is what the counter handed over, so it is born open and undated whatever the caller
+	// states: what became of it is decided afterwards, and by then the date is the database's.
+	var (
+		ordinal   int
+		fate      string
+		decidedAt *time.Time
+	)
+	if err := p.QueryRow(ctx, `INSERT INTO warranty_case_loans(case_id,model,quantity,fate,
+ fate_decided_at,source_location_id,given_by_account_id)
+ VALUES($1,'NS60ZL',1,'kept_by_customer',now(),2,2) RETURNING loan_ordinal,fate,fate_decided_at`,
+		claim).Scan(&ordinal, &fate, &decidedAt); err != nil {
+		t.Fatalf("the loan must be admitted: %v", err)
+	}
+	if fate != "open" || decidedAt != nil {
+		t.Fatalf("a loan is born open and undated, got %s:%v", fate, decidedAt)
+	}
+	var givenAt time.Time
+	if err := p.QueryRow(ctx, `SELECT given_at FROM warranty_case_loans
+ WHERE case_id=$1 AND loan_ordinal=$2`, claim, ordinal).Scan(&givenAt); err != nil {
+		t.Fatalf("the loan could not be read: %v", err)
+	}
+	// The instant the fate leaves open, the row states when: one statement from the counter, and no
+	// date in it.
+	if _, err := p.Exec(ctx, `UPDATE warranty_case_loans SET fate='returned'
+ WHERE case_id=$1 AND loan_ordinal=$2`, claim, ordinal); err != nil {
+		t.Fatalf("a returned loan must be markable: %v", err)
+	}
+	if err := p.QueryRow(ctx, `SELECT fate,fate_decided_at FROM warranty_case_loans
+ WHERE case_id=$1 AND loan_ordinal=$2`, claim, ordinal).Scan(&fate, &decidedAt); err != nil {
+		t.Fatalf("the decided loan could not be read: %v", err)
+	}
+	if fate != "returned" || decidedAt == nil || decidedAt.Before(givenAt) {
+		t.Fatalf("a decided loan states when it was decided, got %s:%v", fate, decidedAt)
+	}
+	decided := *decidedAt
+	// The date is never the caller's, in either direction: it cannot arrive with the fate that
+	// leaves open, it cannot be stated on a loan that is still open, and it cannot be moved on a
+	// loan whose fate is already decided.
+	other := warrantyLend(t, ctx, p, claim, "NS60ZL", 1, "", 2, 2)
+	_, err := p.Exec(ctx, `UPDATE warranty_case_loans SET fate='kept_by_customer',
+ fate_decided_at=now() - interval '1 day' WHERE case_id=$1 AND loan_ordinal=$2`, claim, other)
+	execRefusalMessage(t, err, "LW015", "never the instant")
+	_, err = p.Exec(ctx, `UPDATE warranty_case_loans SET fate_decided_at=now()
+ WHERE case_id=$1 AND loan_ordinal=$2`, claim, other)
+	execRefusalMessage(t, err, "LW015", "never the instant")
+	_, err = p.Exec(ctx, `UPDATE warranty_case_loans SET fate_decided_at=now()
+ WHERE case_id=$1 AND loan_ordinal=$2`, claim, ordinal)
+	execRefusalMessage(t, err, "LW015", "never the instant")
+	// Nothing of the three refusals was written: the open loan is still open and undated, and the
+	// decided one still states the instant of its own decision.
+	if err := p.QueryRow(ctx, `SELECT fate,fate_decided_at FROM warranty_case_loans
+ WHERE case_id=$1 AND loan_ordinal=$2`, claim, other).Scan(&fate, &decidedAt); err != nil {
+		t.Fatalf("the open loan could not be read: %v", err)
+	}
+	if fate != "open" || decidedAt != nil {
+		t.Fatalf("a refused statement leaves the loan open and undated, got %s:%v", fate, decidedAt)
+	}
+	if err := p.QueryRow(ctx, `SELECT fate_decided_at FROM warranty_case_loans
+ WHERE case_id=$1 AND loan_ordinal=$2`, claim, ordinal).Scan(&decidedAt); err != nil {
+		t.Fatalf("the decided loan could not be read: %v", err)
+	}
+	if decidedAt == nil || !decidedAt.Equal(decided) {
+		t.Fatalf("the instant of a decision is never rewritten, got %v want %v", decidedAt, decided)
+	}
+	t.Logf("065: a loan is dated by the database the instant its fate leaves open")
 }
 
 // warrantyFixture is the established database fixture of this vertical: an isolated PostgreSQL

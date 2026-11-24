@@ -58,7 +58,7 @@ S23. Vocabulario congelado, para que la migración, el backend y el frontend se 
 
 T1 [S1–S22] Documento y direcciones visuales, canvas abierto y artboard elegido — route inline (diseño); done: `design/battery-warranty/` con manifest y artboards.
 T2 [S1,S2,S5,S6,S7,S9,S11,S14,S20] Migración: caso, eventos append-only, préstamos, numeración por sucursal y guardas — route delegated (worker); done: `apps/api/migrations/065_warranty_cases.sql` y `warranty_cases_schema_test.go`, commit `57d69b6`; 4/4 en PostgreSQL real y el paquete de migraciones completo en verde.
-T3 [S16,S17] Migración del sembrado de usadas en `closing_material_lines`, con cierres históricos intactos — route delegated; pendiente; riesgo item 1 y 3.
+T3 [S12,S17,S18] Migración del sembrado de usadas en `closing_material_lines`, con cierres históricos intactos — route delegated (worker); done en `808aa9d` (`066_closing_materials_used_pool.sql` y su schema test, con el esperado firmado y `apps/api/docs/closings.md` actualizado); el término "menos liquidaciones a chatarra" queda fuera porque el repositorio no registra ese hecho.
 T4 [S1,S2,S11,S16] Paquete Go del caso: validación de serial y plazo, alta de las dos entradas, transiciones y matriz de resolución — route delegated; pendiente.
 T5 [S3,S8,S14,S19,S20] Store y HTTP: rutas del caso, comprobante PDF y guardas de actor — route delegated; pendiente.
 T6 [S4,S5,S6,S7] UI sucursal: registrar el canje, elegir el préstamo y emitir el comprobante — route delegated; artboard elegido `design/battery-warranty/02-bandeja-de-casos.html` (handoff en curso); pendiente.
@@ -121,3 +121,8 @@ L14. T2 cerrada y commiteada (`57d69b6`). Evidencia del worker, que condiciona T
 - (c) Brechas que quedan para T4/T5: el grafo de transiciones (S9 hoy sólo exige que la fase cambie dentro del vocabulario congelado), la unicidad del reclamo por serial (se permite un caso nuevo si una batería ya reparada vuelve a fallar; lo que no se repite es el reclamo, y eso lo resuelve el store), y la compuerta aviso→liberación con el reparto de actores de S14/S19.
 - (d) El número persistido es `C-<location>-<correlativo>`; la forma con letra del mockup es una etiqueta de sucursal que la base no posee. La UI imprime el número persistido.
 - (e) TDD: la migración se escribió antes que su test, así que no hay RED observado en el primer paso. Sí hubo dos fallos reales durante el ciclo —un `RAISE` con `DETAIL` nulo y un código de error esperado distinto— corregidos y verificados en el fixture.
+
+L15. T3 commiteada (`808aa9d`): el esperado de usadas ahora es firmado — compras de la ventana, más las unidades que fábrica devuelve como no cubiertas, menos los préstamos otorgados; sólo un total positivo se vuelve línea. Los cierres ya creados conservan la cantidad que congelaron (probado) y el bloque de chatarra quedó idéntico a `047` (comparado término por término). Dos hallazgos:
+
+- No existe ningún documento que liquide chatarra ni que convierta una usada en chatarra. S17 nombra "menos liquidaciones a chatarra" como término y no hay hecho que leer, así que se cae del alcance: la conversión es una brecha previa a esta vertical y el cierre la absorbe como diferencia. Si el negocio la quiere, es un documento nuevo y otro slice.
+- `warranty_case_loans.fate` no llevaba fecha, así que una usada devuelta en el canje quedaba restada del pool para siempre. Como el canje exitoso devuelve siempre el préstamo, el pool habría quedado corto de forma permanente. Se corrige en el mismo slice.

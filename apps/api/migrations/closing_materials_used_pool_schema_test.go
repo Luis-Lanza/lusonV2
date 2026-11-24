@@ -14,9 +14,10 @@ import (
 // The used pool feeds the settlement (S17): 045 seeded the used sheet from the purchases of the
 // window and 047 restated that as the pending backlog at the cut, but a used battery also leaves
 // the branch when it is lent to the client of a warranty case (065) and comes back to the pool when
-// the factory refuses the claim. This version teaches the seed those two flows -- and only them, so
-// the scrap sheet is exactly the one 047 wrote -- without creating any balance of used batteries
-// (S18) and without touching a single sheet a settlement already stored.
+// the factory refuses the claim or when the client returns the loan. This version teaches the seed
+// those three flows -- and only them, so the scrap sheet is exactly the one 047 wrote -- without
+// creating any balance of used batteries (S18) and without touching a single sheet a settlement
+// already stored.
 const usedPoolMigration = "066_closing_materials_used_pool.sql"
 
 // scrapSeedBlock is the scrap half of the seed as one comparable string: from its own INSERT to the
@@ -39,7 +40,7 @@ func scrapSeedBlock(t *testing.T, sql string) string {
 }
 
 // TestClosingMaterialsUsedPoolShape reads the embedded version exactly as PostgreSQL receives it.
-// It proves the file replaces the one function 045's trigger already calls, states the four flows
+// It proves the file replaces the one function 045's trigger already calls, states the five flows
 // of the used pool and keeps the other two thirds of 047 -- the provenance marker and the scrap
 // sheet -- untouched, while installing nothing else: no table, no index, no trigger, and no
 // statement of its own that writes a row of any existing table.
@@ -75,6 +76,12 @@ func TestClosingMaterialsUsedPoolShape(t *testing.T) {
 		"FROM warranty_case_loans loan",
 		"WHERE loan.source_location_id = NEW.branch_location_id",
 		"AND loan.given_at < NEW.cut_at",
+		"SELECT loan.model AS model, -sum(loan.quantity) AS units",
+		// ...and the loan term is signed: the one that came back before the same cut is the same
+		// battery in the branch again, so it cancels its own outflow (065: `fate`, `fate_decided_at`).
+		"SELECT loan.model AS model, sum(loan.quantity) AS units",
+		"AND loan.fate = 'returned'",
+		"AND loan.fate_decided_at < NEW.cut_at",
 		// The four flows are one signed sum per model, and only a pool that holds something is a
 		// line of the sheet, exactly as 045 and 047 seed.
 		"HAVING sum(flow.units) > 0;",
@@ -119,7 +126,7 @@ func TestClosingMaterialsUsedPoolShape(t *testing.T) {
 	// what it keeps, so the next reader does not have to reconstruct any of it.
 	for _, documented := range []string{
 		"S17", "S18", "S12", "045", "047", "065", "LC020", "checksum",
-		"not_covered", "given_at", "scrap", "chatarra", "loan",
+		"not_covered", "given_at", "fate_decided_at", "returned", "scrap", "chatarra", "loan",
 	} {
 		if !strings.Contains(string(b), documented) {
 			t.Errorf("066 must document its own decision: %s", documented)
@@ -195,6 +202,78 @@ func TestClosingMaterialsUsedPoolReducesTheExpectationWithEveryLoan(t *testing.T
 		t.Fatalf("a loan must reduce the expected used pool, got %v want %v", got, want)
 	}
 	t.Logf("066: 4 NS60ZL bought - 2 lent by this branch = 2, the loan of branch 3 is branch 3's")
+}
+
+// settleLoan decides the fate of one loan the way the counter does and states the instant the
+// database stamped on it (065, S17): the pool below is never compared against a caller's date.
+func settleLoan(t *testing.T, ctx context.Context, p *pgxpool.Pool, claim int64, ordinal int,
+	fate string) time.Time {
+	t.Helper()
+	var decidedAt time.Time
+	if err := p.QueryRow(ctx, `UPDATE warranty_case_loans SET fate=$3
+ WHERE case_id=$1 AND loan_ordinal=$2 RETURNING fate_decided_at`, claim, ordinal, fate).
+		Scan(&decidedAt); err != nil {
+		t.Fatalf("the loan %d of the case must be markable as %s: %v", ordinal, fate, err)
+	}
+	if decidedAt.IsZero() {
+		t.Fatal("a decided loan states when it was decided (065)")
+	}
+	return decidedAt
+}
+
+// TestClosingMaterialsUsedPoolAddsBackTheReturnedLoan proves the fifth flow of S17 on a live
+// database: a loan the client gave back before the cut is a battery in the branch again, so its own
+// outflow is undone, while the loan still in the hands of a client keeps subtracting.
+func TestClosingMaterialsUsedPoolAddsBackTheReturnedLoan(t *testing.T) {
+	ctx, p := usedPoolFixture(t, 66)
+	earlierSettlement(t, ctx, p)
+	buyUsed(t, ctx, p, "used-pool-back-01", "NS60ZL", 4, "10.00", "40.00")
+	claim := warrantyDefect(t, ctx, p, 2, 1, 1, 2)
+	// Two of the four leave the branch and come back before the cut; one more leaves and has not
+	// come back yet, so it is still out of the pool at the cut.
+	back := warrantyLend(t, ctx, p, claim, "NS60ZL", 2, "", 2, 2)
+	warrantyLend(t, ctx, p, claim, "NS60ZL", 1, "", 2, 2)
+	settleLoan(t, ctx, p, claim, back, "returned")
+	closing := openSettlement(t, ctx, p, 2)
+	// Four bought, three lent and two of those returned: the pool holds three, never one.
+	want := []string{"used:NS60ZL:3.000:-"}
+	if got := materialSheet(t, ctx, p, closing); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("a returned loan must add its units back to the pool, got %v want %v", got, want)
+	}
+	t.Logf("066: 4 NS60ZL bought - 3 lent + 2 returned = 3")
+}
+
+// TestClosingMaterialsUsedPoolKeepsEverySettledLoanSubtracted proves the other half of the same rule
+// on a live database: a loan kept by the client, marked failed or lost never comes back to the
+// branch, so it stays subtracted and only the returned one is undone (S17).
+func TestClosingMaterialsUsedPoolKeepsEverySettledLoanSubtracted(t *testing.T) {
+	ctx, p := usedPoolFixture(t, 66)
+	earlierSettlement(t, ctx, p)
+	buyUsed(t, ctx, p, "used-pool-settled-01", "NS60ZL", 4, "10.00", "40.00")
+	claim := warrantyDefect(t, ctx, p, 2, 1, 1, 2)
+	kept := warrantyLend(t, ctx, p, claim, "NS60ZL", 1, "", 2, 2)
+	failed := warrantyLend(t, ctx, p, claim, "NS60ZL", 1, "", 2, 2)
+	lost := warrantyLend(t, ctx, p, claim, "NS60ZL", 1, "", 2, 2)
+	back := warrantyLend(t, ctx, p, claim, "NS60ZL", 1, "", 2, 2)
+	for _, decision := range []struct {
+		ordinal int
+		fate    string
+	}{
+		{kept, "kept_by_customer"},
+		{failed, "failed"},
+		{lost, "lost"},
+		{back, "returned"},
+	} {
+		settleLoan(t, ctx, p, claim, decision.ordinal, decision.fate)
+	}
+	closing := openSettlement(t, ctx, p, 2)
+	// Four bought and four lent, and only one of them came back: the pool holds one, so a fate that
+	// never returns is never added back.
+	want := []string{"used:NS60ZL:1.000:-"}
+	if got := materialSheet(t, ctx, p, closing); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("a kept, failed or lost loan stays subtracted, got %v want %v", got, want)
+	}
+	t.Logf("066: 4 bought - 4 lent + 1 returned = 1; kept, failed and lost never come back")
 }
 
 // TestClosingMaterialsUsedPoolCountsTheFactoryReturns proves the other inflow of S17 on a live
