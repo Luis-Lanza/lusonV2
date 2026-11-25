@@ -938,3 +938,25 @@ func TestWarrantyCasePendingOverPostgreSQL(t *testing.T) {
 	f.refused(t, f.request(2, "POST", "/api/warranty-cases/counts", ""), 405, "method_not_allowed")
 	f.refused(t, f.request(0, "GET", "/api/warranty-cases/counts", ""), 401, "unauthenticated")
 }
+
+// TestWarrantyFailureOfAnUndecidedLoan pins the mapping of S32: the refusal of a case that would close
+// with an undecided loan is one status and one stable code, and it is not the one of a loan that is
+// born open, which is the counter's own mistake.
+func TestWarrantyFailureOfAnUndecidedLoan(t *testing.T) {
+	w := httptest.NewRecorder()
+	warrantyFailure(w, warrantycase.ErrCaseHasOpenLoan)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("an undecided loan is a conflict, got %d %s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["error"] != "loan_fate_open" {
+		t.Fatalf("the refusal carries its own code: %s", w.Body.String())
+	}
+	// The loan that is born open keeps its own refusal, so one code never answers two questions.
+	w = httptest.NewRecorder()
+	warrantyFailure(w, warrantycase.ErrLoanFateOpen)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil ||
+		w.Code != http.StatusBadRequest || body["error"] != "loan_fate_required" {
+		t.Fatalf("a loan born open keeps its own refusal: %d %s", w.Code, w.Body.String())
+	}
+}

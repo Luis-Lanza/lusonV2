@@ -113,6 +113,13 @@ func TestACaseBoundForStockClosesWithItsRelease(t *testing.T) {
 		t.Fatalf("a notice writes no stock: %d became %d", shelf, got)
 	}
 
+	// The branch decides the fate of the lent battery, because the release that closes the case only
+	// refuses to close while one is open: it never decides it (S32).
+	if _, err := f.store.DecideLoan(f.ctx, f.actor(2), claim.ID, 1,
+		warrantycase.LoanKeptByCustomer); err != nil {
+		t.Fatalf("the branch decides the fate of the loan of its case: %v", err)
+	}
+
 	// The warehouse's release is the act that closes the case and the one that sells the unit (S13,
 	// S14, S31).
 	released, err := f.store.AuthorizeRelease(f.ctx, f.actor(1), claim.ID, "El cliente no la retira")
@@ -133,9 +140,9 @@ func TestACaseBoundForStockClosesWithItsRelease(t *testing.T) {
 	if got := f.existing(t, 1, 1); got != 10 {
 		t.Fatalf("the release moves the shelf of the case's branch only: %s", f.balances(t))
 	}
-	// The loan is the counter's business and the release is not a delivery: the used battery stays
-	// exactly where the client left it (S7, S31).
-	if len(released.Loans) != 1 || released.Loans[0].Fate != warrantycase.LoanOpen {
+	// The loan is the counter's business and the release is not a delivery: the fate the branch stated
+	// is exactly the one the release finds, and it is never rewritten (S7, S32).
+	if len(released.Loans) != 1 || released.Loans[0].Fate != warrantycase.LoanKeptByCustomer {
 		t.Fatalf("a release settles no loan: %+v", released.Loans)
 	}
 	// The case is released once and it is closed, so nothing else closes or delivers it again.

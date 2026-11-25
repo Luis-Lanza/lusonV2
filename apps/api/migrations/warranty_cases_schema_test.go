@@ -32,6 +32,11 @@ const usedModelMigration = "072_used_loan_requires_known_model.sql"
 // branch may sell the battery.
 const unitDestinedToStockMigration = "073_unit_destined_to_stock_is_released.sql"
 
+// The release that closes a case and states nothing about the loans of that case (S32): while one of
+// them is still `open` the used pool is derived from a fact nobody stated, so the release refuses to
+// close the case and asks the branch to decide.
+const decidedLoansMigration = "074_release_requires_decided_loans.sql"
+
 // TestWarrantyCasesStructure reads the embedded version exactly as PostgreSQL receives it and
 // asserts the shape it installs: the case with its two exclusive entry doors, the loans with no
 // identity but a model and a quantity, and the append-only history of the journey.
@@ -254,7 +259,8 @@ func TestWarrantyCasesGuards(t *testing.T) {
 		if !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() == warrantyCaseMigration ||
 			entry.Name() == writeOffMigration || entry.Name() == noticeReleaseMigration ||
 			entry.Name() == stockResolutionMigration || entry.Name() == usedStockMigration ||
-			entry.Name() == usedModelMigration || entry.Name() == unitDestinedToStockMigration {
+			entry.Name() == usedModelMigration || entry.Name() == unitDestinedToStockMigration ||
+			entry.Name() == decidedLoansMigration {
 			continue
 		}
 		version, err := migrations.Files.ReadFile(entry.Name())
@@ -1020,4 +1026,219 @@ func requireRowViolation(t *testing.T, err error) {
 	if !errors.As(err, &violation) || violation.Code != "23514" {
 		t.Fatalf("the shape of the row must refuse this statement, got %v", err)
 	}
+}
+
+// TestReleaseRequiresDecidedLoansShape reads the embedded version exactly as PostgreSQL receives it:
+// it proves the file restates the two functions of 073 forward -- the guard unchanged and the release
+// with one refusal more -- so every guard of the version it narrows keeps one single authority, and
+// that the only write it keeps is the balance update of the release itself (S32).
+func TestReleaseRequiresDecidedLoansShape(t *testing.T) {
+	b, err := migrations.Files.ReadFile(decidedLoansMigration)
+	if err != nil {
+		t.Fatal("the decided loans migration must be embedded", err)
+	}
+	sql := statements(string(b))
+	for _, required := range []string{
+		// 073's guard is restated whole and untouched: LW025 and LW035 keep the paths they had.
+		"CREATE OR REPLACE FUNCTION admit_warranty_case_event() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"ELSIF NEW.kind='release' AND warranty_case_unit_bound_for_stock(header) THEN",
+		"RAISE EXCEPTION USING ERRCODE='LW035',",
+		"IF NEW.kind='phase' AND NEW.phase='closed' AND warranty_case_unit_bound_for_stock(header) THEN",
+		// The release is restated whole beside it, with 073's guards and its one refusal of its own.
+		"CREATE OR REPLACE FUNCTION release_case_unit_to_stock() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"RAISE EXCEPTION USING ERRCODE='LW024',",
+		"RAISE EXCEPTION USING ERRCODE='LW025',",
+		"IF warranty_case_unit_bound_for_stock(header)",
+		"AND EXISTS (SELECT 1 FROM warranty_case_loans loan",
+		"WHERE loan.case_id=header.id AND loan.fate='open') THEN",
+		"RAISE EXCEPTION USING ERRCODE='LW036',",
+		"MESSAGE='A case does not close with an undecided loan',",
+		// The one write of the release is the one it already had.
+		"UPDATE inventory_balances SET existing=existing+1",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("the release of a case with an undecided loan is incomplete: missing %s", required)
+		}
+	}
+	// The fate of a loan is the branch's fact and never the release's: this version only refuses to
+	// close the case, it decides nothing (S32).
+	for _, forbidden := range []string{
+		"UPDATE warranty_case_loans", "INSERT INTO warranty_case_loans",
+		"CREATE TABLE", "ALTER TABLE", "CREATE TRIGGER", "DROP ",
+		"INSERT INTO inventory_balances", "INSERT INTO stock_", "INSERT INTO transfer_",
+		"DELETE FROM", "TRUNCATE",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("the release of a case with an undecided loan must not contain %s", forbidden)
+		}
+	}
+	if count := strings.Count(sql, "UPDATE "); count != 1 {
+		t.Fatalf("the release writes one balance update and nothing else, got %d updates", count)
+	}
+	// It restates what it narrows and states one new number, which is the vertical's next one (S23).
+	used := map[string]bool{}
+	for _, match := range regexp.MustCompile(`ERRCODE='(LW[0-9]{3})'`).FindAllStringSubmatch(sql, -1) {
+		used[match[1]] = true
+	}
+	declared := []string{"LW006", "LW007", "LW008", "LW019", "LW020", "LW021", "LW022",
+		"LW023", "LW024", "LW025", "LW026", "LW030", "LW031", "LW035", "LW036"}
+	got := make([]string, 0, len(used))
+	for code := range used {
+		got = append(got, code)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != strings.Join(declared, ",") {
+		t.Fatalf("the release restates the codes it narrows and states its own, got %v", got)
+	}
+	// The file documents the decision it takes, so the next reader does not reconstruct it.
+	for _, documented := range []string{
+		"S32", "S31", "S14", "068", "071", "073", "LW036", "loan", "fate",
+		"inventory_balances", "open",
+	} {
+		if !strings.Contains(string(b), documented) {
+			t.Errorf("074 must document its own decision: %s", documented)
+		}
+	}
+}
+
+// TestReleaseWithAnUndecidedLoanOnALiveDatabase proves S32 on the admitted fixture: the release that
+// closes a case whose unit is bound for stock is refused with LW036 while one of its loans is still
+// `open`, and the refusal writes nothing at all -- not the event, not a fate, not a balance row. Once
+// the branch decides, the release closes the case exactly as 073 states it, and a case with no loan
+// at all keeps releasing, which is the behaviour this version must not move.
+func TestReleaseWithAnUndecidedLoanOnALiveDatabase(t *testing.T) {
+	ctx, p := decidedLoansFixture(t)
+	claim := stockBoundClaimWithALoan(t, ctx, p, "UNDECIDED/1")
+	shelf := unitShelf(t, ctx, p, 2, 1)
+	before := releaseState(t, ctx, p, claim)
+	// The case is closed by its release and the release states nothing about the loan of the case, so
+	// the release refuses and nobody is ever told to decide: the refusal is the ask (S32).
+	_, err := p.Exec(ctx, releaseSQL, claim, "closed", 1, "El cliente no la retira")
+	execRefusalMessage(t, err, "LW036", "undecided loan")
+	if got := releaseState(t, ctx, p, claim); got != before {
+		t.Fatalf("a refused release writes nothing: %s became %s", before, got)
+	}
+	if phase := warrantyPhase(t, ctx, p, claim); phase != "resolved" {
+		t.Fatalf("a refused release leaves the case resolved, got %s", phase)
+	}
+	if got := unitShelf(t, ctx, p, 2, 1); got != shelf {
+		t.Fatalf("a refused release writes no stock: %d became %d", shelf, got)
+	}
+	// The fate is the branch's decision and the release never takes it: with the loan still open a
+	// second release is refused the same way, and nothing about the loan moves.
+	_, err = p.Exec(ctx, releaseSQL, claim, "closed", 1, "El cliente no la retira")
+	execRefusalMessage(t, err, "LW036", "undecided loan")
+	// The branch decides, and then the release closes the case and sells its unit exactly as before.
+	settleLoan(t, ctx, p, claim, 1, "kept_by_customer")
+	decided := releaseState(t, ctx, p, claim)
+	if _, err := p.Exec(ctx, releaseSQL, claim, "closed", 1, "El cliente no la retira"); err != nil {
+		t.Fatalf("a case whose loans are all decided is released: %v", err)
+	}
+	if phase := warrantyPhase(t, ctx, p, claim); phase != "closed" {
+		t.Fatalf("the release of a case bound for stock closes it, got %s", phase)
+	}
+	if got := unitShelf(t, ctx, p, 2, 1); got != shelf+1 {
+		t.Fatalf("the released unit is sellable stock: %d became %d", shelf, got)
+	}
+	if got := releaseState(t, ctx, p, claim); got == decided {
+		t.Fatalf("the admitted release appends its event, got %s", got)
+	}
+	// The behaviour this version must not move: a case with no loan at all releases as it always did.
+	plain := coveredClaim(t, ctx, p)
+	reachedResolved(t, ctx, p, plain)
+	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='repaired',
+ reported_destination='stock',loan_destination='customer' WHERE id=$1`, plain); err != nil {
+		t.Fatalf("the resolution of the second claim could not be stated: %v", err)
+	}
+	if _, err := p.Exec(ctx, noticeSQL, plain, "resolved", 2, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch registers the notice of the second claim: %v", err)
+	}
+	if _, err := p.Exec(ctx, releaseSQL, plain, "closed", 1, "El cliente no la retira"); err != nil {
+		t.Fatalf("a case with no loan is released: %v", err)
+	}
+	if phase := warrantyPhase(t, ctx, p, plain); phase != "closed" {
+		t.Fatalf("the release of the second case closes it, got %s", phase)
+	}
+	t.Logf("074: the release refuses to close a case with an undecided loan and decides nothing")
+}
+
+// stockBoundClaimWithALoan opens the claim of a usable unit destined to the branch's shelf and hands
+// the client a used battery the branch really holds (S4, S25, S31): the case the release of S32 is
+// about, with the loan still `open`.
+func stockBoundClaimWithALoan(t *testing.T, ctx context.Context, p *pgxpool.Pool, serial string) int64 {
+	t.Helper()
+	claim := coveredClaim(t, ctx, p)
+	reachedResolved(t, ctx, p, claim)
+	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='repaired',
+ reported_destination='stock',loan_destination='customer' WHERE id=$1`, claim); err != nil {
+		t.Fatalf("the resolution of the claim could not be stated: %v", err)
+	}
+	buyUsed(t, ctx, p, "decided-loans-claim-01", "NS60L", 1, "10.00", "10.00")
+	warrantyLend(t, ctx, p, claim, "NS60L", 1, "", 2, 2)
+	if _, err := p.Exec(ctx, noticeSQL, claim, "resolved", 2, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch registers the notice of the claim: %v", err)
+	}
+	return claim
+}
+
+// unitShelf is the sellable stock of one variant at one location, which is the one row a release
+// moves.
+func unitShelf(t *testing.T, ctx context.Context, p *pgxpool.Pool, location, variant int) int64 {
+	t.Helper()
+	var existing int64
+	if err := p.QueryRow(ctx, `SELECT existing FROM inventory_balances
+ WHERE location_id=$1 AND variant_id=$2`, location, variant).Scan(&existing); err != nil {
+		t.Fatalf("the shelf of %d/%d could not be read: %v", location, variant, err)
+	}
+	return existing
+}
+
+// releaseState is everything a release may touch, in one comparable string: the facts of the case, the
+// fates of its loans, the size of its history and the whole stock matrix, so a refused release proves
+// it moved nothing at all (S32).
+func releaseState(t *testing.T, ctx context.Context, p *pgxpool.Pool, claim int64) string {
+	t.Helper()
+	var phase, verdict, reported, loanDestination string
+	var events int
+	if err := p.QueryRow(ctx, `SELECT header.phase,coalesce(header.verdict,''),
+  coalesce(header.reported_destination,''),coalesce(header.loan_destination,''),
+  (SELECT count(*) FROM warranty_case_events event WHERE event.case_id=header.id)
+ FROM warranty_cases header WHERE header.id=$1`, claim).
+		Scan(&phase, &verdict, &reported, &loanDestination, &events); err != nil {
+		t.Fatalf("the case of the release could not be read: %v", err)
+	}
+	rows, err := p.Query(ctx, `SELECT loan_ordinal,model,quantity,fate,
+  coalesce(fate_decided_at::text,'') FROM warranty_case_loans
+ WHERE case_id=$1 ORDER BY loan_ordinal`, claim)
+	if err != nil {
+		t.Fatalf("the loans of the case could not be read: %v", err)
+	}
+	defer rows.Close()
+	loans := make([]string, 0, 2)
+	for rows.Next() {
+		var ordinal, quantity int
+		var model, fate, decided string
+		if err := rows.Scan(&ordinal, &model, &quantity, &fate, &decided); err != nil {
+			t.Fatalf("a loan of the case could not be read: %v", err)
+		}
+		loans = append(loans, fmt.Sprintf("%d:%s:%d:%s:%s", ordinal, model, quantity, fate, decided))
+	}
+	if rows.Err() != nil {
+		t.Fatalf("the loans of the case could not be read: %v", rows.Err())
+	}
+	return fmt.Sprintf("%s|%s|%s|%s|events=%d|loans=%s|%s", phase, verdict, reported,
+		loanDestination, events, strings.Join(loans, ","), writeOffBalances(t, ctx, p))
+}
+
+// decidedLoansFixture is the whole prefix of this vertical, the accounts, the branch stock, the fund
+// and the price a claim with a lent battery needs, applied up to this version so the release it tests
+// is the one 074 installs.
+func decidedLoansFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
+	t.Helper()
+	ctx, p := usedPoolFixture(t, 74)
+	if _, err := p.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,
+ suggested_price,updated_by_account_id) VALUES(2,1,0.01,100.00,1)`); err != nil {
+		t.Fatal("the branch prices could not be configured")
+	}
+	return ctx, p
 }

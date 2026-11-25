@@ -238,6 +238,10 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 	// and the delivery asserts a handover that did not happen (S31).
 	case errors.Is(err, warrantycase.ErrUnitBelongsToStock):
 		failure(w, 409, "unit_belongs_to_stock")
+	// The release that closes the case is refused while a loan of it is still undecided (S32): the
+	// branch decides the fate, and the release only asks for it.
+	case errors.Is(err, warrantycase.ErrCaseHasOpenLoan):
+		failure(w, 409, "loan_fate_open")
 	default:
 		failure(w, 503, "service_unavailable")
 	}

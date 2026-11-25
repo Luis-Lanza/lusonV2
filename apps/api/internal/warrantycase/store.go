@@ -1176,6 +1176,11 @@ func mapFailure(ctx context.Context, err error) error {
 	// would close the case, so a refused delivery leaves no event, no loan fate and no balance.
 	case "LW035":
 		return ErrUnitBelongsToStock
+	// LW036: the release that closes a case whose unit is bound for stock refuses to close while one of
+	// its loans is still undecided (S32). The refusal is the ask: the branch decides the fate, and the
+	// release neither writes it nor guesses it.
+	case "LW036":
+		return ErrCaseHasOpenLoan
 	// LW022, LW023 and LW026: the actor split of S14 and S19 -- the notice and the delivery are the
 	// branch's, the release is the warehouse's.
 	case "LW022", "LW023", "LW026":

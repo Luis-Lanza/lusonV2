@@ -394,6 +394,10 @@ of the case's branch, and it is the mirror of the write-off of a finding:
   `replaced` **closes the case**: the factory gave a usable battery back that the client never came to
   collect, so it is the branch's sellable stock and it never leaves with anyone. That release states
   the `closed` it writes, and the answer of the route carries the closed case.
+* A case does not close with an undecided loan: while one of its loans is still `open`, that release is
+  `409 loan_fate_open` (`LW036`) and writes nothing. The used pool is derived from the fate of every
+  loan, so closing without it leaves the unit counted in the wrong place for ever. The release does not
+  decide the loan fate, it refuses to close while one is open; the branch decides it.
 
 ```
 POST /api/warranty-cases/1/delivery
@@ -446,6 +450,7 @@ because it has no client and its units came back at its resolution.
 | 409 | `already_released` | The notice or the release of this case was already recorded |
 | 409 | `nothing_to_release` | The case holds no unit: its battery never came back as a sellable unit |
 | 409 | `unit_belongs_to_stock` | The unit of the case is the branch's sellable stock: the release sells it and closes the case, and the delivery never does |
+| 409 | `loan_fate_open` | The release would close the case while one of its loans is still undecided: the branch decides the fate first, and the release never decides it |
 | 409 | `loan_fate_final` | A decided loan fate is final |
 | 409 | `loan_model_unknown` | The model of the loan is one the used pool never saw; the closed list is the one the flows state |
 | 409 | `loan_source_stock` | The origin of the loan does not hold the requested model, or another loan already took the last unit |

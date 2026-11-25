@@ -151,6 +151,12 @@ var (
 	// that did not happen. That unit enters sellable stock through the release the warehouse
 	// authorises, and the release is the act that closes the case.
 	ErrUnitBelongsToStock = errors.New("the unit of the case belongs to stock and is released, not delivered")
+
+	// ErrCaseHasOpenLoan is the refusal of a release that would close a case while one of its loans is
+	// still undecided (S32, LW036). The used pool is derived from the fate of every loan, so closing
+	// with one open leaves that unit counted in the wrong place for ever. The release never decides
+	// that fate -- the branch does -- it only refuses to close until none is missing.
+	ErrCaseHasOpenLoan = errors.New("the case has an open loan and does not close")
 )
 
 // PhaseRefusal names the two phases of a refused transition, so a caller can point at the
