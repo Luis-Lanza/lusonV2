@@ -191,11 +191,11 @@ describe('the branch guarantee tray', () => {
     });
     renderScreen(h);
     fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
-    const fate = await screen.findByLabelText('Préstamo 1 · NS60L · 1 unidad');
-    // Nothing is stated by accident: the fate starts unanswered and its button waits for it.
-    expect(screen.getByRole('button', { name: 'Registrar desenlace' })).toBeDisabled();
-    fireEvent.change(fate, { target: { value: 'failed' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Registrar desenlace' }));
+    // The fate is stated by the fact that happened, and the fact asks for confirmation first (S33).
+    await screen.findByText('Desenlace: sin decidir · se pide al cerrar el caso');
+    fireEvent.click(screen.getByRole('button', { name: 'La usada falló' }));
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Confirmar el desenlace del préstamo 1' }))
+      .getByRole('button', { name: 'Sí, registrar el desenlace' }));
     await screen.findByText(/Préstamo 1 de C-2-000002: falló/);
     expect(h.posts()[0].url).toBe('/api/warranty-cases/2/loans/1/fate');
     expect(JSON.parse(String(h.posts()[0].init.body))).toEqual({ fate: 'failed' });
@@ -406,6 +406,157 @@ describe('the destination of the unit decides the act that closes the case (S31)
     expect(screen.queryByText(/Canje entregado/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Entregar canje' })).toBeEnabled();
     expect(h.posts()).toHaveLength(1);
+  });
+});
+
+describe('the fate of a lent battery is registered by the fact that happened (S33)', () => {
+  // The four facts the counter can state, each one its own act and its own fate.
+  const loanFacts = [
+    ['La usada falló', 'failed'],
+    ['El cliente la devolvió', 'returned'],
+    ['El cliente se la quedó', 'kept_by_customer'],
+    ['Se perdió', 'lost'],
+  ] as const;
+  const undecided = 'Desenlace: sin decidir · se pide al cerrar el caso';
+  const confirmation = () => screen.findByRole('group', { name: 'Confirmar el desenlace del préstamo 1' });
+  const openCase = (loans: readonly unknown[]) => harness((url, init) => {
+    if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+    if (url === '/api/warranty-cases/2') return json({ ...resolvedCase(), loans });
+    if (url === '/api/sales/12') return json(saleBody);
+    if (url === '/api/warranty-cases/2/loans/1/fate' && init.method === 'POST') {
+      return json(loan({ fate: 'failed', fate_decided_at: '2026-03-20T13:00:00Z' }));
+    }
+    return undefined;
+  });
+
+  it('states each open loan as undecided and offers the four facts, never a dropdown (S33)', async () => {
+    const h = openCase([loan()]);
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    // The state line says what the stage is: the answer is not owed at the counter, it is asked on closing.
+    expect(await screen.findByText(undecided)).toBeInTheDocument();
+    // There is no field to leave empty and no button waiting behind a placeholder.
+    expect(screen.queryByRole('combobox', { name: /Préstamo 1/ })).toBeNull();
+    expect(screen.queryByText('Elegí el desenlace')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Registrar desenlace' })).toBeNull();
+    for (const [fact] of loanFacts) expect(screen.getByRole('button', { name: fact })).toBeEnabled();
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it('asks for confirmation before writing and sends nothing when the counter cancels (S33)', async () => {
+    const h = openCase([loan()]);
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'La usada falló' }));
+    // The confirmation says the decision is final: a decided fate is never rewritten (LW012).
+    const asked = await confirmation();
+    expect(asked).toHaveTextContent('La usada falló: el desenlace es definitivo y no se puede editar.');
+    expect(h.posts()).toHaveLength(0);
+    // Cancelling writes nothing and gives the four facts back.
+    fireEvent.click(within(asked).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'Confirmar el desenlace del préstamo 1' })).toBeNull());
+    expect(screen.getByText(undecided)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'La usada falló' })).toBeEnabled();
+    // Forcing the panel to submit changes nothing either: the fate is only written by its own fact.
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it.each(loanFacts)('registers the fact %s as the fate %s once confirmed (S33)', async (fact, fate) => {
+    const settled = loan({ fate, fate_decided_at: '2026-03-20T13:00:00Z' });
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(resolvedCase());
+      if (url === '/api/sales/12') return json(saleBody);
+      if (url === '/api/warranty-cases/2/loans/1/fate' && init.method === 'POST') return json(settled);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    fireEvent.click(await screen.findByRole('button', { name: fact }));
+    const asked = await confirmation();
+    expect(h.posts()).toHaveLength(0);
+    fireEvent.click(within(asked).getByRole('button', { name: 'Sí, registrar el desenlace' }));
+    await screen.findByText(/Préstamo 1 de C-2-000002/);
+    const posts = h.posts();
+    expect(posts).toHaveLength(1);
+    expect(posts[0].url).toBe('/api/warranty-cases/2/loans/1/fate');
+    expect((posts[0].init.headers as Record<string, string>)['X-CSRF-Token']).toBe(csrf);
+    expect(JSON.parse(String(posts[0].init.body))).toEqual({ fate });
+    // The fate is stated on the loan and no longer offered as an act.
+    await waitFor(() => expect(screen.queryByRole('button', { name: fact })).toBeNull());
+    expect(screen.queryByText(undecided)).toBeNull();
+  });
+
+  it('keeps the decided fate of a loan and offers no action to rewrite it (S33)', async () => {
+    const decided = loan({ fate: 'returned', fate_decided_at: '2026-03-10T12:00:00Z' });
+    const h = openCase([decided]);
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    // The loan states what became of it, and nothing offers to state it again.
+    expect(await screen.findByText('Devuelta al canjear')).toBeInTheDocument();
+    expect(screen.queryByText(undecided)).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Desenlace de la usada' })).toBeNull();
+    for (const [fact] of loanFacts) expect(screen.queryByRole('button', { name: fact })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Registrar desenlace' })).toBeNull();
+    expect(h.posts()).toHaveLength(0);
+  });
+});
+
+describe('the branch actions follow their dependency (S34)', () => {
+  it('lists the loan before the departure it unblocks (S34)', async () => {
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') return tray([row()]);
+      if (url === '/api/warranty-cases/1') return json(receivedCase({ loans: [loan()] }));
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000001' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    const titles = screen.getAllByRole('heading', { level: 4 }).map(node => node.textContent);
+    // What is missing comes first; the departure it unblocks comes after.
+    expect(titles).toContain('Prestar otra usada');
+    expect(titles.indexOf('Prestar otra usada')).toBeLessThan(titles.indexOf('Sale de la sucursal'));
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it('keeps every other branch action where it was (S34)', async () => {
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(resolvedCase({ noticed: false }));
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    const titles = screen.getAllByRole('heading', { level: 4 }).map(node => node.textContent);
+    // The notice the branch owes and the delivery it closes with keep their order after the loan.
+    expect(titles.indexOf('Prestar otra usada')).toBeLessThan(titles.indexOf('Avisar al cliente'));
+    expect(titles.indexOf('Avisar al cliente')).toBeLessThan(titles.indexOf('Entregar el canje'));
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it('confirms the opened case in a neutral notice, never as an alert (S34)', async () => {
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([]);
+      if (url === '/api/warranty-cases/claims' && init.method === 'POST') return json(receivedCase(), 201);
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar canje' }));
+    fireEvent.change(screen.getByLabelText('Número de serie de la batería reclamada'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Qué falló'), { target: { value: 'No arranca el motor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Buscar la venta y abrir el caso' }));
+    const dialog = await screen.findByRole('dialog');
+    const notice = await within(dialog).findByText('Caso C-2-000001 abierto por la serie ABC123.');
+    // A good news is announced as a status, in the confirmation style, not in the colour of a problem.
+    expect(notice).toHaveAttribute('role', 'status');
+    expect(notice).toHaveClass('warranty-confirm');
+    expect(notice).not.toHaveClass('warranty-problem');
+    expect(notice).not.toHaveClass('warranty-dialog-case');
+    expect(within(dialog).queryByRole('alert')).toBeNull();
   });
 });
 
