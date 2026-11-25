@@ -112,6 +112,8 @@ T18 [S31] La sucursal deja de reafirmar el par destino+veredicto por el destino 
 
 T19 [S35 (7), (8)] El hallazgo en góndola y la entrega al cliente recorridos en el navegador — route delegated (e2e); done: `9cfbe72` (el alta del hallazgo **es** la baja y se registra en la pantalla de la sucursal; el veredicto se registra en la mesa del Almacén y es el acto que repone; el viaje no mueve nada y la reposición ocurre una sola vez, con la segunda resolución rechazada. La entrega al cliente pide el desenlace, arranca sin responder, y sin él el servidor rechaza con `400` sin escribir: el caso sigue `resolved` y el préstamo `open`. Con desenlace, el caso cierra rotulado `Entregada al cliente` y nunca `Cerrada por liberación`, sin mover stock). Suite e2e 11 tests en verde, `typecheck` en 0. Sin rojo previo a propósito: la cobertura es el entregable, no hay conducta nueva que hacer fallar.
 
+T20 [S34] La frase de la baja concuerda con la cantidad y se escribe en un solo lugar: la confirmación del alta dice «1 unidad dada de baja», no «1 unidad dadas de baja» — route delegated (pantalla); done: `warrantyUnitsWrittenOff(quantity)` en el modelo devuelve la frase entera y las dos pantallas la consumen; prueba en rojo sobre el texto visible de cada pantalla antes del arreglo. Suite web 4 727 tests, `typecheck` en 0, e2e 11 en verde contra `index-BI54QoHp.js`.
+
 ## Entrega
 
 La rama `feat/battery-warranty` no se entrega como un solo PR: al cerrar T13 medía 21 128 líneas autorizadas en 34 commits (8 042 `apps/api/internal`, 6 390 `apps/web/src`, 5 009 `apps/api/migrations`, 493 `apps/api/docs`, el resto diseño y este documento). Eso no se revisa. Se entrega como PRs encadenados, cada uno contra el anterior, en este orden de dependencia:
@@ -259,3 +261,5 @@ L45. T16, T17 y T18 en `52364e8` y `6e4f48a`. Suite web 4 723 tests, `typecheck`
 L46. User: "perfecto hagamos eso", después de la respuesta que listó las dos puertas sin navegador encima. Se extiende S35 con (7) el hallazgo en góndola y (8) la entrega al cliente, y se abre T19 para recorrerlas.
 
 L47. T19 en `9cfbe72`: once pruebas de navegador en verde y las dos puertas de la vertical recorridas. Queda anotado un defecto de copia chico que la corrida dejó a la vista: la confirmación del alta dice «1 unidad dadas de baja» para cantidad 1, por concordancia en `WarrantyCases.tsx`. No rompe nada y no está cubierto por ningún test.
+
+L48. Encontrado al revisar la copia de T19: la confirmación del alta del hallazgo dice «1 unidad dadas de baja» para cantidad 1 en las dos pantallas, porque la frase concatena un helper `units()` —duplicado en `WarrantyCases.tsx:102` y `WarehouseWarrantyCases.tsx:67`— con un participio fijo. T20.
