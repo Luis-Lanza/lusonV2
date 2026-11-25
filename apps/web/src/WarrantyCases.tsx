@@ -101,6 +101,13 @@ const locationName = (locations: readonly Location[], id: number): string =>
   locations.find(entry => entry.id === id)?.name ?? `Ubicación ${id}`;
 const units = (quantity: number): string => `${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}`;
 const days = (value: number): string => value === 1 ? '1 día' : `${value} días`;
+/**
+ * Whether the case's unit goes to sellable stock instead of leaving with the client (S31). Such a unit
+ * is never delivered: it enters the branch's stock through the release the Almacén authorises, and the
+ * server refuses the delivery of it (`409 unit_belongs_to_stock`), so the screen never offers the try.
+ */
+const unitBelongsToStock = (value: WarrantyCase): boolean =>
+  value.origin === 'warranty_claim' && value.reported_destination === 'stock';
 
 /** The battery of the claim: the line and the unit of the sale the client brought back. */
 function claimedUnit(sale: SaleDetail | null, serial: string | null) {
@@ -328,8 +335,8 @@ interface CaseDetailProps {
 
 function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, onChanged, onClose }: CaseDetailProps) {
   const [notice, setNotice] = useState({ note: '', busy: false, problem: '' });
-  const [delivery, setDelivery] = useState<{ fate: WarrantyDeliveryFate; note: string; busy: boolean; problem: string }>({
-    fate: 'returned', note: '', busy: false, problem: '',
+  const [delivery, setDelivery] = useState<{ fate: WarrantyDeliveryFate | ''; note: string; busy: boolean; problem: string }>({
+    fate: '', note: '', busy: false, problem: '',
   });
   const [dispatch, setDispatch] = useState({ note: '', busy: false, problem: '' });
   const [closing, setClosing] = useState({ note: '', busy: false, problem: '' });
@@ -358,13 +365,16 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
   }
   async function submitDelivery(event: FormEvent) {
     event.preventDefault();
-    if (delivery.busy) return;
+    // The fate of the lent battery moves the used pool's stock, so an unanswered one posts nothing: the
+    // screen never decides for the counter, and a decided fate is final (S31).
+    if (delivery.busy || delivery.fate === '') return;
+    const fate = delivery.fate;
     setDelivery(current => ({ ...current, busy: true, problem: '' }));
     try {
-      const body = canonicalDeliveryBody(delivery.fate, delivery.note);
+      const body = canonicalDeliveryBody(fate, delivery.note);
       const updated = await api.deliver(record.id, body, csrf);
-      setDelivery({ fate: 'returned', note: '', busy: false, problem: '' });
-      onChanged(updated, `Canje entregado en ${updated.case_number}: el caso queda cerrado y la usada, ${warrantyLoanFateLabels[delivery.fate].toLowerCase()}.`);
+      setDelivery({ fate: '', note: '', busy: false, problem: '' });
+      onChanged(updated, `Canje entregado en ${updated.case_number}: el caso queda cerrado y la usada, ${warrantyLoanFateLabels[fate].toLowerCase()}.`);
     } catch (failure) {
       setDelivery(current => ({ ...current, busy: false, problem: failureMessage(failure, 'No se pudo entregar el canje.') }));
     }
@@ -527,29 +537,39 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
         {notice.problem !== '' && <p className="warranty-problem" role="alert">{notice.problem}</p>}
       </form>}
 
-      {warrantyDeliveryAvailable(record) && <form className="warranty-action" onSubmit={submitDelivery}>
+      {warrantyDeliveryAvailable(record) && !unitBelongsToStock(record) && <form className="warranty-action" onSubmit={submitDelivery}>
         <h4>Entregar el canje</h4>
         <p className="warranty-note">Se entrega la batería que volvió de fábrica y el caso queda cerrado, con la usada resuelta en el mismo acto.</p>
         <label htmlFor={`delivery-fate-${record.id}`}>Qué pasó con la usada</label>
         <select id={`delivery-fate-${record.id}`} value={delivery.fate}
           onChange={event => {
             const next = event.target.value;
-            if (warrantyDeliveryFates.includes(next as WarrantyDeliveryFate)) {
-              setDelivery(current => ({ ...current, fate: next as WarrantyDeliveryFate }));
+            if (warrantyDeliveryFates.includes(next as WarrantyDeliveryFate) || next === '') {
+              setDelivery(current => ({ ...current, fate: next as WarrantyDeliveryFate | '' }));
             }
           }}>
+          <option value="">Elegí qué pasó con la usada</option>
           <option value="returned">Volvió al local</option>
           <option value="kept_by_customer">Se la quedó el cliente</option>
         </select>
         <label htmlFor={`delivery-note-${record.id}`}>Palabras del mostrador</label>
         <textarea id={`delivery-note-${record.id}`} value={delivery.note} maxLength={500} required rows={2}
           onChange={event => setDelivery(current => ({ ...current, note: event.target.value }))} />
-        <button type="submit" className="primary" disabled={delivery.busy || !warrantyLoanRegistered(record)}>Entregar canje</button>
+        <button type="submit" className="primary"
+          disabled={delivery.busy || delivery.fate === '' || !warrantyLoanRegistered(record)}>Entregar canje</button>
+        {delivery.fate === '' && <p className="warranty-reason">
+          Falta decir qué pasó con la usada prestada: ninguna pantalla elige ese desenlace por el mostrador.
+        </p>}
         {!warrantyLoanRegistered(record) && <p className="warranty-reason">
           Falta registrar la usada que se entregó al cliente: sin préstamo el canje no se cierra.
         </p>}
         {delivery.problem !== '' && <p className="warranty-problem" role="alert">{delivery.problem}</p>}
       </form>}
+
+      {unitBelongsToStock(record) && record.phase !== 'closed' && <div className="warranty-action">
+        <h4>El caso cierra con la liberación</h4>
+        <p className="warranty-note">La unidad de este caso va al stock vendible de la sucursal: no se entrega a ningún cliente. El caso queda cerrado con el aviso al cliente y la liberación que autoriza el Almacén, no con la entrega.</p>
+      </div>}
 
       {warrantyCloseAvailable(record) && <form className="warranty-action" onSubmit={submitClose}>
         <h4>Cerrar el caso</h4>

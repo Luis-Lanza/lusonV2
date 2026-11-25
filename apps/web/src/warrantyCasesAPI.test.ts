@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { WarrantyCaseAPIError, createWarrantyCasesAPI } from './warrantyCasesAPI';
+import { WarrantyCaseAPIError, createWarrantyCasesAPI, warrantyCaseErrorMessages } from './warrantyCasesAPI';
 
 const csrf = 'c'.repeat(43);
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value),
@@ -178,6 +178,14 @@ describe('the transport of the case contract', () => {
       .rejects.toMatchObject({ code: 'invalid_response' });
     await expect(createWarrantyCasesAPI(stub(json({ stock: [{ ...stockRow, available: '9' }] }))).usedStock())
       .rejects.toMatchObject({ code: 'invalid_response' });
+  });
+  it('admits the refusal of a unit that belongs to stock as its own code and message (S31)', async () => {
+    const api = createWarrantyCasesAPI(stub(failure('unit_belongs_to_stock', 409)));
+    await expect(api.deliver(1, { loan_fate: 'returned', note: 'Entregada' }, csrf))
+      .rejects.toMatchObject({ code: 'unit_belongs_to_stock', status: 409 });
+    // The message names the reason: the unit goes to stock and is released, not delivered.
+    expect(warrantyCaseErrorMessages.unit_belongs_to_stock).toBe(
+      'La unidad de este caso va al stock vendible: sale por la liberación que autoriza el Almacén, no por la entrega. No se registró nada.');
   });
   it('reports a lost connection and an aborted read as their own codes', async () => {
     const offline = createWarrantyCasesAPI(vi.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof globalThis.fetch);

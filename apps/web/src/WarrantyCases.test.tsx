@@ -298,9 +298,11 @@ describe('the branch guarantee tray', () => {
     withLoan = true;
     fireEvent.click(screen.getByRole('button', { name: 'Ver el caso C-2-000002' }));
     const enabled = await screen.findByRole('button', { name: 'Entregar canje' });
-    expect(enabled).toBeEnabled();
+    // The used battery is registered, but the counter still has to state its fate (S31).
+    expect(enabled).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Qué pasó con la usada'), { target: { value: 'kept_by_customer' } });
     fireEvent.change(screen.getByLabelText('Palabras del mostrador'), { target: { value: 'Se la quedó el cliente' } });
+    expect(enabled).toBeEnabled();
     fireEvent.click(enabled);
     await screen.findByText(/Canje entregado en C-2-000002/);
     const post = h.posts().at(-1)!;
@@ -309,6 +311,101 @@ describe('the branch guarantee tray', () => {
     // The closed case is stated in the pane and in its own tray row.
     await waitFor(() => expect(screen.getAllByText('Entregada').length).toBeGreaterThan(0));
     expect(screen.queryByRole('button', { name: 'Entregar canje' })).not.toBeInTheDocument();
+  });
+});
+
+describe('the destination of the unit decides the act that closes the case (S31)', () => {
+  it('never states the fate of the lent battery on its own: it starts unanswered and gates the delivery (S31)', async () => {
+    let delivered = false;
+    const closed = { phase: 'closed', loans: [loan({ fate: 'returned', fate_decided_at: '2026-03-20T13:00:00Z' })],
+      events: [...phasesToResolved(), event({ ordinal: 6, phase: 'closed', recorded_at: '2026-03-20T13:00:00Z' })] };
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(delivered ? { ...resolvedCase(), ...closed } : resolvedCase());
+      if (url === '/api/sales/12') return json(saleBody);
+      if (url === '/api/warranty-cases/2/delivery' && init.method === 'POST') {
+        delivered = true;
+        return json({ ...resolvedCase(), ...closed });
+      }
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    const fate = await screen.findByLabelText('Qué pasó con la usada');
+    // A fate that moves the used pool's stock is never answered by the screen: it starts unanswered.
+    expect(fate).toHaveValue('');
+    // The two fates the counter can state are the two it always offered, and no third one.
+    expect(within(fate).getAllByRole('option').map(option => option.textContent))
+      .toEqual(['Elegí qué pasó con la usada', 'Volvió al local', 'Se la quedó el cliente']);
+    fireEvent.change(screen.getByLabelText('Palabras del mostrador'), { target: { value: 'Volvió la usada' } });
+    const submit = () => screen.getByRole('button', { name: 'Entregar canje' });
+    expect(submit()).toBeDisabled();
+    // The disabled submit says why: the counter owes the fate, not the screen.
+    expect(screen.getByText(/Falta decir qué pasó con la usada prestada/)).toBeInTheDocument();
+    // Nothing is posted: not by the disabled button, and not by forcing the form to submit.
+    fireEvent.click(submit());
+    fireEvent.submit(submit().closest('form')!);
+    await waitFor(() => expect(screen.queryByText(/Canje entregado/)).toBeNull());
+    expect(h.posts()).toHaveLength(0);
+    // The moment the counter states it, the delivery states that one fate and nothing else.
+    fireEvent.change(fate, { target: { value: 'returned' } });
+    expect(submit()).toBeEnabled();
+    fireEvent.click(submit());
+    await screen.findByText(/Canje entregado en C-2-000002/);
+    expect(h.posts()).toHaveLength(1);
+    expect(h.posts()[0].url).toBe('/api/warranty-cases/2/delivery');
+    expect(JSON.parse(String(h.posts()[0].init.body))).toEqual({ loan_fate: 'returned', note: 'Volvió la usada' });
+  });
+
+  it('publishes no delivery for a unit that goes to stock, and names the release as its close (S31)', async () => {
+    // The client kept the used battery, so the unit that came back from the factory goes to sellable stock.
+    const toStock = { ...resolvedCase({ noticed: false }), reported_destination: 'stock',
+      loan_destination: 'customer' };
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(toStock);
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    // The unit enters sellable stock by the release: no client receives it, so nothing offers to hand it over.
+    expect(screen.queryByRole('button', { name: 'Entregar canje' })).toBeNull();
+    expect(screen.queryByLabelText('Qué pasó con la usada')).toBeNull();
+    expect(screen.queryByLabelText('Palabras del mostrador')).toBeNull();
+    expect(screen.getByText('A stock vendible')).toBeInTheDocument();
+    // The screen says which act closes this case instead of leaving the counter without an answer.
+    expect(screen.getByRole('heading', { name: 'El caso cierra con la liberación' })).toBeInTheDocument();
+    expect(screen.getByText(/aviso al cliente y la liberación que autoriza el Almacén/)).toBeInTheDocument();
+    // The branch's own act before that close is still offered: the notice it has not registered yet.
+    expect(screen.getByLabelText('Qué se le dijo al cliente')).toBeInTheDocument();
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it('states the refusal of a delivery whose unit belongs to stock in the contract words (S31)', async () => {
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(resolvedCase());
+      if (url === '/api/sales/12') return json(saleBody);
+      if (url === '/api/warranty-cases/2/delivery' && init.method === 'POST') {
+        return failure('unit_belongs_to_stock', 409);
+      }
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    fireEvent.change(await screen.findByLabelText('Qué pasó con la usada'), { target: { value: 'kept_by_customer' } });
+    fireEvent.change(screen.getByLabelText('Palabras del mostrador'), { target: { value: 'Se la quedó el cliente' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Entregar canje' }));
+    // The refusal is the contract's own code, with its Spanish message, never a transport error.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('La unidad de este caso va al stock vendible: sale por la liberación que autoriza el Almacén, no por la entrega. No se registró nada.');
+    expect(alert).not.toHaveTextContent('La respuesta del servidor no es válida');
+    // Nothing was closed and the attempt stays readable: the screen does not claim the delivery happened.
+    expect(screen.queryByText(/Canje entregado/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Entregar canje' })).toBeEnabled();
+    expect(h.posts()).toHaveLength(1);
   });
 });
 

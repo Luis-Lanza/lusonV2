@@ -24,7 +24,8 @@ export type WarrantyCaseErrorCode =
   | 'loan_source_stock' | 'loan_model_unknown'
   | 'claim_only' | 'transition_not_allowed' | 'resolution_required' | 'resolution_final'
   | 'resolution_matrix' | 'resolution_pending' | 'warehouse_verdict' | 'notice_required'
-  | 'already_released' | 'nothing_to_release' | 'loan_fate_final' | 'loan_fate_required' | 'no_loan'
+  | 'already_released' | 'nothing_to_release' | 'unit_belongs_to_stock'
+  | 'loan_fate_final' | 'loan_fate_required' | 'no_loan'
   | 'factory_file_required' | 'factory_file_not_allowed' | 'reason_required'
   | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
@@ -39,7 +40,7 @@ export const warrantyCaseAdmittedErrors: ReadonlyMap<number, readonly WarrantyCa
     'loan_source_stock', 'loan_model_unknown', 'claim_only',
     'transition_not_allowed', 'resolution_required', 'resolution_final', 'resolution_matrix',
     'resolution_pending', 'warehouse_verdict', 'notice_required', 'already_released',
-    'nothing_to_release', 'loan_fate_final', 'no_loan']],
+    'nothing_to_release', 'unit_belongs_to_stock', 'loan_fate_final', 'no_loan']],
   [503, ['service_unavailable']],
 ]);
 
@@ -69,6 +70,8 @@ export const warrantyCaseErrorMessages: Record<WarrantyCaseErrorCode, string> = 
   notice_required: 'La liberación a stock exige el aviso registrado al cliente.',
   already_released: 'El aviso o la liberación de este caso ya se registró.',
   nothing_to_release: 'El caso no tiene ninguna unidad que liberar: su batería nunca volvió.',
+  // The delivery states that the unit left with the client, and a unit bound to stock never does (S31).
+  unit_belongs_to_stock: 'La unidad de este caso va al stock vendible: sale por la liberación que autoriza el Almacén, no por la entrega. No se registró nada.',
   loan_fate_final: 'El desenlace de esa usada ya está decidido y no se reescribe.',
   loan_fate_required: 'Indicá qué pasó con la usada prestada.',
   no_loan: 'El caso no entregó ninguna usada, así que no hay comprobante que imprimir.',
