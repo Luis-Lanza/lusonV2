@@ -46,7 +46,12 @@ export interface CaseRecord {
   readonly origin: string;
   readonly verdict: string | null;
   readonly reported_destination: string | null;
+  readonly loan_destination: string | null;
+  readonly stock_destination: string | null;
   readonly serial_number: string | null;
+  readonly variant_id: number;
+  readonly quantity: number | null;
+  readonly reason: string | null;
   readonly loans: readonly { readonly ordinal: number; readonly model: string; readonly fate: string }[];
   readonly events: readonly { readonly kind: string; readonly phase: string }[];
 }
@@ -59,6 +64,14 @@ interface SellableRow {
   readonly capacity_ah: string;
   readonly polarity: string;
   readonly existing: number;
+  readonly available: number;
+}
+
+export interface ArrangedShelf {
+  readonly variantId: number;
+  readonly available: number;
+  /** The name the finding's dialog prints of the variant, before it says what the shelf holds. */
+  readonly label: string;
 }
 
 export interface UsedStockRow {
@@ -203,6 +216,25 @@ export async function arrangeUsedPool(
   return model;
 }
 
+/**
+ * A variant the branch has on its own shelf right now (S16): a finding names one of its own batteries, so
+ * this arrange only reads the shelf and never invents stock. The first page is the one the point of sale
+ * publishes and the one the finding's dialog lists, so the figure the spec reads is the one the screen
+ * shows.
+ */
+export async function arrangeShelfStock(branch: Session, quantity: number): Promise<ArrangedShelf> {
+  const catalogue = await read<{ items: readonly SellableRow[] }>(branch,
+    '/api/sales/sellable?kind=battery&page=1&page_size=10');
+  const item = catalogue.items.find(row => row.available >= quantity);
+  if (item === undefined) {
+    throw new Error(`la góndola de la sucursal no tiene ${quantity} unidades de ninguna batería`);
+  }
+  return {
+    variantId: item.variant_id, available: item.available,
+    label: `${item.brand} · ${item.model} · ${item.capacity_ah} Ah · ${item.polarity}`,
+  };
+}
+
 export async function openClaim(branch: Session, serial: string, declaredFailure: string): Promise<CaseRecord> {
   return send<CaseRecord>(branch, 'post', '/api/warranty-cases/claims',
     { serial_number: serial, declared_failure: declaredFailure }, 201);
@@ -238,6 +270,36 @@ export async function resolveClaim(warehouse: Session, caseId: number, resolutio
   return send<CaseRecord>(warehouse, 'post', `/api/warranty-cases/${caseId}/resolution`, resolution, 200);
 }
 
+/**
+ * The resolution, answered raw: a spec that expects the refusal reads its status and its code. The body is
+ * the door's own — a claim states `loan_destination` and a finding does not — so the caller states it.
+ */
+export async function resolutionAttempt(session: Session, caseId: number, body: Record<string, unknown>,
+  expected: number): Promise<{ readonly status: number; readonly body: { readonly error?: string } }> {
+  const reply = await session.request.post(`/api/warranty-cases/${caseId}/resolution`,
+    { headers: { 'X-CSRF-Token': session.csrf }, data: body });
+  const answer = await json<{ error?: string }>(reply, `POST /api/warranty-cases/${caseId}/resolution`);
+  if (reply.status() !== expected) {
+    throw new Error(`la resolución respondió ${reply.status()} en vez de ${expected}: ${JSON.stringify(answer)}`);
+  }
+  return { status: reply.status(), body: answer };
+}
+
+/**
+ * The delivery, answered raw: without the fate of the lent battery the case does not close, and this is
+ * how a spec reads that refusal instead of guessing it from a disabled button.
+ */
+export async function deliver(session: Session, caseId: number, body: Record<string, unknown>,
+  expected: number): Promise<{ readonly status: number; readonly body: { readonly error?: string } }> {
+  const reply = await session.request.post(`/api/warranty-cases/${caseId}/delivery`,
+    { headers: { 'X-CSRF-Token': session.csrf }, data: body });
+  const answer = await json<{ error?: string }>(reply, `POST /api/warranty-cases/${caseId}/delivery`);
+  if (reply.status() !== expected) {
+    throw new Error(`la entrega respondió ${reply.status()} en vez de ${expected}: ${JSON.stringify(answer)}`);
+  }
+  return { status: reply.status(), body: answer };
+}
+
 /** The release, answered raw: a spec that expects the refusal reads its status and its code. */
 export async function release(session: Session, caseId: number, note: string,
   expected: number): Promise<{ readonly status: number; readonly body: { readonly error?: string } }> {
@@ -252,6 +314,14 @@ export async function release(session: Session, caseId: number, note: string,
 
 export async function caseRecord(session: Session, caseId: number): Promise<CaseRecord> {
   return read<CaseRecord>(session, `/api/warranty-cases/${caseId}`);
+}
+
+/** One case of the tray by the number it prints, which is the number the screen's confirmation stated. */
+export async function caseByNumber(session: Session, caseNumber: string): Promise<CaseRecord> {
+  const tray = await read<{ cases: readonly CaseRecord[] }>(session, '/api/warranty-cases');
+  const row = tray.cases.find(entry => entry.case_number === caseNumber);
+  if (row === undefined) throw new Error(`el caso ${caseNumber} no aparece en la bandeja de la sucursal`);
+  return row;
 }
 
 /** The case the screen just opened, found by the serial the sale gave it and by nothing else. */
