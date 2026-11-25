@@ -136,14 +136,19 @@ S36.3 Los tests que hoy fijan la regla contraria (sucursal rechazada con `LS005`
 
 ## Entrega
 
-La rama `feat/battery-warranty` no se entrega como un solo PR: al cerrar T13 medía 21 128 líneas autorizadas en 34 commits (8 042 `apps/api/internal`, 6 390 `apps/web/src`, 5 009 `apps/api/migrations`, 493 `apps/api/docs`, el resto diseño y este documento). Eso no se revisa. Se entrega como PRs encadenados, cada uno contra el anterior, en este orden de dependencia:
+Abierta el 2026-11-25 como **siete PRs encadenados**, cada uno contra el anterior, ordenados por dependencia. El plan original decía cinco; el lazo del segundo tramo medía 11 893 líneas, así que se partió en dos para no entregar un PR que nadie revisa. Regla de corte: cada commit es de una tarea y va por ruta, nunca `git add -A`.
 
-1. **El caso y el préstamo** — migraciones 065–066, el núcleo de `warrantycase`, `httpapi`, la pantalla de casos con su comprobante y los mockups. El reclamo existe, la usada se presta, el caso se mueve entre etapas.
-2. **El viaje y la resolución** — 067–069: baja por hallazgo, aviso y liberación, matriz del hallazgo, reposición, y la pantalla del Almacén.
-3. **El stock de usadas** — 071: `used_battery_stock()`, `LW033`, la pantalla de Stock de usadas y lo que la rendición muestra de ella.
-4. **Las reglas finas** — 072–074 y la pantalla del desenlace por hecho: lista cerrada (`LW034`), el destino manda (`LW035`) y el caso no cierra con un préstamo sin desenlace (`LW036`).
+| # | PR | Rama | Rango | Líneas | Qué entrega |
+|---|---|---|---|---|---|
+| 1 | #6 | `warranty/1-case-and-loan` | `8e3d39b..d8a1c19` | 5 377 | El caso, sus préstamos y el pool de usadas: 065–066, el núcleo de `warrantycase`, el reclamo por serial y la baja por hallazgo |
+| 2 | #7 | `warranty/2-notice-and-release` | `d8a1c19..7eefb0e` | 3 983 | 067–069: el aviso y la liberación, la matriz del hallazgo, el comprobante del préstamo |
+| 3 | #9 | `warranty/3-screens-and-realtime` | `7eefb0e..0aa2b70` | 5 258 | La bandeja de la sucursal, la mesa del Almacén, el evento en tiempo real y los pendientes |
+| 4 | #10 | `warranty/4-used-stock` | `0aa2b70..eab0f08` | 2 652 | 071: `used_battery_stock()` derivado por flujo, `LW033` y su pantalla |
+| 5 | #11 | `warranty/5-fine-rules` | `eab0f08..ae7c225` | 2 760 | 072–073: la lista cerrada de modelos (`LW034`) y el par destino+veredicto (`LW035`) |
+| 6 | #12 | `warranty/6-browser-and-defects` | `ae7c225..5726147` | 1 848 | 074 / `LW036`: el caso no cierra con un préstamo sin desenlace, y el desenlace es un hecho |
+| 7 | #8 | `warranty/7-branch-adjustment` | `5726147..4801d5c` | 3 983 | El arnés de navegador, los defectos que destapó, el acto de cierre en la fila y el ajuste de la sucursal (S36) |
 
-Regla de corte: cada commit es de una tarea y va por ruta, nunca `git add -A`; el corte de cada PR se anota acá con su rango de commits cuando se abre. El PR 4 termina en `b86c838`, con `e08a924` (la pantalla del desenlace) como penúltimo. Un quinto PR, sobre el cuarto, lleva el arnés e2e y el arreglo que él destapó: `8ea0cf1` y `d335ef5`. Push, apertura de PR y merge son decisiones del usuario, no del agente.
+Total: 54 commits, 25 861 líneas, 7 PRs. El orden de merge es el de la tabla: cada PR se mergea sobre el anterior, no sobre `master`. Push y apertura hechos; **el merge es del humano**.
 
 ## Log
 
@@ -293,3 +298,5 @@ L51. Hallazgo de T23: las migraciones aplicadas son inmutables (checksum en `int
 L52. La corrida de T25 dejó un rojo en el spec de la sucursal: el segundo documento leído tenía el id del primero. O el arnés lee una confirmación vieja, o la pantalla conserva la confirmación anterior al abrir un conteo nuevo. Si es lo segundo, es un defecto de la pantalla: una confirmación pertenece al acto que la produjo. T26.
 
 L53. T25 cerrada con el navegador: 13 flujos en verde, incluido el conteo de la sucursal con la góndola devuelta a donde estaba. El spec nuevo queda recogido por el proyecto `ajustes` de Playwright y por el gate de tipos de `tsconfig.e2e.json`, que eran los dos archivos fuera del alcance del worker.
+
+L54. Entrega abierta. El plan de cinco PRs se rehizo a siete al medir los cortes: el segundo tramo medía 11 893 líneas y se partió en dos. Los siete están encadenados y anotados en la tabla de `## Entrega` con su rango, sus líneas y su PR. El merge queda en manos del humano.
