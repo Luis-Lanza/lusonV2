@@ -1,11 +1,12 @@
-# Warehouse stock adjustment by physical count
+# Stock adjustment by physical count
 
-Correction of the warehouse stock (`Almacén`, location 1) against a real physical
-count. A document has one or more variant/counted lines of one kind, is applied
-atomically to `inventory_balances`, and stays immutable forever; a mistake is
-corrected only by a counter-entry. Only the warehouse adjusts its own stock,
-exactly like stock ingress: there is no branch adjustment and no counting session,
-deferred close or persisted draft in this domain.
+Correction of a location's own stock against a real physical count. A document has
+one or more variant/counted lines of one kind, is applied atomically to
+`inventory_balances`, and stays immutable forever; a mistake is corrected only by
+a counter-entry. Every location corrects what it counts -- the warehouse
+(`Almacén`) and each branch, in the one document -- and no location corrects
+another's stock. There is no counting session, deferred close or persisted draft
+in this domain.
 
 ## Blind count
 
@@ -31,12 +32,26 @@ The capture is blind by contract, not by convention:
 
 ## Authorization
 
-Only the warehouse administrator adjusts: the authenticated identity must be
-account `1` assigned to location `1` with a completed password change. The store
-also verifies the `auth_accounts` binding (`id` plus `location_id`) before
-touching any document, so a forged identity is not evidence of an assignment.
-Branches receive `403 forbidden`; they neither see nor reach these routes. The
-database refuses `location_id <> 1` as well, so the scope is enforced twice.
+The document belongs to the **session**, never to the request:
+
+* Any account with a completed password change adjusts, and it adjusts the stock
+  of its own location only: the `Almacén` its own stock, a branch its own. This is
+  the same act for everybody, not a parallel branch document.
+* The location is **not** part of any request body, path or query. `location_id` is
+  an unknown key and is refused with `400 invalid_request`, so a client cannot
+  express another location at all.
+* The store verifies the `auth_accounts` binding (`id` plus
+  `location_id`) before touching any document, so a forged identity is not
+  evidence of an assignment; a session that claims a location the database does
+  not hold for that account is `403 forbidden`.
+* The database keeps the integrity of the location: it must be one this
+  installation has (`LS005`), and a counter-entry must stay in its original's
+  location (`LS006`). Authority over *who* adjusts is the server's, and it is
+  enforced once — in the store, from the session.
+* A branch with a live account settlement ("rendición de cuentas") adjusts
+  nothing: the stock it corrected would move behind the cut that settlement is
+  already counting. The refusal is `409 branch_frozen` in every location's
+  contract (`LC001`).
 
 ## Routes
 
@@ -122,8 +137,8 @@ violation.
 
 ## History
 
-The read is the warehouse's own ledger of documents, with the per-line detail
-left out:
+The read is the caller's own ledger: the documents of the session's location, with
+the per-line detail left out:
 
 ```
 GET /api/stock-adjustments?page=1&page_size=25
@@ -144,8 +159,8 @@ GET /api/stock-adjustments?page=1&page_size=25
 
 `adjustments` is ordered by `id` descending, so the newest document is always
 first and paging with a stable `page_size` never repeats or skips a document.
-`total_adjustments` counts every document of the warehouse, independent of the
-requested page, which makes an empty page beyond the last one harmless.
+`total_adjustments` counts every document of the caller's location, independent of
+the requested page, which makes an empty page beyond the last one harmless.
 
 Each row is a summary of exactly nine fields:
 
@@ -208,11 +223,11 @@ invalid_request`.
 | Field | Meaning |
 |---|---|
 | `id` | Document number |
-| `location_id` | Always `1`: the warehouse |
+| `location_id` | The location that counted: the session's own, and the document's only |
 | `reason` | The persisted motive of this document |
 | `detail` | The persisted detail; empty string when absent |
 | `created_at` | RFC3339 in UTC |
-| `created_by_account_id` | The warehouse administrator that confirmed the document |
+| `created_by_account_id` | The account that confirmed the document, of that same location |
 | `reverses_adjustment_id` | The original document when this one is a counter-entry, otherwise `null` |
 | `reversed_by` | The counter-entry that reverses this document, otherwise `null` |
 | `reversed_by_reason` | The motive of that counter-entry, so the correction reads in one response; empty string when the document is not reversed |
@@ -232,10 +247,12 @@ rounding and no trailing zeros reach the client.
 
 A persisted document keeps its own arithmetic: `expected_quantity` is the
 snapshot the database took when the document was applied and `counted_quantity`
-is what the warehouse declared, so the detail stays readable and exact after the
+is what the location declared, so the detail stays readable and exact after the
 current stock has changed again. Nothing here is inferred from the client: a
 document of another location, an unknown id and an aliased id are all
-`not_found`. A reversed document's detail also includes the counter-entry's
+`not_found`. A document of another location is not an outage — it simply is not
+part of the caller's ledger, and `503 service_unavailable` would claim the system
+is broken over a document that is not yours. A reversed document's detail also includes the counter-entry's
 own motive in `reversed_by_reason`, read with the same statement, so the
 correction is legible without a second request; that field is the empty string
 for a document that is not reversed. The response carries no stored column
@@ -279,7 +296,10 @@ reports its counter-entry through `reversed_by`.
 
 One counter-entry per document: the partial unique index on
 `reverses_adjustment_id` admits at most one, a counter-entry is not itself a
-reversal target, and a document is never its own target.
+reversal target, and a document is never its own target. The counter-entry follows
+its original: it is written in the original's location by the account that counts
+there, and the reversal of **another** location's document is `404 not_found`,
+exactly like an unknown id.
 
 ### Success
 
@@ -314,10 +334,11 @@ Stock is never invented and never compensated automatically.
 |---|---|---|
 | 400 | `invalid_request` | Malformed body, bad or missing `reason`, bad operation key, or a non-canonical `{id}` |
 | 401 | `unauthenticated` | No session |
-| 403 | `forbidden` | The caller is not the warehouse administrator |
-| 404 | `not_found` | No such document in this warehouse, or an aliased path |
+| 403 | `forbidden` | The session claims a location the database does not hold for that account |
+| 404 | `not_found` | No such document in the caller's location, or an aliased path |
+| 409 | `branch_frozen` | The caller's location has a live account settlement (`LC001`) |
 | 409 | `decision_conflict` | The target is itself a counter-entry, or it already has one |
-| 409 | `retry_conflict` | The operation key is bound to another target or reason |
+| 409 | `retry_conflict` | The operation key is bound to another payload, target or reason — including another location's document |
 | 409 | `insufficient_stock` | The reversal would leave `existing < reserved` |
 | 503 | `service_unavailable` | Pool, database, or any unmapped failure |
 
@@ -356,10 +377,11 @@ product item therefore carries no capacity, no polarity and no brand — the
 product picker is `Producto · Detalle · Contado`.
 **No stock quantity field exists on this response** — not `existing`, not
 `reserved`, not `available`, not `expected_quantity`, not `difference` — so the
-blind capture cannot leak the number the warehouse is supposed to count. The
-query joins `inventory_balances` only to prove the variant belongs to this
-warehouse's ledger; it reads no stock value. `total_variants` counts every
-matching variant of the warehouse, independent of the requested page.
+blind capture cannot leak the number the location is supposed to count. The query
+joins `inventory_balances` only to prove the variant belongs to the caller's own
+ledger — the balance rows of the session's location; it reads no stock value.
+`total_variants` counts every matching variant of that location, independent of
+the requested page.
 
 ## Errors
 
@@ -369,8 +391,9 @@ Every failure returns exactly `{"error":"<code>"}`.
 |---|---|---|
 | 400 | `invalid_request` | Malformed body, bad field, a client-supplied `expected_quantity`/`difference`, duplicate variant, a document that mixes kinds, an exceeded limit, a non-canonical `{id}`, or an inadmissible query |
 | 401 | `unauthenticated` | No session |
-| 403 | `forbidden` | The caller is not the warehouse administrator |
-| 404 | `not_found` | No such document in this warehouse, or an aliased path |
+| 403 | `forbidden` | The session claims a location the database does not hold for that account |
+| 404 | `not_found` | No such document in the caller's location, or an aliased path |
+| 409 | `branch_frozen` | The caller's location has a live account settlement (`LC001`) |
 | 409 | `decision_conflict` | The target is itself a counter-entry, or it already has one |
 | 409 | `retry_conflict` | The operation key is bound to a different payload, target or reason |
 | 409 | `insufficient_stock` | The applied difference would leave `existing < reserved` |
@@ -391,10 +414,11 @@ application, decides the following, with stable SQLSTATEs:
 | `LS002` | Counted quantity out of bounds, or a counter-entry line that does not mirror the original | 400 `invalid_request` |
 | `LS003` | A counter-entry that does not mirror **every** original line (checked at commit) | 400 `invalid_request` |
 | `LS004` | Missing balance row or missing document for a line | 503 `service_unavailable` |
-| `LS005` | `location_id <> 1` | 400 `invalid_request` |
+| `LS005` | The location is not one this installation has | 400 `invalid_request` |
 | `LS006` | Reversal target missing, in another location, or itself a reversal | 400 `invalid_request` |
 | `LS007` | The resulting `existing` would leave `bigint` | 400 `invalid_request` |
 | `LS008` | A committed document has no counted line (migration 023, checked at commit) | 400 `invalid_request` |
+| `LC001` | The document's location is a branch with a live account settlement (migration 075) | 409 `branch_frozen` |
 
 Lines are applied immediately, one by one, in ascending `variant_id` order, so
 balance rows are locked in a deterministic order and each line's expected
@@ -402,6 +426,20 @@ snapshot is taken under its own row lock. `reserved` is never modified by this
 domain, and the total is checked on an exact numeric value before the `bigint`
 cast, so nothing wraps. A rejected document writes nothing anywhere: no header,
 no line and no balance movement.
+
+### The frozen branch
+
+A branch whose account settlement is live ("rendición de cuentas", `LC001`)
+adjusts nothing — neither an original document nor a counter-entry — because the
+stock it moved would sit outside the cut the settlement is already counting: the
+count sheet photographed at the open would stop describing the shelf, and the
+closure would either resurrect the difference this document applied or refuse to
+close over a movement the schema allowed. Migration `075` wires the freeze of
+`035` to `stock_adjustments` for that reason, the same way `035` wires a sale, a
+purchase and a transfer receipt; `035` had left this table out because "a guard
+here could never fire", a premise that died when the document stopped being the
+warehouse's alone. The warehouse is never frozen (a settlement belongs to a
+branch), so its own adjustments keep working.
 
 ### Counter-entries
 

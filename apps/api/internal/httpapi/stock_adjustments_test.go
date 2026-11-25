@@ -354,7 +354,7 @@ func TestStockAdjustmentRecord(t *testing.T) {
 		},
 		TotalDifference: -3,
 	}
-	record, err := stockAdjustmentRecord(valid)
+	record, err := stockAdjustmentRecord(valid, 1)
 	if err != nil {
 		t.Fatal("a persisted document was rejected")
 	}
@@ -396,7 +396,7 @@ func TestStockAdjustmentRecord(t *testing.T) {
 		adjustment := valid
 		adjustment.Lines = append([]stockadjustments.AdjustmentLine(nil), valid.Lines...)
 		change(&adjustment)
-		if _, err := stockAdjustmentRecord(adjustment); !errors.Is(err, stockadjustments.ErrUnavailable) {
+		if _, err := stockAdjustmentRecord(adjustment, 1); !errors.Is(err, stockadjustments.ErrUnavailable) {
 			t.Fatalf("%s must not reach the wire", name)
 		}
 	}
@@ -416,7 +416,7 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 		},
 		TotalDifference: -3,
 	}
-	record, err := stockAdjustmentDetailRecord(valid)
+	record, err := stockAdjustmentDetailRecord(valid, 1)
 	if err != nil {
 		t.Fatal("a persisted detail was rejected")
 	}
@@ -437,7 +437,7 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 		}), CatalogEntryID: 96, Expected: 4, Counted: 7, Difference: 3},
 	}
 	product.TotalDifference = 3
-	productRecord, err := stockAdjustmentDetailRecord(product)
+	productRecord, err := stockAdjustmentDetailRecord(product, 1)
 	if err != nil {
 		t.Fatalf("a product detail was rejected: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 	// A document that is not reversed carries no counter-entry motive at all.
 	plain := valid
 	plain.ReversedBy, plain.ReversedByReason = nil, ""
-	plainRecord, err := stockAdjustmentDetailRecord(plain)
+	plainRecord, err := stockAdjustmentDetailRecord(plain, 1)
 	if err != nil || plainRecord.ReversedBy != nil || plainRecord.ReversedByReason != "" {
 		t.Fatal("a document that is not reversed must carry no counter-entry motive")
 	}
@@ -492,7 +492,7 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 		detail := valid
 		detail.Lines = append([]stockadjustments.DetailLine(nil), valid.Lines...)
 		change(&detail)
-		if _, err := stockAdjustmentDetailRecord(detail); !errors.Is(err, stockadjustments.ErrUnavailable) {
+		if _, err := stockAdjustmentDetailRecord(detail, 1); !errors.Is(err, stockadjustments.ErrUnavailable) {
 			t.Fatalf("%s must not reach the wire", name)
 		}
 	}
@@ -790,8 +790,26 @@ func (f *stockAdjustmentHTTPFixture) balance(t *testing.T, variant int64) (exist
 
 func (f *stockAdjustmentHTTPFixture) setBalance(t *testing.T, variant, existing, reserved int64) {
 	t.Helper()
-	if _, err := f.p.Exec(f.ctx, "UPDATE inventory_balances SET existing=$2,reserved=$3 WHERE location_id=1 AND variant_id=$1", variant, existing, reserved); err != nil {
-		t.Fatal("balance fixture setup failed")
+	f.setBalanceAt(t, 1, variant, existing, reserved)
+}
+
+// balanceAt and setBalanceAt are the same two reads and writes for any location: every
+// location of the installation holds a row of every variant, so a branch counts what it has
+// exactly like the warehouse, and the update is asserted to touch its row.
+func (f *stockAdjustmentHTTPFixture) balanceAt(t *testing.T, location, variant int64) (existing, reserved int64) {
+	t.Helper()
+	if f.p.QueryRow(f.ctx, "SELECT existing,reserved FROM inventory_balances WHERE location_id=$1 AND variant_id=$2", location, variant).Scan(&existing, &reserved) != nil {
+		t.Fatal("balance read failed")
+	}
+	return existing, reserved
+}
+
+func (f *stockAdjustmentHTTPFixture) setBalanceAt(t *testing.T, location, variant, existing, reserved int64) {
+	t.Helper()
+	tag, err := f.p.Exec(f.ctx, "UPDATE inventory_balances SET existing=$3,reserved=$4 WHERE location_id=$1 AND variant_id=$2",
+		location, variant, existing, reserved)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("balance fixture setup failed for location %d variant %d", location, variant)
 	}
 }
 
@@ -1238,8 +1256,9 @@ func TestStockAdjustmentHTTPSuccess(t *testing.T) {
 func TestStockAdjustmentHTTPRejections(t *testing.T) {
 	f := stockAdjustmentFixture(t)
 	f.rejected(t, f.request(0, "POST", "/api/stock-adjustments", validStockAdjustmentJSON), 401, "unauthenticated")
-	f.rejected(t, f.request(2, "POST", "/api/stock-adjustments", validStockAdjustmentJSON), 403, "forbidden")
-	f.rejected(t, f.request(3, "POST", "/api/stock-adjustments", validStockAdjustmentJSON), 403, "forbidden")
+	// No honest session is forbidden any more: an account adjusts its own location
+	// (S36.1), so the only 403 left is the forged identity the store refuses, which
+	// TestStockAdjustmentFailureMapping and the store's own guards prove.
 	for _, verb := range []string{"PUT", "PATCH", "DELETE"} {
 		w := f.serve(t, f.request(1, verb, "/api/stock-adjustments", ""))
 		if w.Code != 405 || w.Header().Get("Allow") != "GET, POST" || w.Body.String() != "{\"error\":\"method_not_allowed\"}\n" {
@@ -1420,8 +1439,7 @@ func TestStockAdjustmentHTTPHistoryKind(t *testing.T) {
 func TestStockAdjustmentHTTPHistoryRejections(t *testing.T) {
 	f := stockAdjustmentFixture(t)
 	f.rejected(t, f.request(0, "GET", "/api/stock-adjustments", ""), 401, "unauthenticated")
-	f.rejected(t, f.request(2, "GET", "/api/stock-adjustments", ""), 403, "forbidden")
-	f.rejected(t, f.request(3, "GET", "/api/stock-adjustments", ""), 403, "forbidden")
+	// Another location's history is empty, not forbidden: it is its own ledger.
 	for name, query := range map[string]string{
 		"zero_page":          "?page=0",
 		"padded_page":        "?page=01",
@@ -1546,8 +1564,9 @@ func TestStockAdjustmentHTTPDetailRejections(t *testing.T) {
 	path := adjustmentDetailPath(original.ID)
 	foreign := f.foreignAdjustment(t)
 	f.rejected(t, f.request(0, "GET", path, ""), 401, "unauthenticated")
-	f.rejected(t, f.request(2, "GET", path, ""), 403, "forbidden")
-	f.rejected(t, f.request(3, "GET", path, ""), 403, "forbidden")
+	// A document of another location is not part of this ledger.
+	f.rejected(t, f.request(2, "GET", path, ""), 404, "not_found")
+	f.rejected(t, f.request(3, "GET", path, ""), 404, "not_found")
 	for _, verb := range []string{"POST", "PUT", "PATCH", "DELETE"} {
 		w := f.serve(t, f.request(1, verb, path, ""))
 		if w.Code != 405 || w.Header().Get("Allow") != "GET" || w.Body.String() != "{\"error\":\"method_not_allowed\"}\n" {
@@ -1600,43 +1619,19 @@ func TestStockAdjustmentHTTPDetailRejections(t *testing.T) {
 	}
 }
 
-// foreignAdjustment persists a document of another location with the admission and
-// balance triggers disabled for the shortest possible window: only the database
-// may refuse such a document in normal operation, and this fixture needs one to
-// prove the adjustment routes never cross the warehouse boundary.
+// foreignAdjustment is the document of another location these reads must never answer: a
+// branch count, written by the branch account through its own session, because a document of
+// a branch is a document of this ledger (S36.1) and no trigger is disabled to write one.
 func (f *stockAdjustmentHTTPFixture) foreignAdjustment(t *testing.T) int64 {
 	t.Helper()
-	enable := func() {
-		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-		defer done()
-		for _, statement := range []string{
-			"ALTER TABLE stock_adjustment_lines ENABLE TRIGGER USER",
-			"ALTER TABLE stock_adjustments ENABLE TRIGGER USER",
-		} {
-			_, _ = f.p.Exec(cleanup, statement)
-		}
+	f.setBalanceAt(t, 2, 1, 10, 0)
+	w := f.serve(t, f.request(2, "POST", "/api/stock-adjustments",
+		`{"operation_key":"http-foreign-adjust-01","reason":"conteo físico","lines":[{"variant_id":1,"counted_quantity":9}]}`))
+	var document stockAdjustmentDTO
+	if json.Unmarshal(w.Body.Bytes(), &document) != nil || w.Code != 201 || document.LocationID != 2 {
+		t.Fatalf("the branch document was not created: %d %s", w.Code, w.Body.String())
 	}
-	t.Cleanup(enable)
-	for _, statement := range []string{
-		"ALTER TABLE stock_adjustment_lines DISABLE TRIGGER USER",
-		"ALTER TABLE stock_adjustments DISABLE TRIGGER USER",
-	} {
-		if _, err := f.p.Exec(f.ctx, statement); err != nil {
-			t.Fatal("foreign adjustment fixture setup failed")
-		}
-	}
-	var id int64
-	if err := f.p.QueryRow(f.ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,created_by_account_id)
- VALUES('http-foreign-adjust-01',2,'sucursal',2) RETURNING id`).Scan(&id); err != nil {
-		enable()
-		t.Fatal("foreign adjustment insert failed")
-	}
-	if _, err := f.p.Exec(f.ctx, "INSERT INTO stock_adjustment_lines(adjustment_id,variant_id,expected_quantity,counted_quantity) VALUES($1,$2,$3,$4)", id, int32(1), int64(1), int64(2)); err != nil {
-		enable()
-		t.Fatal("foreign adjustment line insert failed")
-	}
-	enable()
-	return id
+	return document.ID
 }
 
 func TestStockAdjustmentHTTPReversal(t *testing.T) {
@@ -1699,8 +1694,9 @@ func TestStockAdjustmentHTTPReversalRejections(t *testing.T) {
 	original := f.create(t, fmt.Sprintf(`{"operation_key":"http-adjustment-reversal-refusal","reason":"conteo físico","lines":[{"variant_id":1,"counted_quantity":%d}]}`, one))
 	path := adjustmentReversalPath(original.ID)
 	f.rejected(t, f.request(0, "POST", path, validStockAdjustmentReversalJSON), 401, "unauthenticated")
-	f.rejected(t, f.request(2, "POST", path, validStockAdjustmentReversalJSON), 403, "forbidden")
-	f.rejected(t, f.request(3, "POST", path, validStockAdjustmentReversalJSON), 403, "forbidden")
+	// A branch reverses its own document; another location's is not found (S36.1).
+	f.rejected(t, f.request(2, "POST", path, validStockAdjustmentReversalJSON), 404, "not_found")
+	f.rejected(t, f.request(3, "POST", path, validStockAdjustmentReversalJSON), 404, "not_found")
 	foreign := f.request(1, "POST", path, validStockAdjustmentReversalJSON)
 	foreign.Header.Set("Origin", "http://example.test")
 	f.rejected(t, foreign, 403, "forbidden")
@@ -1863,8 +1859,7 @@ func TestStockAdjustmentHTTPCatalog(t *testing.T) {
 func TestStockAdjustmentHTTPCatalogRejections(t *testing.T) {
 	f := stockAdjustmentFixture(t)
 	f.rejected(t, f.request(0, "GET", "/api/stock-adjustments/catalog", ""), 401, "unauthenticated")
-	f.rejected(t, f.request(2, "GET", "/api/stock-adjustments/catalog", ""), 403, "forbidden")
-	f.rejected(t, f.request(3, "GET", "/api/stock-adjustments/catalog", ""), 403, "forbidden")
+	// The catalogue of a branch is its own capture catalogue, not a forbidden route.
 	for _, verb := range []string{"POST", "PUT", "PATCH", "DELETE"} {
 		w := f.serve(t, f.request(1, verb, "/api/stock-adjustments/catalog", ""))
 		if w.Code != 405 || w.Header().Get("Allow") != "GET" || w.Body.String() != "{\"error\":\"method_not_allowed\"}\n" {
@@ -1993,5 +1988,116 @@ func TestStockAdjustmentHTTPCatalogOtherProducts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f.rejected(t, f.request(1, "GET", "/api/stock-adjustments/catalog"+query, ""), 400, "invalid_request")
 		})
+	}
+}
+
+// TestStockAdjustmentHTTPBranchLocation proves S36.1 at the wire: a branch session records the
+// count of its own stock, the document names that location and that author, and every read
+// route answers the actor's own ledger. No location reaches another's.
+func TestStockAdjustmentHTTPBranchLocation(t *testing.T) {
+	f := stockAdjustmentFixture(t)
+	f.setBalanceAt(t, 2, 1, 10, 0)
+	f.setBalanceAt(t, 2, 2, 6, 0)
+	warehouseOne, _ := f.balanceAt(t, 1, 1)
+	warehouseTwo, _ := f.balanceAt(t, 1, 2)
+	w := f.serve(t, f.request(2, "POST", "/api/stock-adjustments",
+		`{"operation_key":"http-branch-adjustment-01","reason":"conteo físico","detail":"góndola 2","lines":[{"variant_id":1,"counted_quantity":12},{"variant_id":2,"counted_quantity":2}]}`))
+	var document stockAdjustmentDTO
+	if json.Unmarshal(w.Body.Bytes(), &document) != nil || w.Code != 201 || document.ID < 1 {
+		t.Fatalf("the branch count was not recorded: %d %s", w.Code, w.Body.String())
+	}
+	if document.LocationID != 2 || document.CreatedByAccountID != 2 || document.Reason != "conteo físico" ||
+		document.TotalDifference != -2 || len(document.Lines) != 2 {
+		t.Fatalf("the branch document does not name its own location and author: %+v", document)
+	}
+	// The database took the expected snapshot of the branch's own balance.
+	if document.Lines[0].Expected != 10 || document.Lines[0].Counted != 12 || document.Lines[0].Difference != 2 ||
+		document.Lines[1].Expected != 6 || document.Lines[1].Counted != 2 || document.Lines[1].Difference != -4 {
+		t.Fatalf("the branch document does not carry the branch's own snapshot: %+v", document.Lines)
+	}
+	if existing, _ := f.balanceAt(t, 2, 1); existing != 12 {
+		t.Fatal("the branch balance did not move by the counted difference")
+	}
+	if existing, _ := f.balanceAt(t, 2, 2); existing != 2 {
+		t.Fatal("the branch balance did not move by the counted difference")
+	}
+	if one, _ := f.balanceAt(t, 1, 1); one != warehouseOne {
+		t.Fatalf("a branch count moved the warehouse: %d", one)
+	}
+	if two, _ := f.balanceAt(t, 1, 2); two != warehouseTwo {
+		t.Fatalf("a branch count moved the warehouse: %d", two)
+	}
+	// The history is the actor's own ledger of documents.
+	own := stockAdjustmentHistoryWire(t, f.serve(t, f.request(2, "GET", "/api/stock-adjustments", "")))
+	if own.TotalAdjustments != 1 || len(own.Adjustments) != 1 || own.Adjustments[0].ID != document.ID {
+		t.Fatalf("the branch must list its own document only: %+v", own)
+	}
+	for name, actor := range map[string]int{"warehouse": 1, "branch_b": 3} {
+		other := stockAdjustmentHistoryWire(t, f.serve(t, f.request(actor, "GET", "/api/stock-adjustments", "")))
+		if other.TotalAdjustments != 0 || len(other.Adjustments) != 0 {
+			t.Fatalf("%s must not list the branch document: %+v", name, other)
+		}
+	}
+	// The branch reverses its own document, in the original's own location.
+	w = f.serve(t, f.request(2, "POST", adjustmentReversalPath(document.ID),
+		`{"operation_key":"http-branch-reverse-0001","reason":"conteo mal tomado"}`))
+	var counter stockAdjustmentDTO
+	if json.Unmarshal(w.Body.Bytes(), &counter) != nil || w.Code != 201 {
+		t.Fatalf("the branch could not reverse its own document: %d %s", w.Code, w.Body.String())
+	}
+	if counter.LocationID != 2 || counter.CreatedByAccountID != 2 || counter.ReversesAdjustmentID == nil ||
+		*counter.ReversesAdjustmentID != document.ID || counter.TotalDifference != 2 {
+		t.Fatalf("the branch counter-entry does not follow its original: %+v", counter)
+	}
+	if existing, _ := f.balanceAt(t, 2, 1); existing != 10 {
+		t.Fatal("the branch reversal must restore its own balance")
+	}
+	if existing, _ := f.balanceAt(t, 2, 2); existing != 6 {
+		t.Fatal("the branch reversal must restore its own balance")
+	}
+	if one, _ := f.balanceAt(t, 1, 1); one != warehouseOne {
+		t.Fatal("the branch reversal must not touch the warehouse")
+	}
+	// Another location's document is not found, on either side of the boundary.
+	f.rejected(t, f.request(1, "GET", adjustmentDetailPath(document.ID), ""), 404, "not_found")
+	f.rejected(t, f.request(3, "GET", adjustmentDetailPath(document.ID), ""), 404, "not_found")
+	f.rejected(t, f.request(3, "POST", adjustmentReversalPath(counter.ID),
+		`{"operation_key":"http-branch-reverse-0002","reason":"conteo mal tomado"}`), 404, "not_found")
+	// The capture catalogue is the actor's own ledger of variants: one balance row is dropped
+	// from the branch's ledger only, and the two answers cannot be the same list.
+	if _, err := f.p.Exec(f.ctx, "DELETE FROM inventory_balances WHERE location_id=2 AND variant_id=190"); err != nil {
+		t.Fatal("the branch balance row could not be dropped")
+	}
+	if branch := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog", ""))); branch.TotalVariants != 190 {
+		t.Fatalf("the warehouse catalogue must keep its own 190 variants: %d", branch.TotalVariants)
+	}
+	if branch := stockAdjustmentCatalogWire(t, f.serve(t, f.request(2, "GET", "/api/stock-adjustments/catalog", ""))); branch.TotalVariants != 189 {
+		t.Fatalf("the branch catalogue must be the branch's own ledger: %d", branch.TotalVariants)
+	}
+}
+
+// TestStockAdjustmentHTTPFrozenBranch proves S36.2 at the wire: a branch held by a live account
+// settlement does not move its own stock, and the refusal is the token the rest of the house
+// publishes that very fact with (409 branch_frozen), never a generic outage.
+func TestStockAdjustmentHTTPFrozenBranch(t *testing.T) {
+	f := stockAdjustmentFixture(t)
+	original := f.foreignAdjustment(t)
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_closings(branch_location_id,period_start,
+ opened_by_account_id) VALUES(2,now(),1)`); err != nil {
+		t.Fatalf("the settlement of the branch could not be opened: %v", err)
+	}
+	f.rejected(t, f.request(2, "POST", "/api/stock-adjustments",
+		`{"operation_key":"http-frozen-branch-0001","reason":"conteo físico","lines":[{"variant_id":1,"counted_quantity":3}]}`), 409, "branch_frozen")
+	f.rejected(t, f.request(2, "POST", adjustmentReversalPath(original),
+		`{"operation_key":"http-frozen-branch-0002","reason":"conteo mal tomado"}`), 409, "branch_frozen")
+	// Another branch's settlement holds nobody else: the warehouse keeps counting.
+	one, _ := f.balanceAt(t, 1, 1)
+	document := f.create(t, fmt.Sprintf(`{"operation_key":"http-frozen-branch-0003","reason":"conteo físico","lines":[{"variant_id":1,"counted_quantity":%d}]}`, one+1))
+	if document.LocationID != 1 || document.Lines[0].Expected != one {
+		t.Fatalf("the warehouse must keep adjusting its own stock: %+v", document)
+	}
+	// The frozen branch's stock did not move while its settlement is open.
+	if existing, _ := f.balanceAt(t, 2, 1); existing != 9 {
+		t.Fatalf("the frozen branch must not move its own stock, got %d", existing)
 	}
 }

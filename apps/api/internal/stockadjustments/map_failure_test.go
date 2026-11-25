@@ -8,9 +8,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// mapFailure publishes exactly the database's own decision: every guard SQLSTATE
-// has one public error, an unrecognized one fails closed, and cancellation keeps
-// its semantics.
+// mapFailure publishes exactly the database's own decision: every guard SQLSTATE has one
+// public error, an unrecognized one fails closed, and cancellation keeps its semantics. LS005
+// keeps its number after 075 -- the location an adjustment names must exist -- and LC001 is the
+// freeze of the branch that 075 wired to this document.
 func TestMapFailurePublishesTheDatabaseDecision(t *testing.T) {
 	for code, want := range map[string]error{
 		"LS001": ErrInsufficientStock,
@@ -21,6 +22,7 @@ func TestMapFailurePublishesTheDatabaseDecision(t *testing.T) {
 		"LS007": ErrInvalid,
 		"LS008": ErrInvalid,
 		"LS004": ErrUnavailable,
+		"LC001": ErrBranchFrozen,
 		"23514": ErrUnavailable,
 	} {
 		if got := mapFailure(context.Background(), &pgconn.PgError{Code: code}); !errors.Is(got, want) {
