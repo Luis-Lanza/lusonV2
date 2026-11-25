@@ -118,11 +118,19 @@ T21 [S34] La fila de la bandeja publica el acto que cerró el caso: el DTO de la
 
 T22 [S31] La custodia del Almacén decide por el par destino+veredicto, no por el destino solo — route delegated (pantalla); done: `custodyAbsentNote(value)` parte la frase mentirosa en tres verdaderas (unidad de stock reparada o reemplazada, no cubierta intacta, otro veredicto honesto); prueba en rojo sobre el caso alcanzable `repaired`+`stock` sin tramo de resolución. Suite web 4 728 pass / 1 skip, `typecheck` 0.
 
-T23 [S36] La sucursal corrige su propio stock vendible con un acto explícito y con motivo — route inline el servidor y delegada la pantalla; pending.
+T23 [S36, S36.1, S36.2, S36.3] El ajuste de stock se generaliza al local de la sesión y se conecta la guarda de sucursal congelada: servidor (migración 075, paquete `stockadjustments`, httpapi, tests reescritos) — route delegated; done: la ubicación sale de la sesión en las seis capas, `LS005` pasa a exigir integridad, `assert_branch_not_frozen()` queda conectada a `stock_adjustments` (409 `branch_frozen`), otro local es 404 y no 503, y una clave de operación gastada por otro local es 409. Tests reescritos, ninguno borrado. Go `stockadjustments`+`httpapi`+`migrations` en verde (48/319/235), vet y build en 0; 075 verificada aplicada en la base viva (trigger `admit_frozen_branch_stock_adjustment` presente, `LS005` sin la regla del Almacén); e2e 11 en verde contra el binario nuevo. T25 [S36] La pantalla del ajuste deja de exigir el local 1 y le da a la sucursal su acto — route delegated; pending.
 
 T24 [S35] La entrega: cinco PRs encadenados según el plan de este documento — route inline; pending.
 
 S36. La sucursal corrige su propio stock vendible con un acto explícito, porque hoy el ajuste existe sólo para el Almacén (`LS005`) y una diferencia real no tiene ninguna salida: la única forma de arreglarla es falsear una transferencia o un ajuste del Almacén, que afirman un recorrido que no ocurrió. El acto exige un motivo escrito, declara lo esperado contra lo contado, mueve una sola variante y queda registrado con su autor y su local, igual que la corrección de una rendición. El Almacén conserva el suyo sin cambios, y un local no corrige el stock de otro: cada uno corrige lo que cuenta.
+
+S36.1 [decisión del humano, opción A] Es **un solo documento**, el que ya existe: se generaliza el ajuste en vez de abrir un acto aparte, para no tener dos caminos escribiendo el mismo balance ni la misma regla escrita dos veces. La ubicación deja de estar fijada en el código y sale de la sesión del que ajusta; el trigger deja de exigir el Almacén y pasa a exigir integridad (el local existe, la reversa es del mismo local), y la autoridad la ejerce el servidor: la sesión sólo ajusta su propio local.
+
+S36.2 [la guarda que hoy falta] `035_branch_guards.sql` omite a propósito `stock_adjustments` de `assert_branch_not_frozen()` porque "una guarda acá nunca podría dispararse". Deja de ser cierto con S36.1: con una rendición abierta, una sucursal congelada movería su propio stock por fuera del corte ya contado. La misma migración que abre el documento **conecta esa guarda**.
+
+S36.2.1 [corrección] El comentario de `035` **no se puede reescribir**: las migraciones aplicadas están selladas por checksum y el arranque rechaza cualquier byte cambiado. La corrección vive en la cabecera de `075`, que cita la premisa muerta y explica por qué la guarda ahora corresponde. Lo que S36.2 pedía se cumple en el fondo; el mecanismo es otro porque el archivo viejo es inmutable.
+
+S36.3 Los tests que hoy fijan la regla contraria (sucursal rechazada con `LS005`, actores de otros locales con `ErrForbidden`) se **reescriben** como parte de la spec, no se borran: pasan a probar que cada local ajusta lo suyo, que ninguno ajusta lo ajeno, y que la sucursal congelada no ajusta.
 
 ## Entrega
 
@@ -275,3 +283,7 @@ L47. T19 en `9cfbe72`: once pruebas de navegador en verde y las dos puertas de l
 L48. Encontrado al revisar la copia de T19: la confirmación del alta del hallazgo dice «1 unidad dadas de baja» para cantidad 1 en las dos pantallas, porque la frase concatena un helper `units()` —duplicado en `WarrantyCases.tsx:102` y `WarehouseWarrantyCases.tsx:67`— con un participio fijo. T20.
 
 L49. User: "hagamos las 4 pa". Autorizado el cierre de la vertical: T21 (la fila de la bandeja publica el acto de cierre, con el campo aditivo que era la opción recomendada), T22 (la custodia del Almacén por el par), T23 (el acto de corrección de stock de la sucursal, S36) y T24 (la entrega: los cinco PRs encadenados).
+
+L50. User: "A". Autorizado generalizar el documento del ajuste (S36.1), conectar la guarda de sucursal congelada que `035` omite a propósito (S36.2) y reescribir los tests que fijan la regla contraria (S36.3). Es la rebanada más grande de la vertical y la única que toca la integridad del cierre.
+
+L51. Hallazgo de T23: las migraciones aplicadas son inmutables (checksum en `internal/db.readApplied`), así que S36.2 no se podía cumplir al pie de la letra — se corrige como S36.2.1. Un comentario equivocado en una migración vieja sólo se puede contradecir desde la nueva.
