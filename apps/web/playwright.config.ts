@@ -18,7 +18,7 @@ import { branchASession } from './e2e/warranty/sessions';
  * file in the change.
  */
 export default defineConfig({
-  testDir: './e2e/warranty',
+  testDir: './e2e',
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? join(tmpdir(), 'luson-warranty-e2e-output'),
   fullyParallel: false,
   workers: 1,
@@ -43,7 +43,9 @@ export default defineConfig({
   projects: [
     // El proyecto que abre las dos sesiones del run; ningún spec firma un login propio.
     { name: 'sesiones', testMatch: /auth\.setup\.ts/, use: { storageState: { cookies: [], origins: [] } } },
-    // Los flujos de la vertical, como el operador los hace: sobre la sucursal A.
-    { name: 'garantías', testMatch: /.*\.spec\.ts/, dependencies: ['sesiones'] },
+    // Los flujos de la vertical de garantías, como el operador los hace: sobre la sucursal A.
+    { name: 'garantías', testMatch: /warranty\/.*\.spec\.ts/, dependencies: ['sesiones'] },
+    // El acto de ajuste de la sucursal (S36), el mismo operador sobre su propio stock.
+    { name: 'ajustes', testMatch: /adjustments\/.*\.spec\.ts/, dependencies: ['sesiones'] },
   ],
 });

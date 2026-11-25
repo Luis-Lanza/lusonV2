@@ -74,7 +74,7 @@ export interface StockAdjustmentCatalogPage {
 export interface StockAdjustmentReversalInput { readonly operation_key: string; readonly reason: string }
 
 export type StockAdjustmentErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found'
-  | 'decision_conflict' | 'retry_conflict' | 'insufficient_stock' | 'service_unavailable'
+  | 'decision_conflict' | 'retry_conflict' | 'insufficient_stock' | 'branch_frozen' | 'service_unavailable'
   | 'invalid_response' | 'network' | 'aborted';
 
 export const stockAdjustmentMaxLines = 190;
@@ -84,7 +84,12 @@ export const stockAdjustmentMaxDetail = 500;
 export const stockAdjustmentMaxVariantID = 2_147_483_647;
 /** A line can only add a counted maximum and only remove an existing balance. */
 export const stockAdjustmentMaxTotal = stockAdjustmentMaxLines * stockAdjustmentMaxCounted;
-export const stockAdjustmentLocationID = 1;
+/**
+ * Every location this installation can hold. No document is fixed to one of them: the
+ * adjustment belongs to the location of the session that counts (S36), the warehouse as
+ * much as any branch, and the location is never part of a request.
+ */
+export const stockAdjustmentMaxLocationID = 32767;
 export const stockAdjustmentPageSizes: readonly number[] = [10, 25, 50];
 export const stockAdjustmentDefaultPageSize = 25;
 export const stockAdjustmentCatalogPageSize = 25;
@@ -103,7 +108,7 @@ export const stockAdjustmentBlindCount =
 export const stockAdjustmentHistoryUnavailable =
   'No se pudo consultar el historial de ajustes. Revisá la conexión e intentá de nuevo.';
 export const stockAdjustmentCatalogUnavailable =
-  'No se pudo consultar el catálogo del Almacén. Revisá la conexión e intentá de nuevo.';
+  'No se pudo consultar el catálogo del local. Revisá la conexión e intentá de nuevo.';
 
 /** The four motives the operator sees, shown exactly as they are sent. */
 export const stockAdjustmentMotives = [
@@ -116,7 +121,7 @@ export const stockAdjustmentApplyAdmittedErrors: ReadonlyMap<number, readonly St
   [400, ['invalid_request']],
   [401, ['unauthenticated']],
   [403, ['forbidden']],
-  [409, ['retry_conflict', 'insufficient_stock']],
+  [409, ['retry_conflict', 'insufficient_stock', 'branch_frozen']],
   [503, ['service_unavailable']],
 ]);
 export const stockAdjustmentHistoryAdmittedErrors: ReadonlyMap<number, readonly StockAdjustmentErrorCode[]> = new Map([
@@ -143,7 +148,7 @@ export const stockAdjustmentReversalAdmittedErrors: ReadonlyMap<number, readonly
   [401, ['unauthenticated']],
   [403, ['forbidden']],
   [404, ['not_found']],
-  [409, ['decision_conflict', 'retry_conflict', 'insufficient_stock']],
+  [409, ['decision_conflict', 'retry_conflict', 'insufficient_stock', 'branch_frozen']],
   [503, ['service_unavailable']],
 ]);
 
@@ -151,11 +156,14 @@ export const stockAdjustmentReversalAdmittedErrors: ReadonlyMap<number, readonly
 export const stockAdjustmentApplyMessages: Record<StockAdjustmentErrorCode, string> = {
   invalid_request: 'El ajuste no es válido: revisá las cantidades contadas y el motivo, y volvé a intentar. No se aplicó ningún cambio.',
   unauthenticated: 'La sesión no está activa. Volvé a iniciar sesión: no se aplicó ningún ajuste.',
-  forbidden: 'No tenés permiso para ajustar el stock de este almacén. No se aplicó ningún cambio.',
-  not_found: 'El documento pedido ya no existe en el Almacén. No se aplicó ningún ajuste.',
+  forbidden: 'No tenés permiso para ajustar el stock de este local. No se aplicó ningún cambio.',
+  not_found: 'El documento pedido ya no existe en este local. No se aplicó ningún ajuste.',
   decision_conflict: 'Este documento ya tiene un contra-asiento: no se aplicó ningún ajuste.',
   retry_conflict: 'La clave de este ajuste ya se usó con otro contenido. No se aplicó ningún cambio: revisá el documento antes de reintentar.',
   insufficient_stock: 'El ajuste dejaría existencias por debajo de lo reservado. No se aplicó ningún cambio en el stock.',
+  // La sucursal congelada es un hecho de la sucursal que está contando su rendición, no
+  // una caída del servicio: se dice el hecho, qué pasó con el documento y qué lo destraba.
+  branch_frozen: 'Tu sucursal está contando su rendición de cuentas y no puede ajustar stock ahora. No se aplicó ningún cambio: el ajuste vuelve a estar disponible cuando la rendición cierre.',
   service_unavailable: 'El servicio no está disponible. No pudimos confirmar el ajuste: conservamos lo contado para reintentar.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el ajuste: conservamos lo contado.',
   network: 'No se pudo conectar con el servidor. Conservamos lo contado para reintentar el mismo ajuste.',
@@ -166,11 +174,12 @@ export const stockAdjustmentApplyMessages: Record<StockAdjustmentErrorCode, stri
 export const stockAdjustmentReversalMessages: Record<StockAdjustmentErrorCode, string> = {
   invalid_request: 'El motivo del contra-asiento no es válido: elegí un motivo de la lista y volvé a intentar. No se registró ningún documento.',
   unauthenticated: 'La sesión no está activa. Volvé a iniciar sesión: no se registró ningún contra-asiento.',
-  forbidden: 'No tenés permiso para registrar contra-asientos en este almacén. No se aplicó ningún cambio.',
-  not_found: 'El documento ya no existe en el Almacén. Actualizamos el historial: no se registró ningún contra-asiento.',
+  forbidden: 'No tenés permiso para registrar contra-asientos en este local. No se aplicó ningún cambio.',
+  not_found: 'El documento ya no existe en este local. Actualizamos el historial: no se registró ningún contra-asiento.',
   decision_conflict: 'Este documento ya tiene un contra-asiento, o es un contra-asiento: no se registró otro. Actualizamos el historial.',
   retry_conflict: 'La clave de este contra-asiento ya se usó con otro motivo. No se aplicó ningún cambio: revisá el motivo.',
   insufficient_stock: 'El stock actual no alcanza: el contra-asiento dejaría existencias por debajo de lo reservado. No se aplicó ningún cambio.',
+  branch_frozen: 'Tu sucursal está contando su rendición de cuentas y no puede ajustar stock ahora. No se registró ningún contra-asiento: vuelve a estar disponible cuando la rendición cierre.',
   service_unavailable: 'El servicio no está disponible. No pudimos confirmar el contra-asiento: conservamos el motivo para reintentar.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el contra-asiento: conservamos el motivo.',
   network: 'No se pudo conectar con el servidor. Conservamos el motivo para reintentar el mismo contra-asiento.',
@@ -181,11 +190,12 @@ export const stockAdjustmentReversalMessages: Record<StockAdjustmentErrorCode, s
 export const stockAdjustmentReadMessages: Record<StockAdjustmentErrorCode, string> = {
   invalid_request: 'La consulta de ajustes no es válida. Revisá los datos e intentá de nuevo.',
   unauthenticated: 'La sesión no está activa. Volvé a iniciar sesión para consultar los ajustes.',
-  forbidden: 'No tenés permiso para consultar los ajustes de este almacén.',
-  not_found: 'El documento ya no existe en el Almacén. Actualizá el historial: no hay detalle para mostrar.',
+  forbidden: 'No tenés permiso para consultar los ajustes de este local.',
+  not_found: 'El documento ya no existe en este local. Actualizá el historial: no hay detalle para mostrar.',
   decision_conflict: 'El documento consultado cambió de estado. Actualizá el historial.',
   retry_conflict: 'La consulta de ajustes quedó desactualizada. Actualizá el historial.',
   insufficient_stock: 'La consulta de ajustes no pudo completarse con el stock actual. Actualizá el historial.',
+  branch_frozen: 'La sucursal está contando su rendición de cuentas: el ajuste de stock no está disponible hasta que la rendición cierre.',
   service_unavailable: 'El servicio no está disponible. No pudimos traer los ajustes: revisá la conexión e intentá de nuevo.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos traer los ajustes: intentá de nuevo.',
   network: 'No se pudo conectar con el servidor. Revisá la conexión e intentá de nuevo.',
@@ -260,6 +270,20 @@ function detailText(value: unknown): string {
 
 export function validStockAdjustmentCounted(value: number): boolean {
   return Number.isInteger(value) && value >= 0 && value <= stockAdjustmentMaxCounted;
+}
+/** A location this installation holds: the warehouse or any of its branches. */
+export function validStockAdjustmentLocation(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= stockAdjustmentMaxLocationID;
+}
+/**
+ * Whose document it is: one published in the location the session counts, which is the
+ * only rule a location gets now that it is no longer fixed (S36). A document of another
+ * location is not part of this ledger, and no location of this client ever leaves in a body.
+ */
+export function stockAdjustmentBelongsToLocation(
+  document: { readonly location_id: number }, locationID: number,
+): boolean {
+  return validStockAdjustmentLocation(locationID) && document.location_id === locationID;
 }
 
 function validOperationKey(value: string): boolean {
@@ -367,14 +391,16 @@ function parseDocumentRecord(raw: string, counter: boolean): StockAdjustmentReco
   const record = fields(decode(raw), ['id', 'location_id', 'reason', 'detail', 'created_by_account_id',
     'created_at', 'reverses_adjustment_id', 'lines', 'total_difference']);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
-  if (integer(record.location_id, 1, 32767) !== stockAdjustmentLocationID) return invalidResponse();
+  // La ubicación es la que el servidor publicó para esta sesión (S36): el documento puede
+  // ser de cualquier local de la instalación, y la sesión dice en cuál cuenta.
+  const location_id = integer(record.location_id, 1, stockAdjustmentMaxLocationID);
   const reverses_adjustment_id = reference(record.reverses_adjustment_id, id, false);
   // A created document is an original; a counter-entry always states its target.
   if ((reverses_adjustment_id === null) === counter) return invalidResponse();
   const lines = parseDocumentLines(record.lines);
   const total_difference = signedInteger(record.total_difference, -stockAdjustmentMaxTotal, stockAdjustmentMaxTotal);
   if (lines.reduce((sum, line) => sum + line.difference, 0) !== total_difference) return invalidResponse();
-  return Object.freeze({ id, location_id: stockAdjustmentLocationID, reason: reason(record.reason),
+  return Object.freeze({ id, location_id, reason: reason(record.reason),
     detail: detailText(record.detail), created_by_account_id: integer(record.created_by_account_id, 1, Number.MAX_SAFE_INTEGER),
     created_at: timestamp(record.created_at), reverses_adjustment_id,
     lines, total_difference });
@@ -477,7 +503,7 @@ export function parseStockAdjustmentDetail(raw: string): StockAdjustmentDetail {
   const record = fields(decode(raw), ['id', 'location_id', 'reason', 'detail', 'created_at',
     'created_by_account_id', 'reverses_adjustment_id', 'reversed_by', 'reversed_by_reason', 'lines', 'total_difference']);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
-  if (integer(record.location_id, 1, 32767) !== stockAdjustmentLocationID) return invalidResponse();
+  const location_id = integer(record.location_id, 1, stockAdjustmentMaxLocationID);
   if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > stockAdjustmentMaxLines) return invalidResponse();
   let previous = 0;
   let total = 0;
@@ -501,7 +527,7 @@ export function parseStockAdjustmentDetail(raw: string): StockAdjustmentDetail {
   const total_difference = signedInteger(record.total_difference, -stockAdjustmentMaxTotal, stockAdjustmentMaxTotal);
   if (total !== total_difference) return invalidResponse();
   const reversed_by = reference(record.reversed_by, id, true);
-  return Object.freeze({ id, location_id: stockAdjustmentLocationID, reason: reason(record.reason),
+  return Object.freeze({ id, location_id, reason: reason(record.reason),
     detail: detailText(record.detail), created_at: timestamp(record.created_at),
     created_by_account_id: integer(record.created_by_account_id, 1, Number.MAX_SAFE_INTEGER),
     reverses_adjustment_id: reference(record.reverses_adjustment_id, id, false),
@@ -565,17 +591,20 @@ export function parseStockAdjustmentReversalError(raw: string, status: number): 
 export function stockAdjustmentFailureIsDefinite(code: StockAdjustmentErrorCode): boolean {
   return code === 'invalid_request' || code === 'unauthenticated' || code === 'forbidden'
     || code === 'not_found' || code === 'decision_conflict' || code === 'retry_conflict'
-    || code === 'insufficient_stock';
+    || code === 'insufficient_stock' || code === 'branch_frozen';
 }
 
 /**
- * The reply is evidence only if it repeats the exact document this capture sent:
- * the same motive and the same counted quantities, as an original document.
+ * The reply is evidence only if it repeats the exact document this capture sent: the same
+ * motive and the same counted quantities, as an original document of the location this
+ * session counts. The location is no longer one constant (S36): it is the session's, so a
+ * branch reply is admitted and a document published elsewhere still is not.
  */
-export function matchesStockAdjustmentInput(input: StockAdjustmentInput, record: StockAdjustmentRecord): boolean {
+export function matchesStockAdjustmentInput(input: StockAdjustmentInput, record: StockAdjustmentRecord,
+  locationID: number): boolean {
   let expected: StockAdjustmentInput;
   try { expected = canonicalStockAdjustmentInput(input); } catch { return false; }
-  if (record.location_id !== stockAdjustmentLocationID || record.reverses_adjustment_id !== null) return false;
+  if (!stockAdjustmentBelongsToLocation(record, locationID) || record.reverses_adjustment_id !== null) return false;
   if (record.reason !== expected.reason) return false;
   if (record.lines.length !== expected.lines.length) return false;
   const lines = [...record.lines].sort((left, right) => left.variant_id - right.variant_id);
@@ -584,12 +613,14 @@ export function matchesStockAdjustmentInput(input: StockAdjustmentInput, record:
 }
 
 /**
- * A counter-entry is evidence only if it mirrors the listed document: the same
- * number of lines, the exact negated total and no detail of its own. The original
- * lines are never cached, so this is the only proof the client can demand.
+ * A counter-entry is evidence only if it mirrors the listed document and follows it into its
+ * location: the same number of lines, the exact negated total, no detail of its own and the
+ * location this session counts. The original lines are never cached, so this is the only
+ * proof the client can demand.
  */
-export function matchesStockAdjustmentReversal(row: StockAdjustmentSummary, record: StockAdjustmentRecord): boolean {
-  if (record.location_id !== stockAdjustmentLocationID) return false;
+export function matchesStockAdjustmentReversal(row: StockAdjustmentSummary, record: StockAdjustmentRecord,
+  locationID: number): boolean {
+  if (!stockAdjustmentBelongsToLocation(record, locationID)) return false;
   if (!stockAdjustmentReversible(row)) return false;
   if (record.reverses_adjustment_id !== row.id) return false;
   if (record.detail !== '' || record.lines.length !== row.lines) return false;

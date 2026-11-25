@@ -1,10 +1,17 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import StockAdjustment from './StockAdjustment';
+import type { Location } from './model';
+import StockAdjustment, { type StockAdjustmentRealtime } from './StockAdjustment';
 import { stockAdjustmentApplyMessages, stockAdjustmentReversalMessages } from './stockAdjustmentModel';
 
 const csrf = 'c'.repeat(43);
 const motive = 'Conteo físico periódico';
+// La pantalla del ajuste sirve al Almacén y a cada sucursal (S36): el local es el de la sesión.
+const warehouse: Location = { id: 1, name: 'Almacén' };
+const branch: Location = { id: 2, name: 'Sucursal A' };
+const mount = (fetcher: typeof fetch, options: { location?: Location; realtime?: StockAdjustmentRealtime } = {}) =>
+  render(<StockAdjustment csrf={csrf} fetcher={fetcher} location={options.location ?? warehouse}
+    realtime={options.realtime} />);
 const json = (body: string, status = 200) => new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
 const errorReply = (code: string, status: number) => json(JSON.stringify({ error: code }), status);
 
@@ -69,8 +76,8 @@ const detailsFor = (id: number) => id === 8
       ? detailReply()
       : detailReply({ id, reason: 'Merma o rotura', detail: '',
         lines: [detailLine({ expected_quantity: 6, counted_quantity: 6, difference: 0 })], total_difference: 0 });
-const createdReply = () => json(JSON.stringify({
-  id: 9, location_id: 1, reason: motive, detail: '', created_by_account_id: 1,
+const createdReply = (locationID = 1) => json(JSON.stringify({
+  id: 9, location_id: locationID, reason: motive, detail: '', created_by_account_id: 1,
   created_at: '2026-11-05T14:20:00Z', reverses_adjustment_id: null,
   lines: [{ variant_id: 4, expected_quantity: 18, counted_quantity: 12, difference: -6 },
     { variant_id: 7, expected_quantity: 0, counted_quantity: 0, difference: 0 }],
@@ -123,8 +130,8 @@ const historial = () => screen.getByRole('region', { name: 'Documentos' });
 const rowOf = (id: number) => historial().querySelector<HTMLElement>(`tr[data-adjustment-id="${id}"]`)!;
 const cellsOf = (row: HTMLElement) => within(row).getAllByRole('cell').map(cell => cell.textContent);
 const disclosure = (id: number) => within(rowOf(id)).getByRole('button', { name: `#${id}` });
-async function ready(h: ReturnType<typeof harness>) {
-  render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} />);
+async function ready(h: ReturnType<typeof harness>, location: Location = warehouse) {
+  mount(h.fetcher, { location });
   await within(historial()).findByText('#6');
 }
 const openDrawer = async () => {
@@ -178,7 +185,7 @@ describe('adjustment history', () => {
   // product name and detail instead of blank battery cells.
   it('reads a product document through its own identity without battery cells', async () => {
     const h = harness({ history: () => historyReply([summary({ id: 11, kind: 'other', total_difference: 3 })]) });
-    render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} />);
+    mount(h.fetcher);
     await within(historial()).findByText('#11');
     fireEvent.click(disclosure(11));
     const panel = document.getElementById('adjustment-lines-11')!;
@@ -204,7 +211,7 @@ describe('adjustment history', () => {
         productDetailLine({ expected_quantity: 4, counted_quantity: 7, difference: 3 })],
       total_difference: 0 }),
     });
-    render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} />);
+    mount(h.fetcher);
     await within(historial()).findByText('#12');
     // The history states that the kind of this document is unknown, never a guess,
     // and it reports both persisted lines.
@@ -383,7 +390,7 @@ describe('blind capture', () => {
       create: () => created,
       history: () => historyReply([summary({ id: 11, kind: 'other', total_difference: 3 })]),
     });
-    render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} />);
+    mount(h.fetcher);
     await within(historial()).findByText('#11');
     const drawer = await openDrawer();
     fireEvent.click(within(drawer).getByRole('tab', { name: 'Otros productos' }));
@@ -468,6 +475,35 @@ describe('blind capture', () => {
       ['CAR · NS40ZL', '35 Ah', 'L', '18', '12', '-6'],
       ['TOYO · NS60L', '45 Ah', 'L', '0', '0', '0'],
     ]);
+  });
+
+  // Una confirmación pertenece al acto que la produjo (S34): la del documento ya aplicado
+  // no sobrevive a abrir un conteo nuevo, porque el operador leería la confirmación de un
+  // acto que todavía no cometió.
+  it('does not keep the applied confirmation on screen when another count starts', async () => {
+    let applied = false;
+    const h = harness({
+      create: () => { applied = true; return createdReply(); },
+      history: () => historyReply(applied
+        ? [summary({ id: 9, reason: motive, detail: '', lines: 2, total_difference: -6 }), ...defaultHistory]
+        : defaultHistory),
+    });
+    await ready(h);
+    const first = await openDrawer();
+    fireEvent.change(await within(first).findByLabelText('Contado de CAR · NS40ZL'), { target: { value: '12' } });
+    fireEvent.change(within(first).getByLabelText('Contado de TOYO · NS60L'), { target: { value: '0' } });
+    fireEvent.change(within(first).getByLabelText('Motivo del ajuste'), { target: { value: motive } });
+    fireEvent.click(applyButton(first));
+    await waitFor(() => expect(h.posts()).toHaveLength(1));
+    await waitFor(() => expect(historyStatus()).toHaveTextContent('Ajuste #9 aplicado: diferencia total -6.'));
+
+    // El conteo siguiente abre con la bandeja limpia: nada confirma el acto anterior.
+    const second = await openDrawer();
+    expect(historyStatus()).not.toHaveTextContent(/Ajuste #[0-9]+ aplicado/);
+    // Y abandonarlo tampoco deja la confirmación de un acto viejo a la vista.
+    fireEvent.click(within(second).getByRole('button', { name: 'Cancelar' }));
+    expect(screen.queryByRole('dialog', { name: 'Nuevo ajuste' })).not.toBeInTheDocument();
+    expect(historyStatus()).toBeEmptyDOMElement();
   });
 
   it.each([
@@ -559,6 +595,102 @@ describe('adjustment counter-entry', () => {
   });
 });
 
+/**
+ * S36 · el ajuste es de cada local: la sucursal corrige su propio stock vendible con el
+ * mismo documento del Almacén. La pantalla dice de qué local es el acto (el que el
+ * servidor publicó para esta sesión, nunca uno inventado por el cliente) y la sucursal
+ * congelada por su rendición lee el hecho de su sucursal, no una caída del servicio.
+ */
+describe('the adjustment of a branch', () => {
+  const branchDetail = () => detailReply({ location_id: 2, id: 6 });
+
+  it('says whose stock it is and reads the document of the branch', async () => {
+    const h = harness({ detail: () => branchDetail() });
+    await ready(h, branch);
+    // El acto nombra el local: la sucursal ve «Sucursal A» y no un documento anónimo.
+    expect(screen.getByText(/El ajuste mueve el stock vendible de/))
+      .toHaveTextContent('El ajuste mueve el stock vendible de Sucursal A.');
+    expect(screen.queryByText(/almac[eé]n/i)).not.toBeInTheDocument();
+    fireEvent.click(disclosure(6));
+    const panel = document.getElementById('adjustment-lines-6')!;
+    expect(await within(panel).findByText('TOYO · NS60L')).toBeInTheDocument();
+    expect(within(panel).getByText(/El esperado es la foto del momento del ajuste/)).toBeInTheDocument();
+  });
+
+  it('names the branch in the capture too, without sending any location', async () => {
+    const h = harness();
+    await ready(h, branch);
+    const drawer = await openDrawer();
+    expect(within(drawer).getByText('Sucursal A · un documento puntual por conteo')).toBeInTheDocument();
+    fireEvent.change(await within(drawer).findByLabelText('Contado de CAR · NS40ZL'), { target: { value: '12' } });
+    fireEvent.change(within(drawer).getByLabelText('Motivo del ajuste'), { target: { value: motive } });
+    fireEvent.click(applyButton(drawer));
+    await waitFor(() => expect(h.posts()).toHaveLength(1));
+    // El cuerpo sigue siendo la clave, el motivo y las líneas contadas: el local no viaja.
+    expect(Object.keys(JSON.parse(String(h.posts()[0].init.body)))).toEqual(['operation_key', 'reason', 'lines']);
+  });
+
+  it('applies a branch count and shows the document the server published in its location', async () => {
+    let applied = false;
+    // El documento que el servidor publicó para la sesión de la sucursal: una sola línea,
+    // en el local 2, que es lo que el conteo de esta prueba envió.
+    const branchApplied = json(JSON.stringify({
+      id: 9, location_id: 2, reason: motive, detail: '', created_by_account_id: 2,
+      created_at: '2026-11-05T14:20:00Z', reverses_adjustment_id: null,
+      lines: [{ variant_id: 7, expected_quantity: 18, counted_quantity: 12, difference: -6 }],
+      total_difference: -6,
+    }), 201);
+    const h = harness({
+      create: () => { applied = true; return branchApplied; },
+      history: () => historyReply(applied
+        ? [summary({ id: 9, reason: motive, detail: '', lines: 1, total_difference: -6 }), ...defaultHistory]
+        : defaultHistory),
+      detail: () => detailReply({ id: 9, location_id: 2, reason: motive, detail: '',
+        created_at: '2026-11-05T14:20:00Z',
+        lines: [detailLine({ expected_quantity: 18, counted_quantity: 12, difference: -6 })], total_difference: -6 }),
+    });
+    await ready(h, branch);
+    const drawer = await openDrawer();
+    fireEvent.change(await within(drawer).findByLabelText('Contado de TOYO · NS60L'), { target: { value: '12' } });
+    fireEvent.change(within(drawer).getByLabelText('Motivo del ajuste'), { target: { value: motive } });
+    fireEvent.click(applyButton(drawer));
+    await waitFor(() => expect(historyStatus()).toHaveTextContent('Ajuste #9 aplicado: diferencia total -6.'));
+    await waitFor(() => expect(document.getElementById('adjustment-lines-9')).not.toBeNull());
+    const panel = document.getElementById('adjustment-lines-9')!;
+    expect(await within(panel).findByText('TOYO · NS60L')).toBeInTheDocument();
+    expect(screen.getByText(/El ajuste mueve el stock vendible de/))
+      .toHaveTextContent('El ajuste mueve el stock vendible de Sucursal A.');
+  });
+
+  // La sucursal congelada es un hecho de la sucursal: la rendición que está contando. No se
+  // lee como una caída del servicio y el conteo cargado sigue en pantalla para reintentar.
+  it('renders a frozen branch as its own answer, never as a generic failure', async () => {
+    const h = harness({ create: () => errorReply('branch_frozen', 409) });
+    await ready(h, branch);
+    const drawer = await openDrawer();
+    fireEvent.change(await within(drawer).findByLabelText('Contado de CAR · NS40ZL'), { target: { value: '12' } });
+    fireEvent.change(within(drawer).getByLabelText('Motivo del ajuste'), { target: { value: motive } });
+    fireEvent.click(applyButton(drawer));
+    await waitFor(() => expect(within(drawer).getByRole('alert'))
+      .toHaveTextContent(stockAdjustmentApplyMessages.branch_frozen));
+    const alert = within(drawer).getByRole('alert');
+    expect(alert).toHaveTextContent('rendición');
+    expect(alert).toHaveTextContent('no puede ajustar stock ahora');
+    expect(alert).not.toHaveTextContent(stockAdjustmentApplyMessages.service_unavailable);
+    expect(countedBox(drawer, 'CAR · NS40ZL')).toHaveValue(12);
+    expect(h.posts()).toHaveLength(1);
+  });
+
+  // La pantalla del Almacén queda como estaba: el mismo acto, en su propio local.
+  it('keeps the warehouse act exactly where it was', async () => {
+    const h = harness();
+    await ready(h);
+    expect(screen.getByText(/El ajuste mueve el stock vendible de/))
+      .toHaveTextContent('El ajuste mueve el stock vendible de Almacén.');
+    expect(within(historial()).getByText('#6')).toBeInTheDocument();
+  });
+});
+
 describe('adjustment realtime refresh', () => {
   it('re-reads the history and the catalogue when another session changes the stock', async () => {
     const listeners = new Set<() => void>();
@@ -569,7 +701,7 @@ describe('adjustment realtime refresh', () => {
       },
     };
     const h = harness();
-    render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} realtime={realtime} />);
+    mount(h.fetcher, { realtime });
     await within(historial()).findByText('#6');
     expect(listeners.size).toBe(1);
     const drawer = await openDrawer();

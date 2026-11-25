@@ -3,5 +3,5 @@
   "compilerOptions": {
     "types": ["node", "@playwright/test"]
   },
-  "include": ["playwright.config.ts", "e2e/warranty/**/*.ts"]
+  "include": ["playwright.config.ts", "e2e/warranty/**/*.ts", "e2e/adjustments/**/*.ts"]
 }

@@ -14,6 +14,10 @@ const listed = (overrides: Record<string, unknown> = {}): StockAdjustmentSummary
 } as StockAdjustmentSummary);
 const json = (body: string, status = 200) => new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
+// The session this transport speaks for: the warehouse unless a spec states the branch.
+// The location is a fact of the session and never travels in any request body.
+const transport = (fetch: ReturnType<typeof mockFetch>, locationID = 1) =>
+  createStockAdjustmentAPI(locationID, fetch);
 
 const recordBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 7, location_id: 1, reason: motive, detail: '', created_by_account_id: 1,
@@ -52,7 +56,7 @@ const catalogBody = (overrides: Record<string, unknown> = {}) => JSON.stringify(
 describe('adjustment creation transport', () => {
   it.each([[201, false], [200, true]])('posts the blind payload with the session CSRF header (%s)', async (status, replayed) => {
     const fetch = mockFetch().mockResolvedValue(json(recordBody(), status));
-    const result = await createStockAdjustmentAPI(fetch).create(draft(), csrf);
+    const result = await transport(fetch).create(draft(), csrf);
     expect(result.replayed).toBe(replayed);
     expect(result.record).toMatchObject({ id: 7, location_id: 1, total_difference: -15 });
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-adjustments', {
@@ -70,7 +74,7 @@ describe('adjustment creation transport', () => {
     const fetch = mockFetch().mockReturnValue(new Promise<Response>(yes => { resolve = yes; }));
     const input = draft() as { operation_key: string; reason: string; lines: { variant_id: number; counted_quantity: number }[] };
     const controller = new AbortController();
-    const job = createStockAdjustmentAPI(fetch).create(input, csrf, controller.signal);
+    const job = transport(fetch).create(input, csrf, controller.signal);
     input.lines[0].counted_quantity = 500;
     input.reason = 'Otro';
     resolve(json(recordBody(), 201));
@@ -84,12 +88,31 @@ describe('adjustment creation transport', () => {
 
   it.each([
     [400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'],
-    [409, 'retry_conflict'], [409, 'insufficient_stock'], [503, 'service_unavailable'],
+    [409, 'retry_conflict'], [409, 'insufficient_stock'], [409, 'branch_frozen'], [503, 'service_unavailable'],
   ])('reports the admitted %s %s with its status', async (status, code) => {
     const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
-    const failure = await createStockAdjustmentAPI(fetch).create(draft(), csrf).catch(error => error);
+    const failure = await transport(fetch).create(draft(), csrf).catch(error => error);
     expect(failure).toBeInstanceOf(StockAdjustmentAPIError);
     expect(failure).toMatchObject({ code, status });
+  });
+
+  // La sucursal ajusta su propio stock con el mismo documento (S36): el transporte de una
+  // sesión de sucursal acepta el documento que el servidor publicó en su local, y el cuerpo
+  // que envía sigue siendo sólo la clave, el motivo y las líneas contadas.
+  it('accepts the document of the location the session counts', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(recordBody({ location_id: 2 }), 201));
+    const result = await transport(fetch, 2).create(draft(), csrf);
+    expect(result.record.location_id).toBe(2);
+    const body = JSON.parse(String(fetch.mock.calls[0][1]?.body)) as Record<string, unknown>;
+    expect(Object.keys(body)).toEqual(['operation_key', 'reason', 'lines']);
+    expect(body).not.toHaveProperty('location_id');
+  });
+
+  it.each([0, -1, 1.5, 32768, Number.NaN])('fails closed on session location %s without any call', async locationID => {
+    const fetch = mockFetch();
+    await expect(transport(fetch, locationID).create(draft(), csrf))
+      .rejects.toMatchObject({ code: 'invalid_request', status: null });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -97,21 +120,21 @@ describe('adjustment creation transport', () => {
     ['a reply with another counted quantity', json(recordBody({ lines: [{ variant_id: 4, expected_quantity: 18, counted_quantity: 1, difference: -17 }, { variant_id: 9, expected_quantity: 9, counted_quantity: 12, difference: 3 }], total_difference: -14 }), 201)],
     ['a reply with another motive', json(recordBody({ reason: 'Otro' }), 201)],
     ['a reply that is a counter-entry', json(recordBody({ reverses_adjustment_id: 3 }), 201)],
-    ['a reply outside the warehouse', json(recordBody({ location_id: 2 }), 201)],
+    ['a reply from another location', json(recordBody({ location_id: 2 }), 201)],
     ['an unadmitted success status', json(recordBody(), 202)],
     ['an uninterpretable error code', json('{"error":"decision_conflict"}', 409)],
   ])('refuses to interpret %s', async (_, reply) => {
     const fetch = mockFetch().mockResolvedValue(reply);
-    await expect(createStockAdjustmentAPI(fetch).create(draft(), csrf)).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(transport(fetch).create(draft(), csrf)).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it('distinguishes a lost connection from an aborted attempt', async () => {
     const network = mockFetch().mockRejectedValue(new TypeError('Failed to fetch'));
-    await expect(createStockAdjustmentAPI(network).create(draft(), csrf)).rejects.toMatchObject({ code: 'network', status: null });
+    await expect(transport(network).create(draft(), csrf)).rejects.toMatchObject({ code: 'network', status: null });
     const controller = new AbortController();
     controller.abort();
     const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
-    await expect(createStockAdjustmentAPI(aborted).create(draft(), csrf, controller.signal))
+    await expect(transport(aborted).create(draft(), csrf, controller.signal))
       .rejects.toMatchObject({ code: 'aborted', status: null });
   });
 
@@ -121,7 +144,7 @@ describe('adjustment creation transport', () => {
     ['a CSRF token with forbidden characters', draft(), 'not a token'],
   ])('fails closed on %s without any network call', async (_, input, token) => {
     const fetch = mockFetch();
-    await expect(createStockAdjustmentAPI(fetch).create(input, token))
+    await expect(transport(fetch).create(input, token))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -130,7 +153,7 @@ describe('adjustment creation transport', () => {
 describe('adjustment history transport', () => {
   it('reads one page with the session cookie and no CSRF header', async () => {
     const fetch = mockFetch().mockResolvedValue(json(historyBody()));
-    const page = await createStockAdjustmentAPI(fetch).history(1, 25);
+    const page = await transport(fetch).history(1, 25);
     expect(page).toMatchObject({ page: 1, page_size: 25, total_adjustments: 1 });
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-adjustments?page=1&page_size=25', {
       method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined,
@@ -139,18 +162,18 @@ describe('adjustment history transport', () => {
 
   it('rejects a page that echoes another query than the one requested', async () => {
     const fetch = mockFetch().mockResolvedValue(json(historyBody({ page: 2 })));
-    await expect(createStockAdjustmentAPI(fetch).history(1, 25)).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(transport(fetch).history(1, 25)).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [503, 'service_unavailable']])(
     'reports the admitted %s %s', async (status, code) => {
       const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
-      await expect(createStockAdjustmentAPI(fetch).history(1, 25)).rejects.toMatchObject({ code, status });
+      await expect(transport(fetch).history(1, 25)).rejects.toMatchObject({ code, status });
     });
 
   it.each([[0, 25], [1, 15], [1000001, 25], [1.5, 25]])('fails closed on page %s size %s without any call', async (page, size) => {
     const fetch = mockFetch();
-    await expect(createStockAdjustmentAPI(fetch).history(page, size)).rejects.toMatchObject({ code: 'invalid_request', status: null });
+    await expect(transport(fetch).history(page, size)).rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -158,7 +181,7 @@ describe('adjustment history transport', () => {
 describe('adjustment detail transport', () => {
   it('reads one document with the session cookie', async () => {
     const fetch = mockFetch().mockResolvedValue(json(detailBody()));
-    const detail = await createStockAdjustmentAPI(fetch).detail(6);
+    const detail = await transport(fetch).detail(6);
     expect(detail.lines[0]).toMatchObject({ variant_id: 7, expected_quantity: 18, counted_quantity: 12, difference: -6 });
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-adjustments/6', {
       method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined,
@@ -167,18 +190,28 @@ describe('adjustment detail transport', () => {
 
   it('refuses a reply for another document', async () => {
     const fetch = mockFetch().mockResolvedValue(json(detailBody({ id: 7 })));
-    await expect(createStockAdjustmentAPI(fetch).detail(6)).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(transport(fetch).detail(6)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  // Cada local lee su propio libro: el detalle de otro local no es un documento de esta
+  // sesión, y el de la sucursal sí lo es cuando la sesión cuenta en ese local.
+  it('reads the document of the location the session counts and refuses another location', async () => {
+    const branch = mockFetch().mockResolvedValue(json(detailBody({ location_id: 2 })));
+    const detail = await transport(branch, 2).detail(6);
+    expect(detail.location_id).toBe(2);
+    const foreign = mockFetch().mockResolvedValue(json(detailBody({ location_id: 2 })));
+    await expect(transport(foreign, 1).detail(6)).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'], [503, 'service_unavailable']])(
     'reports the admitted %s %s', async (status, code) => {
       const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
-      await expect(createStockAdjustmentAPI(fetch).detail(6)).rejects.toMatchObject({ code, status });
+      await expect(transport(fetch).detail(6)).rejects.toMatchObject({ code, status });
     });
 
   it.each([0, -1, 1.5, Number.NaN])('fails closed on document id %s without any call', async id => {
     const fetch = mockFetch();
-    await expect(createStockAdjustmentAPI(fetch).detail(id)).rejects.toMatchObject({ code: 'invalid_request', status: null });
+    await expect(transport(fetch).detail(id)).rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -186,12 +219,12 @@ describe('adjustment detail transport', () => {
 describe('blind capture catalogue transport', () => {
   it('reads the quantity-free catalogue of the declared kind for the typed search', async () => {
     const fetch = mockFetch().mockImplementation(async () => json(catalogBody()));
-    const page = await createStockAdjustmentAPI(fetch).catalog('', 'battery');
+    const page = await transport(fetch).catalog('', 'battery');
     expect(page.items[0]).toEqual({ variant_id: 4, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
       battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null, catalog_entry_id: 1 });
     expect(fetch.mock.calls[0][0]).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery');
     expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
-    await createStockAdjustmentAPI(fetch).catalog('NS40ZL', 'battery');
+    await transport(fetch).catalog('NS40ZL', 'battery');
     expect(fetch.mock.calls[1][0]).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery&search=NS40ZL');
   });
 
@@ -199,7 +232,7 @@ describe('blind capture catalogue transport', () => {
     const fetch = mockFetch().mockResolvedValue(json(catalogBody({ items: [{ variant_id: 9, catalog_entry_id: 2,
       kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
       fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }] }] })));
-    const page = await createStockAdjustmentAPI(fetch).catalog('', 'other');
+    const page = await transport(fetch).catalog('', 'other');
     expect(page.items[0]).toEqual({ variant_id: 9, kind: 'other', name: 'Agua acidulada',
       detail: 'volumen en L: 5 L', battery: null,
       fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], catalog_entry_id: 2 });
@@ -214,18 +247,18 @@ describe('blind capture catalogue transport', () => {
     ['an uninterpretable error code', json('{"error":"not_found"}', 404)],
   ])('refuses %s', async (_, reply) => {
     const fetch = mockFetch().mockResolvedValue(reply);
-    await expect(createStockAdjustmentAPI(fetch).catalog('', 'battery')).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(transport(fetch).catalog('', 'battery')).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [503, 'service_unavailable']])(
     'reports the admitted %s %s', async (status, code) => {
       const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
-      await expect(createStockAdjustmentAPI(fetch).catalog('', 'battery')).rejects.toMatchObject({ code, status });
+      await expect(transport(fetch).catalog('', 'battery')).rejects.toMatchObject({ code, status });
     });
 
   it('fails closed on an inadmissible search without any call', async () => {
     const fetch = mockFetch();
-    await expect(createStockAdjustmentAPI(fetch).catalog('x'.repeat(129), 'battery'))
+    await expect(transport(fetch).catalog('x'.repeat(129), 'battery'))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -236,7 +269,7 @@ describe('counter-entry transport', () => {
 
   it.each([[201, false], [200, true]])('posts only the key and the reason to the frozen path (%s)', async (status, replayed) => {
     const fetch = mockFetch().mockResolvedValue(json(counterBody(), status));
-    const result = await createStockAdjustmentAPI(fetch).reverse(listed(), reversal, csrf);
+    const result = await transport(fetch).reverse(listed(), reversal, csrf);
     expect(result.replayed).toBe(replayed);
     expect(result.record).toMatchObject({ id: 9, reverses_adjustment_id: 6, total_difference: 15 });
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-adjustments/6/reverse', {
@@ -251,7 +284,7 @@ describe('counter-entry transport', () => {
     ['a counter-entry', listed({ reverses_adjustment_id: 3 })],
   ])('refuses to send a reversal of %s', async (_, row) => {
     const fetch = mockFetch();
-    await expect(createStockAdjustmentAPI(fetch).reverse(row, reversal, csrf))
+    await expect(transport(fetch).reverse(row, reversal, csrf))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -262,16 +295,28 @@ describe('counter-entry transport', () => {
     ['a missing CSRF token', reversal, listed(), ''],
   ])('fails closed on %s without any call', async (_, input, row, token) => {
     const fetch = mockFetch();
-    await expect(createStockAdjustmentAPI(fetch).reverse(row, input, token))
+    await expect(transport(fetch).reverse(row, input, token))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'],
-    [409, 'decision_conflict'], [409, 'retry_conflict'], [409, 'insufficient_stock'], [503, 'service_unavailable']])(
+    [409, 'decision_conflict'], [409, 'retry_conflict'], [409, 'insufficient_stock'], [409, 'branch_frozen'],
+    [503, 'service_unavailable']])(
   'reports the admitted %s %s', async (status, code) => {
     const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
-    await expect(createStockAdjustmentAPI(fetch).reverse(listed(), reversal, csrf)).rejects.toMatchObject({ code, status });
+    await expect(transport(fetch).reverse(listed(), reversal, csrf)).rejects.toMatchObject({ code, status });
+  });
+
+  // La reversa sigue a su original: el contra-asiento de una sucursal se acepta en el local
+  // de su sesión y se rechaza cuando la sesión cuenta en otro.
+  it('accepts the counter-entry of the location the session counts and refuses another', async () => {
+    const branch = mockFetch().mockResolvedValue(json(counterBody({ location_id: 2 }), 201));
+    const result = await transport(branch, 2).reverse(listed({ total_difference: -15 }), reversal, csrf);
+    expect(result.record.location_id).toBe(2);
+    const foreign = mockFetch().mockResolvedValue(json(counterBody({ location_id: 2 }), 201));
+    await expect(transport(foreign, 1).reverse(listed({ total_difference: -15 }), reversal, csrf))
+      .rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it.each([
@@ -285,7 +330,7 @@ describe('counter-entry transport', () => {
     ['an unadmitted success status', json(counterBody(), 202)],
   ])('refuses to interpret %s', async (_, reply) => {
     const fetch = mockFetch().mockResolvedValue(reply);
-    await expect(createStockAdjustmentAPI(fetch).reverse(listed(), reversal, csrf))
+    await expect(transport(fetch).reverse(listed(), reversal, csrf))
       .rejects.toMatchObject({ code: 'invalid_response' });
   });
 });

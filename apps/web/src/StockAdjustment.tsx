@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { identityOf, validSearch } from './model';
-import type { Kind, VariantIdentity } from './model';
+import type { Kind, Location, VariantIdentity } from './model';
 import TransferDate from './shared/TransferDate';
 import { createStockAdjustmentAPI, StockAdjustmentAPIError } from './stockAdjustmentAPI';
 import {
@@ -49,6 +49,12 @@ export interface StockAdjustmentProps {
   // The parent remounts this section per session fence, so a rotated session or
   // CSRF token can never publish a result into a newer warehouse session.
   csrf: string;
+  /**
+   * The location of the session, and the only one this act touches (S36): the document
+   * belongs to the caller's own location and the screen says whose stock it is, so a
+   * branch clerk reads «Sucursal A» instead of an anonymous document.
+   */
+  location: Location;
   fetcher?: typeof globalThis.fetch;
   realtime?: StockAdjustmentRealtime;
 }
@@ -72,8 +78,10 @@ const detailGroupName = (kind: Kind) => kind === 'battery' ? 'baterías' : 'otro
 const focusableWithin = (element: HTMLElement | null) => Array.from(element?.querySelectorAll<HTMLElement>(
   'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]') ?? []);
 
-export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, realtime }: StockAdjustmentProps) {
-  const api = useMemo(() => createStockAdjustmentAPI(fetcher), [fetcher]);
+export default function StockAdjustment({ csrf, location, fetcher = globalThis.fetch, realtime }: StockAdjustmentProps) {
+  // El transporte habla por el local de la sesión: el servidor ya no publica el documento
+  // del Almacén para todos, y ninguna petición manda el local.
+  const api = useMemo(() => createStockAdjustmentAPI(location.id, fetcher), [location.id, fetcher]);
   const [open, setOpen] = useState(false);
   // The document declares its kind, and the kind is chosen with two tabs before a
   // count: one document never mixes the two kinds.
@@ -245,6 +253,10 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
   function openDrawer() {
     if (applyBusy) return;
     forgetAttempt(); setLines([]); setMotive(''); setDrawerStatus(''); setDrawerProblem(''); setSearch('');
+    // A confirmation belongs to the act that produced it (S34): the one of the document
+    // just applied belongs to a closed act and does not survive a new count, because an
+    // operator would otherwise read a confirmation for an act not yet committed.
+    setHistoryStatus('');
     // The drawer opens on the battery picker every time, exactly like today.
     setKind('battery'); setKindSwitch(null);
     setOpen(true);
@@ -252,6 +264,8 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
   function closeDrawer() {
     if (applyBusy) return;
     setOpen(false);
+    // An abandoned count leaves nothing behind, not even the confirmation of an earlier act.
+    setHistoryStatus('');
     if (drawerTrigger.current?.isConnected) drawerTrigger.current.focus();
   }
   function trapFocus(event: React.KeyboardEvent, element: HTMLElement | null) {
@@ -383,7 +397,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
   const rows = history.phase === 'ready' && history.page ? history.page.adjustments : [];
   const historyTotal = history.page ? history.page.total_adjustments : 0;
   const historyCount = history.phase === 'ready'
-    ? `${historyTotal} ${historyTotal === 1 ? 'documento' : 'documentos'}` : 'Almacén';
+    ? `${historyTotal} ${historyTotal === 1 ? 'documento' : 'documentos'}` : location.name;
   const badgeOf = (row: StockAdjustmentSummary) => row.reversed_by !== null
     ? <span className="adjustment-tag reversed">Revertido</span>
     : row.reverses_adjustment_id !== null
@@ -453,9 +467,10 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
   return <section className="stock-adjustment" aria-labelledby="adjustment-title">
     <header className="adjustment-heading">
       <div className="stock-entry-heading">
-        <small>ALMACÉN / AJUSTES</small>
+        <small>{location.name.toUpperCase()} / AJUSTES</small>
         <h1 id="adjustment-title">Historial de ajustes</h1>
         <p>Cada ajuste es un documento inmutable con el esperado, lo contado y la diferencia. Las correcciones son contra-asientos.</p>
+        <p className="stock-hint">El ajuste mueve el stock vendible de <strong>{location.name}</strong>.</p>
       </div>
       <button type="button" className="primary" ref={drawerTrigger} disabled={applyBusy} onClick={openDrawer}>Nuevo ajuste</button>
     </header>
@@ -468,7 +483,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
       <p role="status" className="stock-status">{historyStatus}</p>
       {rows.length > 0 && <div className="stock-table-wrap">
         <table className="stock-table adjustment-table">
-          <caption className="sr-only">Historial de ajustes del Almacén</caption>
+          <caption className="sr-only">Historial de ajustes de {location.name}</caption>
           <thead><tr><th scope="col">Documento</th><th scope="col">Tipo</th><th scope="col">Fecha</th><th scope="col">Motivo</th>
             <th scope="col">Líneas</th><th scope="col">Diferencia</th><th scope="col">Estado</th><th scope="col">Acción</th></tr></thead>
           <tbody>{rows.map(row => {
@@ -526,7 +541,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
         }}>
         <header className="adjustment-drawer-head">
           <div><h2 id="adjustment-drawer-title">Nuevo ajuste</h2>
-            <p className="stock-hint">Almacén · un documento puntual por conteo</p></div>
+            <p className="stock-hint">{location.name} · un documento puntual por conteo</p></div>
           <button type="button" aria-label="Cerrar el ajuste" disabled={applyBusy} onClick={closeDrawer}>×</button>
         </header>
         {/* The kind is chosen before any count: one document never mixes the two
@@ -546,14 +561,14 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
             placeholder={kind === 'other' ? 'Agua acidulada, 5 L' : 'NS40ZL, TOYO, 45 Ah'}
             onChange={event => setSearch(event.target.value)} />
         </label>
-        {catalog.phase === 'loading' && <p className="stock-message">Consultando el catálogo del Almacén…</p>}
+        {catalog.phase === 'loading' && <p className="stock-message">Consultando el catálogo de {location.name}…</p>}
         {catalog.phase === 'error' && <p role="alert" className="stock-message">{catalog.problem}
           <button type="button" onClick={() => setCatalogRevision(value => value + 1)}>Reintentar catálogo</button></p>}
         {catalog.phase === 'ready' && catalog.items.length === 0 &&
           <p className="stock-message">{kind === 'other' ? 'Sin productos para esa búsqueda.' : 'Sin variantes para esa búsqueda.'}</p>}
         {catalog.phase === 'ready' && catalog.items.length > 0 && kind === 'other' && <div className="stock-table-wrap">
           <table className="stock-table adjustment-capture adjustment-capture-other">
-            <caption className="sr-only">Productos del catálogo del Almacén para contar</caption>
+            <caption className="sr-only">Productos del catálogo de {location.name} para contar</caption>
             <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th><th scope="col">Contado</th></tr></thead>
             <tbody>{catalog.items.map(item => {
               const line = lines.find(entry => entry.variant_id === item.variant_id);
@@ -570,7 +585,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
         </div>}
         {catalog.phase === 'ready' && catalog.items.length > 0 && kind === 'battery' && <div className="stock-table-wrap">
           <table className="stock-table adjustment-capture">
-            <caption className="sr-only">Variantes del catálogo del Almacén para contar</caption>
+            <caption className="sr-only">Variantes del catálogo de {location.name} para contar</caption>
             <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Contado</th></tr></thead>
             <tbody>{catalog.items.flatMap(item => item.battery === null ? [] : [{ item, battery: item.battery }]).map(({ item, battery }) => {
               const line = lines.find(entry => entry.variant_id === item.variant_id);
