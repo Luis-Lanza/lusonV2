@@ -234,6 +234,10 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "already_released")
 	case errors.Is(err, warrantycase.ErrReleaseUnavailable):
 		failure(w, 409, "nothing_to_release")
+	// The unit of the case is the branch's sellable stock: the release sells it and closes the case,
+	// and the delivery asserts a handover that did not happen (S31).
+	case errors.Is(err, warrantycase.ErrUnitBelongsToStock):
+		failure(w, 409, "unit_belongs_to_stock")
 	default:
 		failure(w, 503, "service_unavailable")
 	}
@@ -1330,8 +1334,10 @@ func warrantyCaseRecord(document warrantycase.Case) (warrantyCaseDTO, error) {
 		previousLoan = loanRecord.Ordinal
 		record.Loans = append(record.Loans, loanRecord)
 	}
-	// The phase of a case is the phase of its last tramo of the journey, so the history and the header
-	// can never be published disagreeing (S9).
+	// The phase of a case is the phase its last event states, so the history and the header can never be
+	// published disagreeing (S9, S31): a tramo of the journey enters its phase, and a notice or a release
+	// carries the phase the case holds -- except the release that closes the case whose unit is the
+	// branch's own stock, which states the `closed` it writes.
 	phase := warrantycase.PhaseReceived
 	var previousEvent int
 	for _, item := range document.Events {
@@ -1340,9 +1346,7 @@ func warrantyCaseRecord(document warrantycase.Case) (warrantyCaseDTO, error) {
 			return unavailable()
 		}
 		previousEvent = eventRecord.Ordinal
-		if item.Kind == warrantycase.KindPhase {
-			phase = item.Phase
-		}
+		phase = item.Phase
 		record.Events = append(record.Events, eventRecord)
 	}
 	if phase != document.Phase {

@@ -26,8 +26,8 @@ warehouse authorises it.
 | `/api/warranty-cases/{id}/advance` | POST | 200 with the case and the tramo it entered |
 | `/api/warranty-cases/{id}/resolution` | POST | 200 with the case, its verdict and its destinations |
 | `/api/warranty-cases/{id}/notice` | POST | 200 with the case and the notice in its history |
-| `/api/warranty-cases/{id}/release` | POST | 200 with the case and the release in its history |
-| `/api/warranty-cases/{id}/delivery` | POST | 200 with the closed case and the settled loan |
+| `/api/warranty-cases/{id}/release` | POST | 200 with the case and the release in its history; the release of a unit bound for stock also closes the case |
+| `/api/warranty-cases/{id}/delivery` | POST | 200 with the closed case and the settled loan; `409 unit_belongs_to_stock` when the unit is the branch's stock |
 | `/api/warranty-cases/{id}/receipt.pdf` | GET | 200 with the loan receipt of the case, as a PDF download |
 
 No other method and no other path is served (`405 method_not_allowed` with `Allow: GET` on the three
@@ -48,7 +48,7 @@ API directly is refused exactly like a screen that shows the wrong button.
 | Open a claim, open a finding | yes | `403 forbidden` |
 | Read the case, read the tray | its own cases | every case it moves |
 | Lend a used battery, state its fate | yes | `403 forbidden` |
-| Record `in_transit` and `closed` | yes | `403 forbidden` |
+| Record `in_transit` and `closed` | yes, except on a case whose unit is bound for stock | `403 forbidden` |
 | Record `at_warehouse` and `at_factory` | `403 forbidden` | yes |
 | Record the verdict (resolution) | `403 forbidden` | yes |
 | Register the notice | yes, on a claim only | `403 forbidden` |
@@ -77,7 +77,7 @@ so on the side that may ask — the branch for the notice, the warehouse for the
 | `case_number` | The persisted number, `C-<branch>-<sequence>` (S20). It is the branch's own correlative and never the warranty numbering of the sale, and no client states it |
 | `branch_location_id` | The branch that owns the case; never the warehouse |
 | `origin` | `warranty_claim` or `stock_defect` |
-| `phase` | `received`, `in_transit`, `at_warehouse`, `at_factory`, `resolved` or `closed`. It is always the phase of the last `phase` tramo of the history |
+| `phase` | `received`, `in_transit`, `at_warehouse`, `at_factory`, `resolved` or `closed`. It is always the phase the last event of the history states: a `phase` tramo enters it, and the release of a unit bound for stock writes `closed` |
 | `verdict` | `null` until the case is resolved, then `repaired`, `replaced`, `unrepairable`, `not_covered`, `lost` or `refused_at_warehouse` |
 | `reported_destination` | Where the reported battery ends: `customer`, `stock`, `scrap` or `retained_by_factory`; `null` until the verdict |
 | `loan_destination` | Where the lent battery ends, in the same vocabulary; `null` until the verdict on a claim and always `null` on a finding, which lends none |
@@ -115,7 +115,9 @@ An event:
 
 `kind` is `phase` for a tramo of the journey, `notice` for the notice the branch registers and
 `release` for the release the warehouse authorises. A `phase` event enters a phase the case was not in;
-a `notice` and a `release` carry the phase the case already holds, because neither moves it.
+a `notice` and a `release` carry the phase the case already holds, because neither moves it — except
+the release of a unit bound for stock, which states the `closed` it writes (see
+[the notice, the release and the delivery](#the-notice-the-release-and-the-delivery)).
 `factory_case_number` is the file number the warehouse transcribes by hand: it is stated on the
 `at_factory` tramo, required there and empty everywhere else.
 
@@ -382,10 +384,16 @@ of the case's branch, and it is the mirror of the write-off of a finding:
 * The release requires a recorded notice (`409 notice_required`), it happens once
   (`409 already_released`) and it exists only once the factory has answered
   (`409 resolution_pending`).
-* The unit that returns is the single repaired unit a claim got back for its client. A claim whose
-  battery never came back — kept by the factory, scrapped or sent to the used pool — is
-  `409 nothing_to_release`, a branch that tries to authorise a release is `403 forbidden`, and a finding
-  is `409 claim_only`, because its units are the branch's own and came back at its resolution.
+* The unit that returns is the single unit a claim got back as a sellable battery: the one the factory
+  returned repaired or replaced, whether its destination is the client or the branch's own shelf. A
+  claim whose battery never came back as a usable unit — kept by the factory, scrapped or the damaged
+  battery of a `not_covered` verdict, which belongs to the used pool — is `409 nothing_to_release`; a
+  branch that tries to authorise a release is `403 forbidden`, and a finding is `409 claim_only`,
+  because its units are the branch's own and came back at its resolution.
+* The release of a case whose `reported_destination` is `stock` and whose verdict is `repaired` or
+  `replaced` **closes the case**: the factory gave a usable battery back that the client never came to
+  collect, so it is the branch's sellable stock and it never leaves with anyone. That release states
+  the `closed` it writes, and the answer of the route carries the closed case.
 
 ```
 POST /api/warranty-cases/1/delivery
@@ -400,7 +408,17 @@ The delivery hands the battery to the client and closes the case, in one act:
 * The case must be `resolved`: any other phase is `409
   {"error":"transition_not_allowed","from":"in_transit","to":"closed"}`.
 * The delivery writes no stock and no cash: the unit leaves the branch with the client.
+* A case whose unit is bound for stock is never delivered: `409 unit_belongs_to_stock`, and no tramo,
+  no loan fate and no balance is written. The delivery asserts that the battery went out with the
+  client, and that battery is the branch's shelf; the release above is the act that ends that case, and
+  a `closed` tramo of it is refused with the same code.
 * Only the branch delivers: the warehouse is `403 forbidden`.
+
+**Which act closes a case.** A claim destined to the client (`reported_destination` `customer`) closes
+with the delivery, which hands the battery over. A claim whose usable unit is destined to the branch's
+shelf (`stock` with `repaired` or `replaced`) closes with the warehouse's release, and so does the unit
+it sells. A finding on the shelf closes with the `closed` tramo of its journey, by its own branch,
+because it has no client and its units came back at its resolution.
 
 ## Error codes
 
@@ -426,7 +444,8 @@ The delivery hands the battery to the client and closes the case, in one act:
 | 409 | `warehouse_verdict` | The warehouse refuses at its gate with `refused_at_warehouse` and nothing else |
 | 409 | `notice_required` | A release requires a recorded notice |
 | 409 | `already_released` | The notice or the release of this case was already recorded |
-| 409 | `nothing_to_release` | The case holds no unit: its battery never came back |
+| 409 | `nothing_to_release` | The case holds no unit: its battery never came back as a sellable unit |
+| 409 | `unit_belongs_to_stock` | The unit of the case is the branch's sellable stock: the release sells it and closes the case, and the delivery never does |
 | 409 | `loan_fate_final` | A decided loan fate is final |
 | 409 | `loan_model_unknown` | The model of the loan is one the used pool never saw; the closed list is the one the flows state |
 | 409 | `loan_source_stock` | The origin of the loan does not hold the requested model, or another loan already took the last unit |
@@ -441,8 +460,9 @@ balance.
 The finding on the shelf takes its units off the branch that found them, in the transaction that
 admits the case. The resolution of that finding puts them back on that same branch when the verdict
 returns them `repaired` or `replaced`, in the transaction of the tramo that resolves the case. The
-release of a claim puts back the single unit the claim held in custody, in the transaction that records
-the warehouse's authorisation. The three write `existing` and never `reserved`, all name the case's own
+release of a claim puts back the single unit the claim held — the one the factory returned repaired or
+replaced, destined to the client or to the branch's own shelf — in the transaction that records the
+warehouse's authorisation. The three write `existing` and never `reserved`, all name the case's own
 branch and the case's own variant, and nothing else of this contract touches `inventory_balances`,
 `stock_entries`, `stock_adjustments`, any transfer or any cash row.
 

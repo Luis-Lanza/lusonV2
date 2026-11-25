@@ -117,6 +117,12 @@ func TestStockResolutionShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("embedded migration %s is unreadable", entry.Name())
 		}
+		// A later version narrows this guard forward by restating it whole, exactly as this file restated
+		// 068's, so naming its codes again is on purpose and it is not a second owner of them.
+		if strings.Contains(string(version),
+			"CREATE OR REPLACE FUNCTION admit_warranty_case_event()") {
+			continue
+		}
 		for code := range used {
 			// The codes the restated guards already own are stated by 065 and 068 themselves; the six
 			// this file adds are never reused by another version of the vertical.

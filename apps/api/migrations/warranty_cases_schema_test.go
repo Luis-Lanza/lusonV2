@@ -27,6 +27,11 @@ const warrantyCaseMigration = "065_warranty_cases.sql"
 // which files own the prefix, so a new file of the family joins it by name and no other file may.
 const usedModelMigration = "072_used_loan_requires_known_model.sql"
 
+// The release of the unit that is bound for the branch's sellable stock (S31): the destination of the
+// unit and the condition the factory returned it in are two facts, and only the pair says whether the
+// branch may sell the battery.
+const unitDestinedToStockMigration = "073_unit_destined_to_stock_is_released.sql"
+
 // TestWarrantyCasesStructure reads the embedded version exactly as PostgreSQL receives it and
 // asserts the shape it installs: the case with its two exclusive entry doors, the loans with no
 // identity but a model and a quantity, and the append-only history of the journey.
@@ -249,7 +254,7 @@ func TestWarrantyCasesGuards(t *testing.T) {
 		if !strings.HasSuffix(entry.Name(), ".sql") || entry.Name() == warrantyCaseMigration ||
 			entry.Name() == writeOffMigration || entry.Name() == noticeReleaseMigration ||
 			entry.Name() == stockResolutionMigration || entry.Name() == usedStockMigration ||
-			entry.Name() == usedModelMigration {
+			entry.Name() == usedModelMigration || entry.Name() == unitDestinedToStockMigration {
 			continue
 		}
 		version, err := migrations.Files.ReadFile(entry.Name())
@@ -655,6 +660,183 @@ func TestWarrantyCasesLoanFateIsDated(t *testing.T) {
 		t.Fatalf("the instant of a decision is never rewritten, got %v want %v", decidedAt, decided)
 	}
 	t.Logf("065: a loan is dated by the database the instant its fate leaves open")
+}
+
+// TestUnitDestinedToStockShape reads the embedded version exactly as PostgreSQL receives it: it proves
+// the file restates the two functions of the vertical forward instead of adding a phase or a trigger,
+// names the pair `destination + verdict` once, and states the one code of its own (S23, S31).
+func TestUnitDestinedToStockShape(t *testing.T) {
+	b, err := migrations.Files.ReadFile(unitDestinedToStockMigration)
+	if err != nil {
+		t.Fatal("the unit destined to stock migration must be embedded", err)
+	}
+	sql := statements(string(b))
+	for _, required := range []string{
+		// The pair is named once and read by the guard and by the release.
+		"CREATE FUNCTION warranty_case_unit_bound_for_stock(case_row warranty_cases) RETURNS boolean",
+		"SELECT case_row.origin = 'warranty_claim'",
+		"AND case_row.reported_destination = 'stock'",
+		"AND case_row.verdict IN ('repaired','replaced')",
+		// The two facts 068 and 069 own are narrowed forward by restating them whole, so each keeps
+		// exactly one authority.
+		"CREATE OR REPLACE FUNCTION admit_warranty_case_event() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"CREATE OR REPLACE FUNCTION release_case_unit_to_stock() RETURNS trigger LANGUAGE plpgsql AS $$",
+		// The close of the case bound for stock is the release's, in both directions.
+		"IF NEW.kind='phase' AND NEW.phase='closed' AND warranty_case_unit_bound_for_stock(header) THEN",
+		"ELSIF NEW.kind='release' AND warranty_case_unit_bound_for_stock(header) THEN",
+		"UPDATE inventory_balances SET existing=existing+1",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("the unit destined to stock is released: missing %s", required)
+		}
+	}
+	// It restates what it narrows and states one new number, which is the vertical's next one (S23).
+	used := map[string]bool{}
+	for _, match := range regexp.MustCompile(`ERRCODE='(LW[0-9]{3})'`).FindAllStringSubmatch(sql, -1) {
+		used[match[1]] = true
+	}
+	declared := []string{"LW006", "LW007", "LW008", "LW019", "LW020", "LW021", "LW022",
+		"LW023", "LW024", "LW025", "LW026", "LW030", "LW031", "LW035"}
+	got := make([]string, 0, len(used))
+	for code := range used {
+		got = append(got, code)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != strings.Join(declared, ",") {
+		t.Fatalf("the release restates the codes it narrows and states its own, got %v", got)
+	}
+	// Additive in the shape it adds: two functions restated, one declared, no table, no column, no
+	// trigger of its own and no row of any document rewritten.
+	for _, forbidden := range []string{
+		"CREATE TABLE", "ALTER TABLE", "CREATE TRIGGER", "DROP ",
+		"INSERT INTO inventory_balances", "INSERT INTO stock_", "INSERT INTO transfer_",
+		"DELETE FROM",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("the release of the unit bound for stock must not contain %s", forbidden)
+		}
+	}
+	if regexp.MustCompile(`(?m)^(UPDATE|INSERT INTO|DELETE FROM|TRUNCATE) `).MatchString(sql) {
+		t.Error("the migration must not write any row of its own")
+	}
+	// The file documents the decision it takes, so the next reader does not reconstruct it.
+	for _, documented := range []string{
+		"S31", "S14", "S23", "068", "069", "071", "LW035", "verdict", "stock",
+		"inventory_balances", "closed", "pool de usadas",
+	} {
+		if !strings.Contains(string(b), documented) {
+			t.Errorf("073 must document its own decision: %s", documented)
+		}
+	}
+}
+
+// TestUnitDestinedToStockIsReleasedOnALiveDatabase proves S31 on the admitted fixture. The rule is the
+// pair of two facts: a claim resolved `repaired` or `replaced` with its unit destined to the branch's
+// shelf is sellable stock the release sells once and the act that closes the case; the same destination
+// on any other verdict is the damaged battery of the used pool (071), which is still refused with
+// LW025 and writes nothing. The customer path keeps closing with its delivery tramo.
+func TestUnitDestinedToStockIsReleasedOnALiveDatabase(t *testing.T) {
+	ctx, p := unitDestinedToStockFixture(t)
+	claim := coveredClaim(t, ctx, p)
+	reachedResolved(t, ctx, p, claim)
+	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='repaired',
+ reported_destination='stock',loan_destination='customer' WHERE id=$1`, claim); err != nil {
+		t.Fatalf("the resolution of the claim could not be stated: %v", err)
+	}
+	before := writeOffBalances(t, ctx, p)
+	// The usable unit of this case never leaves with the client: the tramo that closes the case is
+	// refused, because closing it is asserting a handover that did not happen (S31).
+	_, err := p.Exec(ctx, closeCaseSQL, claim, 2, "Entregada al cliente")
+	execRefusalMessage(t, err, "LW035", "release closes it")
+	if phase := warrantyPhase(t, ctx, p, claim); phase != "resolved" {
+		t.Fatalf("a refused close never moves the case, got %s", phase)
+	}
+	if got := writeOffBalances(t, ctx, p); got != before {
+		t.Fatalf("a refused close writes no stock, got %s", got)
+	}
+	// The release requires the notice, and the release of this case is the act that closes it: a
+	// release that states the phase the case already holds would leave the case with no act left.
+	if _, err := p.Exec(ctx, releaseSQL, claim, "resolved", 1, "El cliente no la retira"); err == nil {
+		t.Fatal("the release of a case bound for stock requires its notice")
+	}
+	if _, err := p.Exec(ctx, noticeSQL, claim, "resolved", 2, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch registers the notice of its own case: %v", err)
+	}
+	_, err = p.Exec(ctx, releaseSQL, claim, "resolved", 1, "El cliente no la retira")
+	execRefusalMessage(t, err, "LW035", "bound for stock")
+	if phase := warrantyPhase(t, ctx, p, claim); phase != "resolved" {
+		t.Fatalf("a refused release never moves the case, got %s", phase)
+	}
+	if _, err := p.Exec(ctx, releaseSQL, claim, "closed", 1, "El cliente no la retira"); err != nil {
+		t.Fatalf("the warehouse releases the unit of a notified case: %v", err)
+	}
+	if phase := warrantyPhase(t, ctx, p, claim); phase != "closed" {
+		t.Fatalf("the release closes the case bound for stock, got %s", phase)
+	}
+	// The unit crosses from custody to the branch's sellable stock once, and nowhere else.
+	released := writeOffBalances(t, ctx, p)
+	if released == before {
+		t.Fatalf("the release sells the unit of the case, %s became %s", before, released)
+	}
+	_, err = p.Exec(ctx, releaseSQL, claim, "closed", 1, "La libero otra vez")
+	execRefusalMessage(t, err, "LW019", "release")
+	if got := writeOffBalances(t, ctx, p); got != released {
+		t.Fatalf("a refused second release moves no balance, got %s", got)
+	}
+
+	// The other side of the pair: the same destination on a verdict that did not give a usable battery
+	// back is the damaged unit of the used pool, and the branch never sells it (S11, S31, 071).
+	damaged := coveredClaim(t, ctx, p)
+	reachedResolved(t, ctx, p, damaged)
+	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='not_covered',
+ reported_destination='stock',loan_destination='customer' WHERE id=$1`, damaged); err != nil {
+		t.Fatalf("the refusal of the factory could not be stated: %v", err)
+	}
+	if _, err := p.Exec(ctx, noticeSQL, damaged, "resolved", 2, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch registers the notice of the second case: %v", err)
+	}
+	// The sale of the second claim moved the shelf, so the refused release is compared against the
+	// matrix it found and not against the one of the first case.
+	poolShelf := writeOffBalances(t, ctx, p)
+	_, err = p.Exec(ctx, releaseSQL, damaged, "resolved", 1, "La dañada al pool")
+	execRefusalMessage(t, err, "LW025", "no unit")
+	if got := writeOffBalances(t, ctx, p); got != poolShelf {
+		t.Fatalf("a refused release writes no stock, got %s", got)
+	}
+	// The damaged unit never enters sellable stock, so its case keeps the closing act it always had:
+	// the branch closes it with the tramo of its journey, exactly as before this version.
+	if _, err := p.Exec(ctx, closeCaseSQL, damaged, 2, "Las dañadas al pool de usadas"); err != nil {
+		t.Fatalf("the used-pool case keeps closing with its tramo: %v", err)
+	}
+	if phase := warrantyPhase(t, ctx, p, damaged); phase != "closed" {
+		t.Fatalf("the used-pool case is closed, got %s", phase)
+	}
+	t.Logf("073: the pair destination + verdict decides whether the branch may sell the unit")
+}
+
+// unitDestinedToStockFixture is the whole prefix of this vertical, the accounts, the branch stock and
+// the price the claim of S31 needs, applied up to this version so the guard it tests is the one 073
+// installs.
+func unitDestinedToStockFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	t.Cleanup(cancel)
+	p := testpg.Open(t)
+	applyMigrationRange(t, ctx, p, 73)
+	seedPrefixCatalog(t, ctx, p)
+	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
+ VALUES(1,'almacen','x'),(2,'sucursal_a','x'),(3,'sucursal_b','x')`); err != nil {
+		t.Fatal("the accounts could not be provisioned")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO inventory_balances(location_id,variant_id,existing,reserved)
+ VALUES(2,1,10,0),(3,1,10,0)`); err != nil {
+		t.Fatal("the branch stock could not be provisioned")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,
+ suggested_price,updated_by_account_id) VALUES(2,1,0.01,100.00,1)`); err != nil {
+		t.Fatal("the branch prices could not be configured")
+	}
+	return ctx, p
 }
 
 // warrantyFixture is the established database fixture of this vertical: an isolated PostgreSQL

@@ -722,6 +722,12 @@ func (s *Store) RegisterNotice(ctx context.Context, actor auth.Identity, caseID 
 // the client the answer, the warehouse moves the battery, and the release is the warehouse moving it
 // across the boundary in the other direction. It requires the recorded notice, it carries its motive,
 // and it happens once; the database states all three as well as this store does.
+//
+// The release is also the act that closes the case whose unit is bound for the branch's shelf (S31): the
+// factory returned a usable battery nobody came to collect, so the delivery can never close that case
+// -- it asserts a handover that did not happen -- and the release states the close it writes. A claim
+// whose destination is the client, and every case whose unit is not sellable stock, keeps the phase it
+// found, because the delivery still closes a client's case.
 func (s *Store) AuthorizeRelease(ctx context.Context, actor auth.Identity, caseID int64,
 	note string) (Case, error) {
 	if ctx == nil || s == nil || s.pool == nil {
@@ -761,7 +767,13 @@ func (s *Store) AuthorizeRelease(ctx context.Context, actor auth.Identity, caseI
 	if header.Phase != PhaseResolved && header.Phase != PhaseClosed {
 		return Case{}, ErrResolutionPending
 	}
-	if _, err := insertEvent(ctx, tx, caseID, KindRelease, header.Phase, "",
+	// A release carries the phase the case already holds, and it carries `closed` when the unit it sells
+	// is the one bound for the branch's shelf: that release is the act that ends the case (S31).
+	releasePhase := header.Phase
+	if unitBoundForStock(header) {
+		releasePhase = PhaseClosed
+	}
+	if _, err := insertEvent(ctx, tx, caseID, KindRelease, releasePhase, "",
 		int64(actor.AccountID), words); err != nil {
 		return Case{}, err
 	}
@@ -780,6 +792,11 @@ func (s *Store) AuthorizeRelease(ctx context.Context, actor auth.Identity, caseI
 // the client gave the used one back or kept it. The delivery settles every open loan of the case and
 // writes no stock -- the unit leaves the branch with the client, and custody was settled by the
 // release or by the delivery itself.
+//
+// A case whose unit is bound for the branch's sellable stock is never delivered (S31): the delivery
+// asserts that the unit left the branch with the client, and that battery never leaves with anyone. The
+// database refuses it with its own code, which lands here as ErrUnitBelongsToStock, and the rollback
+// leaves no tramo, no loan fate and no balance behind.
 func (s *Store) DeliverExchange(ctx context.Context, actor auth.Identity, caseID int64,
 	input DeliveryInput) (Case, error) {
 	if ctx == nil || s == nil || s.pool == nil {
@@ -838,6 +855,21 @@ func (s *Store) DeliverExchange(ctx context.Context, actor auth.Identity, caseID
 		return Case{}, mapFailure(ctx, err)
 	}
 	return delivered, nil
+}
+
+// unitBoundForStock reports whether the unit of the case is the branch's own sellable stock (S31): a
+// claim, whose factory verdict returned a usable battery, and whose destination is the shelf instead of
+// the client. The destination alone never answers it -- `not_covered` states `stock` for a damaged
+// battery that belongs to the used pool of 071, and the branch never sells that one -- so the verdict is
+// read with it, exactly as the guard of 073 reads the pair.
+func unitBoundForStock(header Case) bool {
+	if header.Origin != OriginWarrantyClaim || header.ReportedDestination == nil || header.Verdict == nil {
+		return false
+	}
+	if *header.ReportedDestination != DestinationStock {
+		return false
+	}
+	return *header.Verdict == VerdictRepaired || *header.Verdict == VerdictReplaced
 }
 
 // judgeResolution applies the resolution matrix of a claim: the verdict and both
@@ -1139,6 +1171,11 @@ func mapFailure(ctx context.Context, err error) error {
 		return ErrNoticeRequired
 	case "LW021":
 		return ErrResolutionPending
+	// LW035: the usable unit of a case whose destination is the branch's sellable stock is sold by the
+	// release and never delivered (S31). The guard states it for the delivery and for every tramo that
+	// would close the case, so a refused delivery leaves no event, no loan fate and no balance.
+	case "LW035":
+		return ErrUnitBelongsToStock
 	// LW022, LW023 and LW026: the actor split of S14 and S19 -- the notice and the delivery are the
 	// branch's, the release is the warehouse's.
 	case "LW022", "LW023", "LW026":
