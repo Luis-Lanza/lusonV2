@@ -78,6 +78,7 @@ so on the side that may ask — the branch for the notice, the warehouse for the
 | `branch_location_id` | The branch that owns the case; never the warehouse |
 | `origin` | `warranty_claim` or `stock_defect` |
 | `phase` | `received`, `in_transit`, `at_warehouse`, `at_factory`, `resolved` or `closed`. It is always the phase the last event of the history states: a `phase` tramo enters it, and the release of a unit bound for stock writes `closed` |
+| `closed_by` | The act that closed the case (S34): `delivery` when the last event is a `phase` tramo entering `closed`, `release` when it is the release event that sells the unit bound for stock, and `null` while the case is not closed — and also `null` on a closed case whose last event is neither, because the last event of a closed case can be a notice registered after the close and that states no act. It is derived from the same last event the phase is derived from, and a document where the two disagree is never published |
 | `verdict` | `null` until the case is resolved, then `repaired`, `replaced`, `unrepairable`, `not_covered`, `lost` or `refused_at_warehouse` |
 | `reported_destination` | Where the reported battery ends: `customer`, `stock`, `scrap` or `retained_by_factory`; `null` until the verdict |
 | `loan_destination` | Where the lent battery ends, in the same vocabulary; `null` until the verdict on a claim and always `null` on a finding, which lends none |
@@ -162,15 +163,20 @@ GET /api/warranty-cases?phase=at_warehouse&origin=warranty_claim
 
 ```json
 {"cases":[{"id":1,"case_number":"C-2-000001","branch_location_id":2,
- "origin":"warranty_claim","phase":"at_warehouse","variant_id":1,"serial_number":"ABC123",
- "quantity":null,"declared_failure":"No arranca el motor","reason":null,
+ "origin":"warranty_claim","phase":"at_warehouse","closed_by":null,"variant_id":1,
+ "serial_number":"ABC123","quantity":null,"declared_failure":"No arranca el motor","reason":null,
  "created_at":"2026-03-01T12:00:00Z"}]}
 ```
 
 `phase` and `origin` are the only admitted query keys and each admitted value is one of the frozen
 lists; anything else — an unknown key, an unknown value, a repeated key, an empty value or a stray
-separator — is `400 invalid_request`. A row publishes the header of the case and never its loans or
-its history: those are read from the case itself. A branch reads its own cases; the warehouse reads the
+separator — is `400 invalid_request`. A row publishes the header of the case, the act that closed it
+in `closed_by` and never its loans or its history: those are read from the case itself. The act is
+published here and not derived by the screen because the row carries no history, and two cases that
+hold `closed` were closed by two different acts: the delivery handed the unit to the client, and the
+release sold the unit bound for the branch's stock. A row is `closed` with `closed_by` null only when
+the case closed and its last event states no act, and then the screen says the case is closed and
+nothing else. A branch reads its own cases; the warehouse reads the
 cases of every branch, which is why each row states `branch_location_id`. The tray is the newest
 `200` cases of the query.
 

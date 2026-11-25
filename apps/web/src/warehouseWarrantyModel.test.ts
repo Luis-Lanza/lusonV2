@@ -15,7 +15,7 @@ import {
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1, case_number: 'C-2-000001', branch_location_id: 2, origin: 'warranty_claim', phase: 'received',
   variant_id: 1, serial_number: 'ABC123', quantity: null, declared_failure: 'No arranca el motor',
-  reason: null, created_at: '2026-03-01T12:00:00Z', ...over,
+  reason: null, created_at: '2026-03-01T12:00:00Z', closed_by: null, ...over,
 });
 const loan = (over: Record<string, unknown> = {}) => ({
   ordinal: 1, model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1,
@@ -80,7 +80,8 @@ const atWarehouseClaim = (over: Record<string, unknown> = {}) => parseWarrantyCa
 const stockBoundClaim = ({ verdict = 'repaired', notice = true, released = false }:
 { verdict?: string; notice?: boolean; released?: boolean } = {}) => parseWarrantyCase(claimJSON({
   // The release of this unit is the act that closes the case, and it states that `closed` itself (073).
-  phase: released ? 'closed' : 'resolved', verdict, reported_destination: 'stock', loan_destination: 'customer',
+  phase: released ? 'closed' : 'resolved', closed_by: released ? 'release' : null, verdict,
+  reported_destination: 'stock', loan_destination: 'customer',
   loans: [loan()],
   events: [...atFactoryEvents(),
     event({ ordinal: 5, phase: 'resolved', recorded_at: '2026-03-12T12:00:00Z', note: 'Reparada por fábrica' }),

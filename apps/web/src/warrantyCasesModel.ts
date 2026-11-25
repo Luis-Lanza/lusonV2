@@ -24,6 +24,9 @@ export const warrantyLoanFates = ['open', 'returned', 'kept_by_customer', 'faile
 export type WarrantyLoanFate = (typeof warrantyLoanFates)[number];
 export const warrantyEventKinds = ['phase', 'notice', 'release'] as const;
 export type WarrantyEventKind = (typeof warrantyEventKinds)[number];
+/** The two acts that end a case in `closed` (S34): the phase alone never tells them apart. */
+export const warrantyClosedActs = ['delivery', 'release'] as const;
+export type WarrantyClosedAct = (typeof warrantyClosedActs)[number];
 
 /** The two fates the counter states by delivering the exchange; the other three exclude each other. */
 export const warrantyDeliveryFates = ['returned', 'kept_by_customer'] as const;
@@ -45,14 +48,16 @@ export const warrantyPhaseLabels: Record<WarrantyPhase, string> = {
   resolved: 'Resuelta · esperando al cliente',
   closed: 'Entregada al cliente',
 };
-/** The short form of a phase, for the list cell that has no room for the whole sentence. */
+/** The short form of a phase, for the list cell that has no room for the whole sentence. A closed case is
+ * the one phase whose cause the phase cannot state, so the tray never reads this map for it: it reads the act
+ * the row publishes (`warrantyRowPhaseLabel`, S34), and this entry stays honest for a phase-only context. */
 export const warrantyPhaseShortLabels: Record<WarrantyPhase, string> = {
   received: 'En la sucursal',
   in_transit: 'En viaje',
   at_warehouse: 'En el Almacén',
   at_factory: 'En fábrica',
   resolved: 'Esperando al cliente',
-  closed: 'Entregada',
+  closed: 'Cerrada',
 };
 export const warrantyVerdictLabels: Record<WarrantyVerdict, string> = {
   repaired: 'Reparada',
@@ -149,6 +154,9 @@ export interface WarrantyCaseRow {
   readonly branch_location_id: number;
   readonly origin: WarrantyOrigin;
   readonly phase: WarrantyPhase;
+  /** The act that closed the case, published beside the phase because the row carries no history (S34): null
+   *  while the case is open, and null on a closed case whose last tramo states no act at all. */
+  readonly closed_by: WarrantyClosedAct | null;
   readonly variant_id: number;
   /** The serial the client brought; stated on a claim and never on a finding. */
   readonly serial_number: string | null;
@@ -160,13 +168,16 @@ export interface WarrantyCaseRow {
   readonly created_at: string;
 }
 
-const rowKeys = ['id', 'case_number', 'branch_location_id', 'origin', 'phase', 'variant_id',
+const rowKeys = ['id', 'case_number', 'branch_location_id', 'origin', 'phase', 'closed_by', 'variant_id',
   'serial_number', 'quantity', 'declared_failure', 'reason', 'created_at'] as const;
 
 function caseRow(value: unknown, keys: readonly string[] = rowKeys): WarrantyCaseRow {
   const row = object(value, keys);
   const origin = oneOf(warrantyOrigins, row.origin);
   const phase = oneOf(warrantyPhases, row.phase);
+  const closedBy = row.closed_by === null ? null : oneOf(warrantyClosedActs, row.closed_by);
+  // Only a closed case has an act, and the act is published only beside that phase: a row never claims one.
+  if (closedBy !== null && phase !== 'closed') return invalid();
   const declared = text(row.declared_failure);
   if (count(declared) > warrantyMaxNote) return invalid();
   const serial = optionalText(row.serial_number);
@@ -183,7 +194,7 @@ function caseRow(value: unknown, keys: readonly string[] = rowKeys): WarrantyCas
     case_number: caseNumber,
     // The warehouse owns no case and is never the branch of one.
     branch_location_id: integer(row.branch_location_id, 2, warrantyMaxLocation),
-    origin, phase,
+    origin, phase, closed_by: closedBy,
     variant_id: integer(row.variant_id, 1, warrantyMaxVariant),
     serial_number: serial, quantity,
     declared_failure: declared,
@@ -419,14 +430,39 @@ export function warrantyCustodyUnits(value: WarrantyCase): number {
 }
 
 /**
- * The pill of a case in `closed`, decided by the act that closed it and never by the phase alone (S19, S31):
- * the release sold the unit into the branch's sellable stock, the delivery handed the repaired unit to the
- * client, and a finding is closed by its own branch. Every other phase states the phase it holds.
+ * The pill of a case in `closed`, decided by the act that closed it and never by the phase alone (S19, S31,
+ * S34): the release sold the unit into the branch's sellable stock, the delivery handed the repaired unit to
+ * the client, and a finding is closed by its own branch. Every other phase states the phase it holds.
  */
 export function warrantyPhaseShortLabel(value: WarrantyCase): string {
   if (value.phase !== 'closed') return warrantyPhaseShortLabels[value.phase];
   if (warrantyClosedByRelease(value)) return 'Cerrada por liberación';
   return value.origin === 'warranty_claim' ? 'Entregada al cliente' : 'Cerrada por la sucursal';
+}
+
+/**
+ * The pill of one row of a tray, from the act the row publishes instead of its history (S34). It names the
+ * same words the selected case's pill names, and it never guesses: a row carries the header of a case and no
+ * events, so a closed row without a published act says `Cerrada` and claims neither a delivery nor a release.
+ */
+export function warrantyRowPhaseLabel(value: WarrantyCaseRow): string {
+  if (value.phase !== 'closed') return warrantyPhaseShortLabels[value.phase];
+  if (value.closed_by === 'release') return 'Cerrada por liberación';
+  if (value.closed_by === 'delivery') {
+    return value.origin === 'warranty_claim' ? 'Entregada al cliente' : 'Cerrada por la sucursal';
+  }
+  return 'Cerrada';
+}
+
+/**
+ * The label of one tramo of a case's history. A `phase` tramo states the phase it enters, and the one tramo that
+ * enters `closed` names the act the case published: two acts write that same phase, and the delivery and the
+ * release deserve two different words (S34). A notice and a release state their own kind.
+ */
+export function warrantyEventLabel(value: WarrantyCase, entry: WarrantyEvent): string {
+  if (entry.kind !== 'phase') return warrantyEventKindLabels[entry.kind];
+  if (entry.phase !== 'closed') return warrantyPhaseLabels[entry.phase];
+  return warrantyPhaseShortLabel(value);
 }
 
 /** The notice is the branch's, it happens once and it exists only once the factory answered (S14). */

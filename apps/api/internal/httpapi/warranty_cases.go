@@ -1190,6 +1190,7 @@ type warrantyCaseDTO struct {
 	BranchLocationID    int64              `json:"branch_location_id"`
 	Origin              string             `json:"origin"`
 	Phase               string             `json:"phase"`
+	ClosedBy            *string            `json:"closed_by"`
 	Verdict             *string            `json:"verdict"`
 	ReportedDestination *string            `json:"reported_destination"`
 	LoanDestination     *string            `json:"loan_destination"`
@@ -1207,15 +1208,17 @@ type warrantyCaseDTO struct {
 	Events              []warrantyEventDTO `json:"events"`
 }
 
-// warrantyCaseRowDTO is one row of the tray: the header of a case and nothing else. The history of a
-// case is read from the case itself, so a queue of two hundred cases never drags two hundred
-// histories.
+// warrantyCaseRowDTO is one row of the tray: the header of a case and the act that closed it, and nothing
+// else. The history of a case is read from the case itself, so a queue of two hundred cases never drags two
+// hundred histories -- which is exactly why the act travels here: a row that only sees the phase cannot tell
+// a case the counter delivered from one the release closed, and both hold `closed` (S34).
 type warrantyCaseRowDTO struct {
 	ID               int64   `json:"id"`
 	CaseNumber       string  `json:"case_number"`
 	BranchLocationID int64   `json:"branch_location_id"`
 	Origin           string  `json:"origin"`
 	Phase            string  `json:"phase"`
+	ClosedBy         *string `json:"closed_by"`
 	VariantID        int64   `json:"variant_id"`
 	SerialNumber     *string `json:"serial_number"`
 	Quantity         *int64  `json:"quantity"`
@@ -1286,7 +1289,7 @@ func warrantyCaseRecord(document warrantycase.Case) (warrantyCaseDTO, error) {
 	}
 	record := warrantyCaseDTO{
 		ID: row.ID, CaseNumber: row.CaseNumber, BranchLocationID: row.BranchLocationID,
-		Origin: row.Origin, Phase: row.Phase, VariantID: row.VariantID,
+		Origin: row.Origin, Phase: row.Phase, ClosedBy: row.ClosedBy, VariantID: row.VariantID,
 		SerialNumber: row.SerialNumber, Quantity: row.Quantity,
 		DeclaredFailure: row.DeclaredFailure, Reason: row.Reason, CreatedAt: createdAt,
 		SaleID: document.SaleID, WarrantyNumber: document.WarrantyNumber,
@@ -1343,6 +1346,10 @@ func warrantyCaseRecord(document warrantycase.Case) (warrantyCaseDTO, error) {
 	// carries the phase the case holds -- except the release that closes the case whose unit is the
 	// branch's own stock, which states the `closed` it writes.
 	phase := warrantycase.PhaseReceived
+	// The act that closed the case is read from the same last tramo the phase is read from (S34), and only a
+	// case that holds `closed` states one: a release on a claim destined to the client moves no phase and
+	// closes nothing.
+	var closedBy *warrantycase.ClosedBy
 	var previousEvent int
 	for _, item := range document.Events {
 		eventRecord, err := warrantyEventRecord(item)
@@ -1351,12 +1358,30 @@ func warrantyCaseRecord(document warrantycase.Case) (warrantyCaseDTO, error) {
 		}
 		previousEvent = eventRecord.Ordinal
 		phase = item.Phase
+		closedBy = warrantycase.ClosedActOf(item.Kind)
 		record.Events = append(record.Events, eventRecord)
 	}
 	if phase != document.Phase {
 		return unavailable()
 	}
+	if phase != warrantycase.PhaseClosed {
+		closedBy = nil
+	}
+	// A row whose act and history disagree is an invalid document and never a guess: the published act is the
+	// one this history states, so the tray and the case can never name two different closes (S34).
+	if !sameClosedBy(closedBy, document.ClosedBy) {
+		return unavailable()
+	}
 	return record, nil
+}
+
+// sameClosedBy states whether the act derived from the history is the act the header carries, both absent
+// counting as the same answer.
+func sameClosedBy(left, right *warrantycase.ClosedBy) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // stockStatedByVerdict restates the shelf outcome of a finding's resolution: its units are back in the
@@ -1403,15 +1428,31 @@ func warrantyCaseRowRecord(document warrantycase.Case) (warrantyCaseRowDTO, erro
 			return unavailable()
 		}
 	}
+	// The act that closed the case is published by a closed case and only as one of the frozen two (S34):
+	// an open case states none, and a closed one may state none when its last tramo is no act at all.
+	if document.ClosedBy != nil && (document.Phase != warrantycase.PhaseClosed ||
+		!document.ClosedBy.Valid()) {
+		return unavailable()
+	}
 	if document.WarrantyNumber != nil && (len(*document.WarrantyNumber) > 32) {
 		return unavailable()
 	}
 	return warrantyCaseRowDTO{ID: document.ID, CaseNumber: document.CaseNumber,
 		BranchLocationID: int64(document.BranchLocationID), Origin: string(document.Origin),
-		Phase: string(document.Phase), VariantID: document.VariantID,
+		Phase: string(document.Phase), ClosedBy: closedByText(document.ClosedBy),
+		VariantID:    document.VariantID,
 		SerialNumber: document.SerialNumber, Quantity: document.Quantity,
 		DeclaredFailure: document.DeclaredFailure, Reason: document.Reason,
 		CreatedAt: createdAt}, nil
+}
+
+// closedByText publishes the act that closed the case, or null when no act closed it.
+func closedByText(act *warrantycase.ClosedBy) *string {
+	if act == nil {
+		return nil
+	}
+	stated := string(*act)
+	return &stated
 }
 
 // warrantyLoanRecord revalidates one loan: the ordinal of the database, the model and the quantity the

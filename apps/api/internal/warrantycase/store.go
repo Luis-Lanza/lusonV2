@@ -973,11 +973,17 @@ func readCase(ctx context.Context, q querier, id int64) (Case, error) {
 }
 
 // caseColumns is the row of a case as every read of this package publishes it: the header, the
-// printed number of the claimed sale (S8) and the motive of a finding on the shelf (S16).
+// printed number of the claimed sale (S8), the motive of a finding on the shelf (S16) and the kind of
+// the last tramo of the history, which is the act that closed a case holding `closed` (S34). The act is
+// read by the same projection that reads the phase, so the tray never loads a history to name it.
 const caseColumns = `id,branch_location_id,branch_sequence,case_number,origin,phase,
   verdict,reported_destination,loan_destination,stock_destination,sale_id,
   (SELECT sale.warranty_number FROM sales sale WHERE sale.id=case_row.sale_id),variant_id,
-  serial_number,quantity,declared_failure,reason,created_by_account_id,created_at`
+  serial_number,quantity,declared_failure,reason,created_by_account_id,created_at,
+  (CASE WHEN phase='closed' THEN
+    (SELECT event.kind FROM warranty_case_events event
+      WHERE event.case_id=case_row.id ORDER BY event.event_ordinal DESC LIMIT 1)
+  END)`
 
 // readCaseHeader reads one case header. A lock is taken when the caller is about to append
 // a tramo or a loan, so the state it judges is the state the write sees.
@@ -1003,11 +1009,12 @@ func scanCaseHeader(ctx context.Context, row pgx.Row) (Case, error) {
 		verdict, reported, loan, stock *string
 		serial, warrantyNumber, reason *string
 		saleID, quantity               *int64
+		closedKind                     *string
 	)
 	err := row.Scan(&document.ID, &branch, &document.BranchSequence,
 		&document.CaseNumber, &origin, &phase, &verdict, &reported, &loan, &stock, &saleID,
 		&warrantyNumber, &document.VariantID, &serial, &quantity, &document.DeclaredFailure,
-		&reason, &document.CreatedByAccountID, &document.CreatedAt)
+		&reason, &document.CreatedByAccountID, &document.CreatedAt, &closedKind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Case{}, ErrNotFound
 	}
@@ -1017,6 +1024,7 @@ func scanCaseHeader(ctx context.Context, row pgx.Row) (Case, error) {
 	document.BranchLocationID = int(branch)
 	document.Origin = Origin(origin)
 	document.Phase = Phase(phase)
+	document.ClosedBy = closedAct(closedKind)
 	document.Verdict = verdictOf(verdict)
 	document.ReportedDestination = destinationOf(reported)
 	document.LoanDestination = destinationOf(loan)
@@ -1027,6 +1035,16 @@ func scanCaseHeader(ctx context.Context, row pgx.Row) (Case, error) {
 	document.Quantity = quantity
 	document.Reason = reason
 	return document, nil
+}
+
+// closedAct maps the kind the projection read to the act it states (S34). It is the same rule
+// `ClosedActOf` states for a loaded history, so the projection and the history can never disagree, and a
+// tramo that states no act (a notice recorded after the close) publishes none instead of a guess.
+func closedAct(kind *string) *ClosedBy {
+	if kind == nil {
+		return nil
+	}
+	return ClosedActOf(EventKind(*kind))
 }
 
 func verdictOf(value *string) *Verdict {

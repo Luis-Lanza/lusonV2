@@ -15,7 +15,7 @@ const failure = (code: string, status: number) => new Response(JSON.stringify({ 
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1, case_number: 'C-2-000001', branch_location_id: 2, origin: 'warranty_claim', phase: 'received',
   variant_id: 1, serial_number: 'ABC123', quantity: null, declared_failure: 'No arranca el motor',
-  reason: null, created_at: '2026-03-01T12:00:00Z', ...over,
+  reason: null, created_at: '2026-03-01T12:00:00Z', closed_by: null, ...over,
 });
 const findingRow = (over: Record<string, unknown> = {}) => row({
   id: 5, case_number: 'C-3-000005', branch_location_id: 3, origin: 'stock_defect', variant_id: 4,
@@ -70,7 +70,8 @@ const resolvedStockBoundClaim = ({ verdict = 'repaired', closed = false, notice 
 { verdict?: string; closed?: boolean; notice?: boolean } = {}) => claim({
   // The release that sells this unit is the act that closes the case: the server states `closed` in the
   // release itself and writes no tramo of the journey for it (073).
-  phase: closed ? 'closed' : 'resolved', verdict, reported_destination: 'stock', loan_destination: 'customer',
+  phase: closed ? 'closed' : 'resolved', closed_by: closed ? 'release' : null, verdict,
+  reported_destination: 'stock', loan_destination: 'customer',
   events: [
     ...tramos(),
     event({ ordinal: 5, phase: 'resolved', actor_account_id: 1, recorded_at: '2026-03-12T12:00:00Z',
@@ -438,7 +439,37 @@ describe('the acts the warehouse owns', () => {
     const pane = screen.getByRole('complementary', { name: 'Detalle del caso' });
     const top = pane.querySelector('.warranty-detail-top') as HTMLElement;
     expect(within(top).getByText('Cerrada por liberación')).toBeInTheDocument();
-    expect(within(top).queryByText('Entregada')).not.toBeInTheDocument();
+    expect(within(top).queryByText('Entregada al cliente')).not.toBeInTheDocument();
+  });
+
+  it('names the close of a tray row by the act the row publishes, never by its phase (S34)', async () => {
+    const h = desk(url => url === '/api/warranty-cases?phase=resolved'
+      ? tray([
+        row({ id: 5, case_number: 'C-2-000005', phase: 'closed', closed_by: 'delivery' }),
+        row({ id: 4, case_number: 'C-2-000004', phase: 'closed', closed_by: 'release' }),
+      ])
+      : undefined);
+    renderDesk(h);
+    fireEvent.click(await screen.findByRole('button', { name: /Devueltas sin decidir/ }));
+    const table = await screen.findByRole('table');
+    // The two rows hold the same phase and state two different closes: the phase alone cannot tell them.
+    const delivered = within(table).getByRole('button', { name: 'Ver el caso C-2-000005' }).closest('tr')!;
+    const released = within(table).getByRole('button', { name: 'Ver el caso C-2-000004' }).closest('tr')!;
+    expect(within(delivered).getByText('Entregada al cliente')).toBeInTheDocument();
+    expect(within(released).getByText('Cerrada por liberación')).toBeInTheDocument();
+    expect(within(delivered).queryByText('Cerrada por liberación')).not.toBeInTheDocument();
+  });
+
+  it('states only that a closed row is closed when the row publishes no act (S34)', async () => {
+    // A closed case whose last tramo states no act publishes none, so no screen may invent one for it.
+    const h = desk(url => url.startsWith('/api/warranty-cases?phase=')
+      ? tray([row({ phase: 'closed' })]) : undefined);
+    renderDesk(h);
+    const table = await screen.findByRole('table');
+    const closed = within(table).getByRole('button', { name: 'Ver el caso C-2-000001' }).closest('tr')!;
+    expect(within(closed).getByText('Cerrada')).toBeInTheDocument();
+    expect(within(closed).queryByText('Entregada al cliente')).not.toBeInTheDocument();
+    expect(within(closed).queryByText('Cerrada por liberación')).not.toBeInTheDocument();
   });
 
   it('offers nothing for the stock-bound unit that went to the used pool, and says why (S31, S11)', async () => {

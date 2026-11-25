@@ -15,7 +15,7 @@ const failure = (code: string, status: number) => new Response(JSON.stringify({ 
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1, case_number: 'C-2-000001', branch_location_id: 2, origin: 'warranty_claim', phase: 'received',
   variant_id: 1, serial_number: 'ABC123', quantity: null, declared_failure: 'No arranca el motor',
-  reason: null, created_at: '2026-03-01T12:00:00Z', ...over,
+  reason: null, created_at: '2026-03-01T12:00:00Z', closed_by: null, ...over,
 });
 const loan = (over: Record<string, unknown> = {}) => ({
   ordinal: 1, model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1,
@@ -60,7 +60,7 @@ const stockBoundCase = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 // The same case once the Almacén released it: the release is its last event and it holds `closed`.
-const releasedStockCase = () => stockBoundCase({ phase: 'closed',
+const releasedStockCase = () => stockBoundCase({ phase: 'closed', closed_by: 'release',
   events: [...phasesToResolved(), noticeEvent(), releaseEvent('closed')] });
 // A claim the factory did not cover: the damaged unit goes to the used pool with that same destination and the
 // lent battery stays with the client (LW025, S11). The server accepts this delivery and refuses its release, so
@@ -70,7 +70,7 @@ const uncoveredStockCase = (over: Record<string, unknown> = {}) => ({
   verdict: 'not_covered', reported_destination: 'stock', loan_destination: 'customer', ...over,
 });
 // The same uncovered case once the counter delivered the exchange: that act closed it.
-const deliveredUncovered = () => uncoveredStockCase({ phase: 'closed',
+const deliveredUncovered = () => uncoveredStockCase({ phase: 'closed', closed_by: 'delivery',
   loans: [loan({ fate: 'kept_by_customer', fate_decided_at: '2026-03-20T13:00:00Z' })],
   events: [...phasesToResolved(),
     event({ ordinal: 6, phase: 'closed', recorded_at: '2026-03-20T13:00:00Z', note: 'Canje entregado' })] });
@@ -309,7 +309,12 @@ describe('the branch guarantee tray', () => {
     const closed = { phase: 'closed', loans: [loan({ fate: 'kept_by_customer', fate_decided_at: '2026-03-20T13:00:00Z' })],
       events: [...phasesToResolved(), event({ ordinal: 6, phase: 'closed', recorded_at: '2026-03-20T13:00:00Z' })] };
     const h = harness((url, init) => {
-      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      // The tray is the header of the case and never its history: the row of a closed case carries the act
+      // that closed it, so the pill of the bandeja names the delivery without reading the case (S34).
+      if (url === '/api/warranty-cases') {
+        return tray([row({ id: 2, case_number: 'C-2-000002', phase: delivered ? 'closed' : 'resolved',
+          closed_by: delivered ? 'delivery' : null })]);
+      }
       if (url === '/api/warranty-cases/2') {
         if (delivered) return json({ ...resolvedCase(), ...closed });
         return json(withLoan ? resolvedCase() : resolvedCase({ loans: false }));
@@ -340,8 +345,9 @@ describe('the branch guarantee tray', () => {
     const post = h.posts().at(-1)!;
     expect(post.url).toBe('/api/warranty-cases/2/delivery');
     expect(JSON.parse(String(post.init.body))).toEqual({ loan_fate: 'kept_by_customer', note: 'Se la quedó el cliente' });
-    // The closed case is stated in the pane and in its own tray row.
-    await waitFor(() => expect(screen.getAllByText('Entregada').length).toBeGreaterThan(0));
+    // The closed case is named by the act that closed it, in the pane and in its own tray row.
+    const trayRow = screen.getByRole('button', { name: 'Ver el caso C-2-000002' }).closest('tr')!;
+    await waitFor(() => expect(within(trayRow).getByText('Entregada al cliente')).toBeInTheDocument());
     // The delivery is still the act that closed this case, and the pill of the detail keeps saying so.
     const pane = screen.getByRole('complementary', { name: 'Detalle del caso' });
     const top = pane.querySelector('.warranty-detail-top') as HTMLElement;
@@ -473,7 +479,9 @@ describe('the destination of the unit decides the act that closes the case (S31)
 
   it('names a case closed by the release by that act, never as delivered (S31)', async () => {
     const h = harness(url => {
-      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'closed' })]);
+      if (url === '/api/warranty-cases') {
+        return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'closed', closed_by: 'release' })]);
+      }
       if (url === '/api/warranty-cases/2') return json(releasedStockCase());
       if (url === '/api/sales/12') return json(saleBody);
       return undefined;
@@ -486,7 +494,11 @@ describe('the destination of the unit decides the act that closes the case (S31)
     // The unit entered the branch's sellable stock: the release is the act that closed the case, and
     // the pill of the detail names it instead of claiming a delivery that never happened.
     expect(within(top).getByText('Cerrada por liberación')).toBeInTheDocument();
-    expect(within(top).queryByText('Entregada')).not.toBeInTheDocument();
+    expect(within(top).queryByText('Entregada al cliente')).not.toBeInTheDocument();
+    // The tray row names the same act out of the act the row publishes, and it never needed the history.
+    const trayRow = screen.getByRole('button', { name: 'Ver el caso C-2-000002' }).closest('tr')!;
+    expect(within(trayRow).getByText('Cerrada por liberación')).toBeInTheDocument();
+    expect(within(trayRow).queryByText('Entregada al cliente')).not.toBeInTheDocument();
     // The closed case admits no further act of the branch.
     expect(screen.getByText('El caso está cerrado: no admite más acciones de la sucursal.')).toBeInTheDocument();
   });

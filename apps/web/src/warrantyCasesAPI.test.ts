@@ -10,7 +10,7 @@ const failure = (code: string, status: number) => new Response(JSON.stringify({ 
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1, case_number: 'C-2-000001', branch_location_id: 2, origin: 'warranty_claim', phase: 'received',
   variant_id: 1, serial_number: 'ABC123', quantity: null, declared_failure: 'No arranca el motor',
-  reason: null, created_at: '2026-03-01T12:00:00Z', ...over,
+  reason: null, created_at: '2026-03-01T12:00:00Z', closed_by: null, ...over,
 });
 const loan = (over: Record<string, unknown> = {}) => ({
   ordinal: 1, model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1,
@@ -146,7 +146,8 @@ describe('the transport of the case contract', () => {
     await expect(createWarrantyCasesAPI(stub(json(resolvedCase()))).notice(1, () => ({ note: 'Avisado' }), csrf))
       .rejects.toMatchObject({ code: 'invalid_response' });
 
-    const closed = resolvedCase({ phase: 'closed', loans: [loan({ fate: 'returned', fate_decided_at: '2026-03-10T12:00:00Z' })],
+    const closed = resolvedCase({ phase: 'closed', closed_by: 'delivery',
+      loans: [loan({ fate: 'returned', fate_decided_at: '2026-03-10T12:00:00Z' })],
       events: [...resolvedCase().events, event({ ordinal: 6, phase: 'closed' })] });
     const deliver = createWarrantyCasesAPI(stub(json(closed)));
     expect((await deliver.deliver(1, { loan_fate: 'returned', note: 'Entregada' }, csrf)).phase).toBe('closed');

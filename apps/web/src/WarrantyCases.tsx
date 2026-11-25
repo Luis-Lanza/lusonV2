@@ -12,12 +12,13 @@ import {
 import {
   canonicalAdvanceBody, canonicalClaimBody, canonicalDefectBody, canonicalDeliveryBody,
   canonicalLoanBody, canonicalLoanFateBody, canonicalNoticeBody, warrantyCustodyUnits,
-  warrantyDeliveryFates, warrantyDestinationLabels, warrantyDispatchAvailable, warrantyEventKindLabels,
+  warrantyDeliveryFates, warrantyDestinationLabels, warrantyDispatchAvailable, warrantyEventLabel,
   warrantyCloseAvailable, warrantyDaysSince, warrantyDeliveryAvailable, warrantyLendAvailable,
   warrantyLoanFateLabels, warrantyLoanRegistered, warrantyNoticeAvailable,
-  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseLabels, warrantyPhaseShortLabel,
+  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseShortLabel,
   warrantyPhaseShortLabels, warrantyPhaseTone, warrantyPhases, warrantyReleased, warrantyReceiptAvailable,
-  warrantyReceiptFileName, warrantyReceiptPath, warrantyUnitBoundForStock, warrantyUnitsWrittenOff,
+  warrantyReceiptFileName, warrantyReceiptPath, warrantyRowPhaseLabel, warrantyUnitBoundForStock,
+  warrantyUnitsWrittenOff,
   warrantyVerdictLabels,
   type WarrantyCase, type WarrantyCaseRow, type WarrantyDeliveryFate, type WarrantyLoan,
   type WarrantyLoanFateStated,
@@ -294,7 +295,7 @@ export default function WarrantyCases({ csrf, branch, locations, fetcher = globa
                   <small className="warranty-sub">{row.serial_number === null ? `${units(row.quantity ?? 0)} de la góndola` : 'Serial de la unidad reclamada'}</small>
                 </td>
                 <td data-label="Origen"><span className={`warranty-pill ${row.origin === 'stock_defect' ? 'warn' : 'quiet'}`}>{warrantyOriginLabels[row.origin]}</span></td>
-                <td data-label="Etapa"><span className={`warranty-pill ${tone}`}>{warrantyPhaseShortLabels[row.phase]}</span></td>
+                <td data-label="Etapa"><span className={`warranty-pill ${tone}`}>{warrantyRowPhaseLabel(row)}</span></td>
                 <td data-label="Días" className="num warranty-days">{warrantyDaysSince(row.created_at, today)}</td>
               </tr>;
             })}</tbody>
@@ -470,7 +471,7 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
     <ol className="warranty-timeline">
       {record.events.map(entry => <li key={entry.ordinal} data-kind={entry.kind}>
         <div className="warranty-timeline-head">
-          <strong>{entry.kind === 'phase' ? warrantyPhaseLabels[entry.phase] : warrantyEventKindLabels[entry.kind]}</strong>
+          <strong>{warrantyEventLabel(record, entry)}</strong>
           <time dateTime={entry.recorded_at}>{new Intl.DateTimeFormat('es-BO', { timeZone: 'America/La_Paz', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(entry.recorded_at))}</time>
         </div>
         {entry.note !== '' && <p>{entry.note}</p>}

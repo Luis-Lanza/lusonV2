@@ -7,9 +7,10 @@ import {
   warrantyTrayUnavailable,
 } from './warrantyCasesAPI';
 import {
-  warrantyDaysSince, warrantyDestinationLabels, warrantyEventKindLabels, warrantyLoanFateLabels,
-  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseLabels, warrantyPhaseShortLabel,
-  warrantyPhaseShortLabels, warrantyPhaseTone, warrantyUnitsWrittenOff, warrantyVerdictLabels, type WarrantyCase,
+  warrantyDaysSince, warrantyDestinationLabels, warrantyEventLabel, warrantyLoanFateLabels,
+  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseShortLabel, warrantyPhaseTone,
+  warrantyRowPhaseLabel, warrantyUnitsWrittenOff, warrantyVerdictLabels,
+  type WarrantyCase,
   type WarrantyCaseRow, type WarrantyDestination, type WarrantyVerdict,
 } from './warrantyCasesModel';
 import {
@@ -264,7 +265,7 @@ export default function WarehouseWarrantyCases({ csrf, locations, fetcher = glob
                 <td data-label="Origen"><span className={`warranty-pill ${row.origin === 'stock_defect' ? 'warn' : 'quiet'}`}>
                   {warrantyOriginLabels[row.origin]}</span></td>
                 <td data-label="Etapa"><span className={`warranty-pill ${warrantyPhaseTone(row.phase)}`}>
-                  {warrantyPhaseShortLabels[row.phase]}</span></td>
+                  {warrantyRowPhaseLabel(row)}</span></td>
                 <td data-label="Días" className="num warranty-days">{warrantyDaysSince(row.created_at, today)}</td>
               </tr>;
             })}</tbody>
@@ -424,7 +425,7 @@ function WarehouseCaseDetail({ record, api, csrf, locations, today, onChanged, o
     <ol className="warranty-timeline">
       {record.events.map(entry => <li key={entry.ordinal} data-kind={entry.kind}>
         <div className="warranty-timeline-head">
-          <strong>{entry.kind === 'phase' ? warrantyPhaseLabels[entry.phase] : warrantyEventKindLabels[entry.kind]}</strong>
+          <strong>{warrantyEventLabel(record, entry)}</strong>
           <time dateTime={entry.recorded_at}>{new Intl.DateTimeFormat('es-BO',
             { timeZone: 'America/La_Paz', day: '2-digit', month: '2-digit', year: 'numeric' })
             .format(new Date(entry.recorded_at))}</time>

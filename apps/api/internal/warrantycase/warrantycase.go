@@ -224,6 +224,41 @@ func (k EventKind) Valid() bool {
 	return k == KindPhase || k == KindNotice || k == KindRelease
 }
 
+// ClosedBy is the act that ended a case which holds `closed` (S34). Two acts end a case and the phase alone
+// never says which one: the counter delivered the unit to the client, or the warehouse released the unit
+// bound for the branch's own shelf. It is published beside the phase so a row that has no history can name
+// the act instead of guessing one.
+type ClosedBy string
+
+const (
+	// ClosedByDelivery is a `phase` tramo entering `closed`: the tramo the counter writes when it hands the
+	// unit over. A finding closed by its own tramo carries the same kind, because no other act closes a case
+	// there; which words that act deserves is the screen's, and it reads the origin the row also carries.
+	ClosedByDelivery ClosedBy = "delivery"
+	// ClosedByRelease is the `release` event that sells the unit bound for the branch's stock and closes the
+	// case with that same act (S31).
+	ClosedByRelease ClosedBy = "release"
+)
+
+// Valid reports whether the act is one of the frozen two.
+func (act ClosedBy) Valid() bool { return act == ClosedByDelivery || act == ClosedByRelease }
+
+// ClosedActOf reads the act that closed a case from the kind of its last tramo, which is the same tramo the
+// published phase is read from (S34): a `phase` tramo reads `delivery` and a `release` event reads `release`.
+// Any other tramo -- a notice the branch registers after the close -- states no act, so the case publishes
+// none and no screen claims one.
+func ClosedActOf(kind EventKind) *ClosedBy {
+	switch kind {
+	case KindPhase:
+		act := ClosedByDelivery
+		return &act
+	case KindRelease:
+		act := ClosedByRelease
+		return &act
+	}
+	return nil
+}
+
 // Verdict is the decision the warehouse or the factory reached (S11, S23).
 type Verdict string
 
@@ -294,12 +329,16 @@ func (f LoanFate) Decided() bool {
 // the case is resolved; the stock destination is always null on a claim, because a claim never
 // had branch stock in play.
 type Case struct {
-	ID                  int64
-	BranchLocationID    int
-	BranchSequence      int64
-	CaseNumber          string
-	Origin              Origin
-	Phase               Phase
+	ID               int64
+	BranchLocationID int
+	BranchSequence   int64
+	CaseNumber       string
+	Origin           Origin
+	Phase            Phase
+	// ClosedBy is the act that ended a case which holds `closed` (S34), derived from the kind of its last
+	// tramo exactly as the phase is, and nil while no act closed it: an open case, and a closed one whose
+	// last tramo states no act. It is the field the tray row publishes, because the row carries no history.
+	ClosedBy            *ClosedBy
 	Verdict             *Verdict
 	ReportedDestination *Destination
 	LoanDestination     *Destination
