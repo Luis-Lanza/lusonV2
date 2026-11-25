@@ -248,6 +248,25 @@ describe('the custody and the release (S13, S14, S19)', () => {
     expect(released[2].note).toMatch(/18\/03\/2026|2026-03-18/);
   });
 
+  it('decides the custody sentence by the pair of destination and verdict, never by the destination (S31)', () => {
+    // The usable unit bound for the branch's shelf is not the used pool's, and the destination alone cannot
+    // tell the two apart: this case states a repair, so no sentence may claim the factory did not cover it.
+    const boundBeforeResolution = parseWarrantyCase(claimJSON({
+      phase: 'at_factory', verdict: 'repaired', reported_destination: 'stock', loan_destination: 'customer',
+      loans: [loan()], events: atFactoryEvents(),
+    }));
+    const bound = warehouseStockCrossings(boundBeforeResolution)[1];
+    expect(bound).toMatchObject({ key: 'custody', units: 0, state: 'absent' });
+    expect(bound.note).not.toMatch(/pool de usadas/);
+    expect(bound.note).not.toMatch(/no cubrió/);
+    expect(bound.note).toMatch(/stock vendible de la sucursal/);
+    expect(bound.note).toMatch(/liberación del Almacén/);
+
+    // The uncovered unit is the pool's, and that sentence stays word for word (S11).
+    const pool = warehouseStockCrossings(stockBoundClaim({ verdict: 'not_covered' }))[1];
+    expect(pool.note).toBe('El caso no retiene ninguna unidad vendible: la batería que la fábrica no cubrió es del pool de usadas.');
+  });
+
   it('reads how long the case has been where it is from its own history (S9, S15)', () => {
     const factory = parseWarrantyCase(claimJSON({ phase: 'at_factory', events: atFactoryEvents() }));
     expect(warehousePhaseSince(factory)?.recorded_at).toBe('2026-03-10T12:00:00Z');

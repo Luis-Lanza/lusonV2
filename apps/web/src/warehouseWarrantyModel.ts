@@ -204,9 +204,7 @@ export function warehouseStockCrossings(value: WarrantyCase): readonly Warehouse
           ? subject === 'stock'
             ? 'El Almacén liberó la unidad al stock vendible de la sucursal y el caso cerró con ese acto: no queda ninguna unidad en custodia.'
             : 'El Almacén liberó la unidad a stock vendible: ya no está en custodia y el caso sigue esperando al cliente.'
-          : value.reported_destination === 'stock'
-            ? 'El caso no retiene ninguna unidad vendible: la batería que la fábrica no cubrió es del pool de usadas.'
-            : 'El caso no retiene ninguna unidad mientras la fábrica no devuelva la que volverá al cliente.' };
+          : custodyAbsentNote(value) };
 
   const releaseCrossing: WarehouseCrossing = value.origin !== 'warranty_claim'
     ? { key: 'release', title: 'Liberación a stock', units: 0, state: 'absent',
@@ -223,6 +221,26 @@ export function warehouseStockCrossings(value: WarrantyCase): readonly Warehouse
           note: warehouseReleaseBlocked(value) };
 
   return [writeOff, custody, releaseCrossing];
+}
+
+/**
+ * Why a claim holds no unit in custody, decided by the pair of destination and verdict and never by the
+ * destination alone (S31). The claim's `stock` destination reads two ways and only the pair tells them apart:
+ * a `repaired` or `replaced` unit is the branch's sellable stock the release sells, and only an uncovered
+ * unit is the used pool's (S11). A sentence that claims the factory did not cover a repair is never said.
+ */
+function custodyAbsentNote(value: WarrantyCase): string {
+  // The usable unit bound for the branch's own shelf: the release sells it and no client collects it (S31).
+  if (warrantyUnitBoundForStock(value)) {
+    return 'El caso no retiene ninguna unidad vendible: la unidad de este caso va al stock vendible de la sucursal y la liberación del Almacén es el acto que la suma, nunca la entrega al cliente.';
+  }
+  if (value.reported_destination === 'stock') {
+    // The uncovered unit is the pool de usadas', and that is the only case the pool sentence names.
+    return value.verdict === 'not_covered'
+      ? 'El caso no retiene ninguna unidad vendible: la batería que la fábrica no cubrió es del pool de usadas.'
+      : 'El caso no retiene ninguna unidad vendible: la batería reclamada no volvió como una unidad que la sucursal pueda vender.';
+  }
+  return 'El caso no retiene ninguna unidad mientras la fábrica no devuelva la que volverá al cliente.';
 }
 
 // ---------------------------------------------------------------------------------
