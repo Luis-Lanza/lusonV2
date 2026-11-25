@@ -114,6 +114,16 @@ T19 [S35 (7), (8)] El hallazgo en góndola y la entrega al cliente recorridos en
 
 T20 [S34] La frase de la baja concuerda con la cantidad y se escribe en un solo lugar: la confirmación del alta dice «1 unidad dada de baja», no «1 unidad dadas de baja» — route delegated (pantalla); done: `warrantyUnitsWrittenOff(quantity)` en el modelo devuelve la frase entera y las dos pantallas la consumen; prueba en rojo sobre el texto visible de cada pantalla antes del arreglo. Suite web 4 727 tests, `typecheck` en 0, e2e 11 en verde contra `index-BI54QoHp.js`.
 
+T21 [S34] La fila de la bandeja publica el acto que cerró el caso: el DTO de la fila lo lleva y las dos bandejas rotulan por él — route delegated (servidor y pantalla); pending.
+
+T22 [S31] La custodia del Almacén decide por el par destino+veredicto, no por el destino solo — route delegated (pantalla); done: `custodyAbsentNote(value)` parte la frase mentirosa en tres verdaderas (unidad de stock reparada o reemplazada, no cubierta intacta, otro veredicto honesto); prueba en rojo sobre el caso alcanzable `repaired`+`stock` sin tramo de resolución. Suite web 4 728 pass / 1 skip, `typecheck` 0.
+
+T23 [S36] La sucursal corrige su propio stock vendible con un acto explícito y con motivo — route inline el servidor y delegada la pantalla; pending.
+
+T24 [S35] La entrega: cinco PRs encadenados según el plan de este documento — route inline; pending.
+
+S36. La sucursal corrige su propio stock vendible con un acto explícito, porque hoy el ajuste existe sólo para el Almacén (`LS005`) y una diferencia real no tiene ninguna salida: la única forma de arreglarla es falsear una transferencia o un ajuste del Almacén, que afirman un recorrido que no ocurrió. El acto exige un motivo escrito, declara lo esperado contra lo contado, mueve una sola variante y queda registrado con su autor y su local, igual que la corrección de una rendición. El Almacén conserva el suyo sin cambios, y un local no corrige el stock de otro: cada uno corrige lo que cuenta.
+
 ## Entrega
 
 La rama `feat/battery-warranty` no se entrega como un solo PR: al cerrar T13 medía 21 128 líneas autorizadas en 34 commits (8 042 `apps/api/internal`, 6 390 `apps/web/src`, 5 009 `apps/api/migrations`, 493 `apps/api/docs`, el resto diseño y este documento). Eso no se revisa. Se entrega como PRs encadenados, cada uno contra el anterior, en este orden de dependencia:
@@ -263,3 +273,5 @@ L46. User: "perfecto hagamos eso", después de la respuesta que listó las dos p
 L47. T19 en `9cfbe72`: once pruebas de navegador en verde y las dos puertas de la vertical recorridas. Queda anotado un defecto de copia chico que la corrida dejó a la vista: la confirmación del alta dice «1 unidad dadas de baja» para cantidad 1, por concordancia en `WarrantyCases.tsx`. No rompe nada y no está cubierto por ningún test.
 
 L48. Encontrado al revisar la copia de T19: la confirmación del alta del hallazgo dice «1 unidad dadas de baja» para cantidad 1 en las dos pantallas, porque la frase concatena un helper `units()` —duplicado en `WarrantyCases.tsx:102` y `WarehouseWarrantyCases.tsx:67`— con un participio fijo. T20.
+
+L49. User: "hagamos las 4 pa". Autorizado el cierre de la vertical: T21 (la fila de la bandeja publica el acto de cierre, con el campo aditivo que era la opción recomendada), T22 (la custodia del Almacén por el par), T23 (el acto de corrección de stock de la sucursal, S36) y T24 (la entrega: los cinco PRs encadenados).
