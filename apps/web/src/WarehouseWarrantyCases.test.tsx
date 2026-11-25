@@ -65,6 +65,22 @@ const resolvedClaim = ({ notice = true, release = false }: { notice?: boolean; r
       recorded_at: '2026-03-18T12:00:00Z', note: 'El cliente no volvió' })] : []),
   ],
 });
+/** The same claim, whose usable unit is destined to the branch's own shelf instead of to a client (S31). */
+const resolvedStockBoundClaim = ({ verdict = 'repaired', closed = false, notice = true }:
+{ verdict?: string; closed?: boolean; notice?: boolean } = {}) => claim({
+  // The release that sells this unit is the act that closes the case: the server states `closed` in the
+  // release itself and writes no tramo of the journey for it (073).
+  phase: closed ? 'closed' : 'resolved', verdict, reported_destination: 'stock', loan_destination: 'customer',
+  events: [
+    ...tramos(),
+    event({ ordinal: 5, phase: 'resolved', actor_account_id: 1, recorded_at: '2026-03-12T12:00:00Z',
+      note: 'Reparada por fábrica' }),
+    ...(notice ? [event({ ordinal: 6, kind: 'notice', phase: 'resolved', actor_account_id: 2,
+      recorded_at: '2026-03-16T12:00:00Z', note: 'Avisado por teléfono' })] : []),
+    ...(closed ? [event({ ordinal: 7, kind: 'release', phase: 'closed', actor_account_id: 1,
+      recorded_at: '2026-03-18T12:00:00Z', note: 'El cliente no vino' })] : []),
+  ],
+});
 
 type Handler = (url: string, init: RequestInit) => Response | undefined;
 function harness(handler: Handler) {
@@ -351,6 +367,65 @@ describe('the acts the warehouse owns', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Autorizar la liberación a stock' }))
       .not.toBeInTheDocument());
     expect(screen.getByText(/El Almacén liberó 1 unidad al stock vendible/)).toBeInTheDocument();
+  });
+
+  it('offers the release that closes a case whose unit is bound for stock (S31)', async () => {
+    let released = false;
+    const h = desk((url, init) => {
+      if (url === '/api/warranty-cases/2') {
+        return json(released ? resolvedStockBoundClaim({ closed: true }) : resolvedStockBoundClaim());
+      }
+      if (url === '/api/warranty-cases/2/release' && init.method === 'POST') {
+        released = true;
+        return json(resolvedStockBoundClaim({ closed: true }));
+      }
+      return undefined;
+    });
+    renderDesk(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    // The act the case waits for is offered: this unit is sold by the release, never delivered (S31).
+    expect(await screen.findByRole('heading', { name: 'Autorizar la liberación' })).toBeInTheDocument();
+    // Its crossing stops saying the case has nothing to release, and it says what this act does.
+    const crossings = () => screen.getByText('Baja del hallazgo').closest('ul')!;
+    const crossing = within(crossings()).getByText('Liberación a stock').closest('li')!;
+    expect(crossing).toHaveAttribute('data-state', 'pending');
+    expect(within(crossing).getByText('Lista para liberar')).toBeInTheDocument();
+    expect(within(crossing).queryByText('Sin movimiento')).not.toBeInTheDocument();
+    expect(within(crossing).getByText(/cierra el caso/)).toBeInTheDocument();
+    // The unit is still custody, never sellable stock, and it does not wait for a client.
+    expect(screen.getByText('En custodia por garantía: 1 unidad')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Motivo de la liberación'),
+      { target: { value: ' El cliente no vino: la unidad queda en stock ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Autorizar la liberación a stock' }));
+    await screen.findByText(/C-2-000002: la unidad liberada a stock vendible/);
+    expect(JSON.parse(String(h.posts()[0].init.body))).toEqual({ note: 'El cliente no vino: la unidad queda en stock' });
+    expect(h.posts()[0].url).toBe('/api/warranty-cases/2/release');
+    // The release closed the case: the desk has no act left on it, says so, and names the act that closed it.
+    expect(await screen.findByText('El caso está cerrado: no admite más actos del Almacén.')).toBeInTheDocument();
+    const closedCrossing = within(crossings()).getByText('Liberación a stock').closest('li')!;
+    expect(within(closedCrossing).getByText('Liberada a stock')).toBeInTheDocument();
+    expect(within(closedCrossing).getByText(/caso cerró con ese acto/)).toBeInTheDocument();
+    // The pill of the case names the act that closed it: the release sold the unit, no client took it.
+    const pane = screen.getByRole('complementary', { name: 'Detalle del caso' });
+    const top = pane.querySelector('.warranty-detail-top') as HTMLElement;
+    expect(within(top).getByText('Cerrada por liberación')).toBeInTheDocument();
+    expect(within(top).queryByText('Entregada')).not.toBeInTheDocument();
+  });
+
+  it('offers nothing for the stock-bound unit that went to the used pool, and says why (S31, S11)', async () => {
+    const h = desk(url => url === '/api/warranty-cases/2'
+      ? json(resolvedStockBoundClaim({ verdict: 'not_covered' })) : undefined);
+    renderDesk(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Sucursal A' });
+    // The destination alone never opens this act: an uncovered unit is the pool de usadas' (LW025).
+    expect(screen.queryByRole('heading', { name: 'Autorizar la liberación' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Motivo de la liberación')).not.toBeInTheDocument();
+    // Both the crossing and the act block say why: no unit came back that the branch could sell (LW025).
+    expect(screen.getAllByText(/no tiene ninguna unidad que liberar/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/pool de usadas/).length).toBeGreaterThan(0);
+    expect(h.posts()).toHaveLength(0);
   });
 
   it('offers no release while the notice is missing, and says what is missing (S14)', async () => {

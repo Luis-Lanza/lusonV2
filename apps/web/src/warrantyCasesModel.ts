@@ -314,10 +314,13 @@ function record(value: unknown): WarrantyCase {
   if (loans.some((entry, index) => entry.ordinal !== index + 1)) return invalid();
   const events = list(item.events, event, 1000);
   if (events.some((entry, index) => index > 0 && events[index - 1].ordinal >= entry.ordinal)) return invalid();
-  // The phase of a case is the phase of its last tramo of the journey, so the header and the
-  // history can never be published disagreeing (S9).
-  const lastPhase = events.reduce<WarrantyPhase>((phase, entry) => entry.kind === 'phase' ? entry.phase : phase, 'received');
-  if (lastPhase !== row.phase) return invalid();
+  // The phase of a case is the phase its last event states, so the header and the history can never be
+  // published disagreeing (S9, S31). A tramo of the journey enters its phase, a notice carries the phase the
+  // case already holds, and the release that sells the unit bound for the branch's shelf states the `closed`
+  // it writes, because it is the act that closes that case (073). The server derives this same phase from the
+  // same last event and refuses a document where the two disagree, so the screen keeps that one rule.
+  const phase = events.reduce<WarrantyPhase>((current, entry) => entry.phase, 'received');
+  if (phase !== row.phase) return invalid();
   return {
     ...row, verdict, reported_destination: reported, loan_destination: loanDestination,
     stock_destination: stockDestination, sale_id: sale, warranty_number: warrantyNumber,
@@ -374,16 +377,48 @@ export function warrantyReleased(value: WarrantyCase): boolean {
 }
 
 /**
- * The units the case holds that are not sellable stock (S13). A claim holds the single unit that came
- * back from the factory for its client while the case waits, and it stops holding it when the Almacén
- * releases it to stock or when the counter delivers it. A finding holds nothing: its units are the
- * branch's own and came back at its resolution.
+ * Whether the release is the act that closed the case, and not the delivery (S31). The release that sells the
+ * unit bound for the branch's shelf states the `closed` it writes, and it is the last event of the case: no
+ * tramo of the journey states that close, so the phase alone never answers which act ended it.
+ */
+export function warrantyClosedByRelease(value: WarrantyCase): boolean {
+  return value.phase === 'closed' && (value.events.at(-1)?.kind ?? null) === 'release';
+}
+
+/**
+ * A claim whose usable unit the factory returned for the branch's own shelf (S31): the pair the backend names
+ * in `warranty_case_unit_bound_for_stock()` (073). The destination column alone never answers it, and a
+ * `not_covered` unit with that same destination is the pool de usadas and not a sellable unit at all (LW025).
+ */
+export function warrantyUnitBoundForStock(value: WarrantyCase): boolean {
+  return value.origin === 'warranty_claim' && value.reported_destination === 'stock'
+    && (value.verdict === 'repaired' || value.verdict === 'replaced');
+}
+
+/**
+ * The units the case holds that are not sellable stock (S13, S31). A claim holds the single unit that came back
+ * from the factory while the case waits — the repaired one a client will collect, and the usable one bound for
+ * the branch's own shelf — and it stops holding it when the Almacén releases it to stock or when the counter
+ * delivers it. A finding holds nothing: its units are the branch's own and came back at its resolution.
  */
 export function warrantyCustodyUnits(value: WarrantyCase): number {
   if (value.origin !== 'warranty_claim') return 0;
   if (value.phase !== 'resolved') return 0;
-  if (value.reported_destination !== 'customer') return 0;
+  // S13, S31: one battery came back to the branch and waits in custody — the repaired unit a client will
+  // collect, and the usable unit bound for the branch's own shelf, which the release enters into stock.
+  if (value.reported_destination !== 'customer' && !warrantyUnitBoundForStock(value)) return 0;
   return warrantyReleased(value) ? 0 : 1;
+}
+
+/**
+ * The pill of a case in `closed`, decided by the act that closed it and never by the phase alone (S19, S31):
+ * the release sold the unit into the branch's sellable stock, the delivery handed the repaired unit to the
+ * client, and a finding is closed by its own branch. Every other phase states the phase it holds.
+ */
+export function warrantyPhaseShortLabel(value: WarrantyCase): string {
+  if (value.phase !== 'closed') return warrantyPhaseShortLabels[value.phase];
+  if (warrantyClosedByRelease(value)) return 'Cerrada por liberación';
+  return value.origin === 'warranty_claim' ? 'Entregada al cliente' : 'Cerrada por la sucursal';
 }
 
 /** The notice is the branch's, it happens once and it exists only once the factory answered (S14). */
