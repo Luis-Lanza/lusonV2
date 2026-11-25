@@ -9,7 +9,7 @@ import {
 import {
   warrantyDaysSince, warrantyDestinationLabels, warrantyEventKindLabels, warrantyLoanFateLabels,
   warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseLabels, warrantyPhaseShortLabel,
-  warrantyPhaseShortLabels, warrantyPhaseTone, warrantyVerdictLabels, type WarrantyCase,
+  warrantyPhaseShortLabels, warrantyPhaseTone, warrantyUnitsWrittenOff, warrantyVerdictLabels, type WarrantyCase,
   type WarrantyCaseRow, type WarrantyDestination, type WarrantyVerdict,
 } from './warrantyCasesModel';
 import {
@@ -388,7 +388,7 @@ function WarehouseCaseDetail({ record, api, csrf, locations, today, onChanged, o
     <h2>{locationName(locations, record.branch_location_id)}</h2>
     <p className="warranty-client-line">{record.origin === 'warranty_claim'
       ? 'Reclamo con la garantía de una venta: el cliente y su respuesta son de la sucursal.'
-      : `Hallazgo en góndola: ${units(record.quantity ?? 0)} dadas de baja del stock de la sucursal.`}</p>
+      : `Hallazgo en góndola: ${warrantyUnitsWrittenOff(record.quantity ?? 0)} del stock de la sucursal.`}</p>
 
     <dl className="warranty-facts">
       <div><dt>{record.origin === 'warranty_claim' ? 'Serial reclamado' : 'Unidades de la góndola'}</dt>

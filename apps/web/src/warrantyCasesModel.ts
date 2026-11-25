@@ -352,6 +352,14 @@ export function parseWarrantyPending(raw: string): bigint {
 
 const dayMilliseconds = 86_400_000;
 
+/**
+ * How many units a finding took off the shelf, with the participle agreeing with the count (S34). The sentence
+ * is written here, once: both screens say it whole, and neither repeats the agreement on its own.
+ */
+export function warrantyUnitsWrittenOff(quantity: number): string {
+  return quantity === 1 ? '1 unidad dada de baja' : `${quantity} unidades dadas de baja`;
+}
+
 /** Whole days between a persisted instant and now. A clock behind the instant never counts backwards. */
 export function warrantyDaysSince(instant: string, now: Date): number {
   const then = Date.parse(instant);

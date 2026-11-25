@@ -17,7 +17,8 @@ import {
   warrantyLoanFateLabels, warrantyLoanRegistered, warrantyNoticeAvailable,
   warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseLabels, warrantyPhaseShortLabel,
   warrantyPhaseShortLabels, warrantyPhaseTone, warrantyPhases, warrantyReleased, warrantyReceiptAvailable,
-  warrantyReceiptFileName, warrantyReceiptPath, warrantyUnitBoundForStock, warrantyVerdictLabels,
+  warrantyReceiptFileName, warrantyReceiptPath, warrantyUnitBoundForStock, warrantyUnitsWrittenOff,
+  warrantyVerdictLabels,
   type WarrantyCase, type WarrantyCaseRow, type WarrantyDeliveryFate, type WarrantyLoan,
   type WarrantyLoanFateStated,
   type WarrantyOriginFilter, type WarrantyPhaseFilter,
@@ -316,7 +317,7 @@ export default function WarrantyCases({ csrf, branch, locations, fetcher = globa
     {exchange && <ExchangeDialog api={api} sales={sales} csrf={csrf} branch={branch} locations={locations}
       onClose={() => setExchange(false)} onCase={record => { accept(record, `Caso ${record.case_number} abierto en la sucursal.`); }} />}
     {defect && <DefectDialog api={api} sales={sales} csrf={csrf} branch={branch}
-      onClose={() => setDefect(false)} onCase={record => { accept(record, `Hallazgo ${record.case_number} registrado: ${units(record.quantity ?? 0)} dadas de baja de la góndola.`); }} />}
+      onClose={() => setDefect(false)} onCase={record => { accept(record, `Hallazgo ${record.case_number} registrado: ${warrantyUnitsWrittenOff(record.quantity ?? 0)} de la góndola.`); }} />}
   </section>;
 }
 

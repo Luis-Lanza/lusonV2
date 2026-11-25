@@ -316,6 +316,34 @@ describe('the acts the warehouse owns', () => {
     });
   });
 
+  it('says one unit left the branch stock when the finding is a single battery (S34)', async () => {
+    const h = desk(url => {
+      if (url === '/api/warranty-cases?phase=at_factory') return tray([findingRow({ phase: 'at_factory', quantity: 1 })]);
+      if (url === '/api/warranty-cases/5') return json(finding({ quantity: 1 }));
+      return undefined;
+    });
+    renderDesk(h);
+    fireEvent.click(await screen.findByRole('button', { name: /En fábrica/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-3-000005' }));
+    const pane = await screen.findByRole('complementary', { name: 'Detalle del caso' });
+    expect(within(pane).getByText('Hallazgo en góndola: 1 unidad dada de baja del stock de la sucursal.'))
+      .toBeInTheDocument();
+  });
+
+  it('says several units left the branch stock when the finding takes more than one battery (S34)', async () => {
+    const h = desk(url => {
+      if (url === '/api/warranty-cases?phase=at_factory') return tray([findingRow({ phase: 'at_factory', quantity: 2 })]);
+      if (url === '/api/warranty-cases/5') return json(finding({ quantity: 2 }));
+      return undefined;
+    });
+    renderDesk(h);
+    fireEvent.click(await screen.findByRole('button', { name: /En fábrica/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-3-000005' }));
+    const pane = await screen.findByRole('complementary', { name: 'Detalle del caso' });
+    expect(within(pane).getByText('Hallazgo en góndola: 2 unidades dadas de baja del stock de la sucursal.'))
+      .toBeInTheDocument();
+  });
+
   it('states the factory verdict of a finding on its own shelf, with no borrowed battery at all (S11)', async () => {
     const h = desk((url, init) => {
       if (url === '/api/warranty-cases?phase=at_factory') return tray([findingRow({ phase: 'at_factory' })]);

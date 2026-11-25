@@ -857,7 +857,51 @@ describe('the accessible shape of the screen', () => {
   });
 });
 
+/** Registers one finding of `quantity` units on the shelf and hands back the screen's harness (S34). */
+async function registerFinding(quantity: string) {
+  const writtenOff = Number(quantity);
+  const findingRow = row({ id: 5, case_number: 'C-2-000005', origin: 'stock_defect', variant_id: 4,
+    serial_number: null, quantity: writtenOff, reason: 'Probada en mostrador', declared_failure: 'No retiene carga' });
+  const finding = { ...findingRow, verdict: null, reported_destination: null, loan_destination: null,
+    stock_destination: null, sale_id: null, warranty_number: null, created_by_account_id: 2, loans: [], events: [] };
+  const h = harness((url, init) => {
+    if (url === '/api/warranty-cases') return tray([findingRow]);
+    if (url === '/api/warranty-cases/5') return json(finding);
+    if (url.startsWith('/api/sales/sellable?')) {
+      return json({ page: 1, page_size: 50, total_variants: 1, items: [{
+        variant_id: 4, catalog_entry_id: 4, brand: 'Moura', model: '12N5L', capacity_ah: '5', polarity: 'L',
+        sellable: true, suggested_price: '45000.00', min_price: '40000.00',
+        existing: 6, reserved: 0, available: 6,
+      }] });
+    }
+    if (url === '/api/warranty-cases/stock-defects' && init.method === 'POST') return json(finding, 201);
+    return undefined;
+  });
+  renderScreen(h);
+  fireEvent.click(await screen.findByRole('button', { name: 'Hallazgo en góndola' }));
+  const select = await screen.findByLabelText('Batería que falló');
+  await waitFor(() => expect(within(select).getByRole('option', { name: /Moura/ })).toBeInTheDocument());
+  fireEvent.change(select, { target: { value: '4' } });
+  fireEvent.change(screen.getByLabelText('Cantidad de unidades'), { target: { value: quantity } });
+  fireEvent.change(screen.getByLabelText('Qué falló'), { target: { value: 'No retiene carga' } });
+  fireEvent.change(screen.getByLabelText('Motivo de la baja de stock'), { target: { value: 'Probada en mostrador' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Registrar el hallazgo' }));
+  return h;
+}
+
 describe('the battery the branch found failed on its own shelf', () => {
+  it('says one unit was written off when the finding is a single battery (S34)', async () => {
+    await registerFinding('1');
+    expect(await screen.findByText('Hallazgo C-2-000005 registrado: 1 unidad dada de baja de la góndola.'))
+      .toBeInTheDocument();
+  });
+
+  it('says several units were written off when the finding takes more than one battery (S34)', async () => {
+    await registerFinding('2');
+    expect(await screen.findByText('Hallazgo C-2-000005 registrado: 2 unidades dadas de baja de la góndola.'))
+      .toBeInTheDocument();
+  });
+
   it('registers the finding with its motive and deselects nothing of the tray (S16)', async () => {
     const findingRow = row({ id: 5, case_number: 'C-2-000005', origin: 'stock_defect', variant_id: 4,
       serial_number: null, quantity: 2, reason: 'Probada en mostrador', declared_failure: 'No retiene carga' });
