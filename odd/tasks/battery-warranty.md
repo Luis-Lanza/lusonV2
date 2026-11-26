@@ -147,7 +147,7 @@ Abierta el 2026-11-25 como **siete PRs encadenados**, cada uno contra el anterio
 | 5 | #11 | `warranty/5-fine-rules` | `6f71e34..324be0a` | 2 760 | 072–073: la lista cerrada de modelos (`LW034`) y el par destino+veredicto (`LW035`) |
 | 6 | #12 | `warranty/6-browser-and-defects` | `324be0a..96d1537` | 1 848 | 074 / `LW036`: el caso no cierra con un préstamo sin desenlace, y el desenlace es un hecho |
 | 7 | #8 | `warranty/7-branch-adjustment` | `96d1537..5529997` | 3 983 | El arnés de navegador, los defectos que destapó, el acto de cierre en la fila y el ajuste de la sucursal (S36), más los dos commits de entrega |
-| 8 | — | `warranty/8-journey-gate` | `5529997..` | 641 | Lo que la revisión adversarial encontró: la garita de la S4, el cierre del Almacén, un reclamo abierto por serial (076) y la prueba del legajo |
+| 8 | #13 | `warranty/8-journey-gate` | `5529997..` | 641 | Lo que la revisión adversarial encontró: la garita de la S4, el cierre del Almacén, un reclamo abierto por serial (076) y la prueba del legajo |
 
 Total: 58 commits, 26 636 líneas, 8 slices. El orden de merge es el de la tabla: cada slice se mergea sobre el anterior, no sobre `master`. Push y apertura hechos; **el merge es del humano**.
 
