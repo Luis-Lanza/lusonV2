@@ -1,6 +1,7 @@
 import {
   arrangeGasto, bandValue, bookMovement, bookRow, branchA, centsOf, drawerForm, expect, moneyText,
-  motiveList, openDrawer, readBook, rowMovementId, signedText, test, uniqueAmount, uniqueNote,
+  motiveList, openDrawer, readBook, rowMovementId, signedText, test, typedMoney, uniqueAmount,
+  uniqueNote, wireMoney,
 } from './harness';
 
 /**
@@ -15,17 +16,22 @@ import {
  * saldo de lo que falta corregir.
  */
 
-/** La corrección parcial de este acto: un monto del operador, no el total de la fila, en centavos. */
-const part = 12_050;
-const partWire = '120.50';
-const partTyped = '120,50';
-
+/**
+ * La parte que esta corrección devuelve del gasto: **la mitad del monto que la prueba misma registró**, no
+ * un número fijo. El tope de una corrección es lo que todavía falta corregir de su movimiento
+ * (`closings.md`, «Corrections of the drawer's book»): con un monto fijo, un gasto más chico que ese tope
+ * —el arreglo sortea montos desde Bs 10,00— se rechaza con `409 correction_exceeds` y el acto nunca deja su
+ * confirmación. Derivarla del gasto mantiene la corrección parcial, su signo contrario y su tope, siempre.
+ */
 test('el operador corrige un movimiento con otro del signo contrario', async ({ page, api }) => {
   const branch = await api.as(branchA);
   const motives = await motiveList(branch);
   const motive = motives[0];
   if (motive === undefined) throw new Error('la lista de motivos no ofrece ninguna opción para un gasto');
   const amount = uniqueAmount();
+  const part = Math.floor(amount.cents / 2);
+  const partWire = wireMoney(part);
+  const partTyped = typedMoney(part);
   const note = uniqueNote('Insumos del mostrador');
   // El arreglo: el gasto que la corrección responde, registrado por la misma ruta pública de la pantalla.
   const id = await arrangeGasto(branch, { amount, note, categoryId: motive.id });
@@ -52,6 +58,9 @@ test('el operador corrige un movimiento con otro del signo contrario', async ({ 
   await panel.getByRole('button', { name: 'Registrar corrección' }).click();
   await expect(drawerForm(page).getByRole('status').filter({ hasText: 'Corrección registrada' }))
     .toHaveText(`Corrección registrada para el movimiento #${id}.`);
+  // La confirmación es lo único que cierra el panel: si el servidor hubiera rechazado la corrección
+  // (por ejemplo `correction_exceeds`), el panel seguiría abierto con su alerta y nada se habría escrito.
+  await expect(panel).toHaveCount(0);
 
   // La fila nueva del libro: se llama corrección, dice a quién responde y suma lo que el gasto sacó.
   const correction = page.locator('tr[data-movement-id]').filter({ hasText: reason });

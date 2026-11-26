@@ -47,6 +47,17 @@ export function moneyText(cents: number): string {
   return `Bs ${grouped(Math.floor(magnitude / 100))},${String(magnitude % 100).padStart(2, '0')}`;
 }
 
+/** El texto canónico del contrato para un monto exacto de centavos: `"123.45"`. */
+export function wireMoney(cents: number): string {
+  if (!Number.isSafeInteger(cents) || cents < 0) throw new Error(`monto inválido: ${cents}`);
+  return `${Math.trunc(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
+}
+
+/** El mismo monto como el operador lo escribe en un campo: `123,45`. */
+export function typedMoney(cents: number): string {
+  return wireMoney(cents).replace('.', ',');
+}
+
 /** El efectivo con su signo, que es la única cifra firmada del libro: `− Bs 85,00`, `+ Bs 500,00`. */
 export function signedText(cents: number): string {
   if (cents < 0) return `\u2212 ${moneyText(cents)}`;
@@ -87,12 +98,7 @@ export interface Amount {
 
 export function uniqueAmount(): Amount {
   const cents = 1_000 + Math.floor(Math.random() * 89_000);
-  const whole = Math.floor(cents / 100);
-  return {
-    cents,
-    wire: `${whole}.${String(cents % 100).padStart(2, '0')}`,
-    typed: `${whole},${String(cents % 100).padStart(2, '0')}`,
-  };
+  return { cents, wire: wireMoney(cents), typed: typedMoney(cents) };
 }
 
 // ---------------------------------------------------------------------------------
