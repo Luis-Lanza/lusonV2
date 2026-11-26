@@ -2600,6 +2600,13 @@ func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
 // composes of its typed fields. Nothing is scanned into a non-nullable battery value, so a product
 // line is read instead of failing the whole settlement closed (S2, S3).
 //
+// The sheet is read whole, with no bound of its own: it holds one line per variant the branch held
+// in stock at the cut, and its size is the catalogue's. The table already states that bound instead
+// of this contract restating it -- `closing_count_lines` keys on (closing_id, variant_id) and every
+// line references a catalogue variant, so a sheet can never hold two lines of one variant nor a
+// line of a variant the catalogue does not have -- and 028 dropped the catalogue's own 190-variant
+// bound, which is why no number here may stand in its place.
+//
 // Every line states, beside the snapshot and the count, how many units of its variant a stock defect
 // of this branch holds instead of the branch having them in stock (S13, S16). The case writes the
 // quantity off `existing` in the transaction that admits it (067) and writes no transfer, because the
@@ -2659,9 +2666,6 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 			entries = append(entries, int32(line.variant.CatalogEntryID))
 		}
 		sheet = append(sheet, line)
-		if len(sheet) > MaxCountLines {
-			return nil, ErrUnavailable
-		}
 	}
 	if rows.Err() != nil {
 		return nil, fail(ctx)

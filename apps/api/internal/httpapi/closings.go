@@ -99,10 +99,20 @@ const (
 	// and the database answers for the correction it locked, never for a document the path guessed.
 	closingsCorrectionDecisionPath = closingsCollectionPath + "/corrections/{correction}/decision"
 	// closingsBodyLimit bounds decoding work well above any admitted payload: the widest
-	// settlement body is a count sheet of MaxCountLines lines plus a bounded observation,
-	// far below this limit, and the check stops reading at the limit instead of buffering
-	// the body whole.
+	// settlement body is a count sheet with one line per variant the branch holds in stock plus a
+	// bounded observation, and that sheet has no bound of its own -- the catalogue bounds it (see
+	// canonicalCount) and the catalogue is operational data. So the one number that can bind a
+	// request here is this transport limit, and it wins: closingsCountLineCeiling is derived from it
+	// instead of restating a sheet size, and a body above the limit is `400 invalid_request`.
 	closingsBodyLimit = 32 << 10
+	// closingsShortestCountLine is the fewest bytes one counted line can take on the wire:
+	// `{"variant_id":1,"counted_quantity":0}` plus the comma that can precede it. The array cap of
+	// closingCountLines is computed from the body limit with it, so the two can never disagree and
+	// neither of them is a sheet size copied from another file. The sheet's own bound is the
+	// catalogue's, which the store proves before it writes a line.
+	closingsShortestCountLine = len(`{"variant_id":1,"counted_quantity":0},`)
+	// closingsCountLineCeiling is how many counted lines one body of the limit above can carry.
+	closingsCountLineCeiling = closingsBodyLimit / closingsShortestCountLine
 	// closingsFirstBranch is the first branch id. The warehouse is location 1 and never
 	// settles itself, so a branch below this is not a branch at all.
 	closingsFirstBranch = 2
@@ -657,7 +667,7 @@ func closingCountLines(d *json.Decoder) ([]closings.Counted, error) {
 	}
 	lines := make([]closings.Counted, 0)
 	for d.More() {
-		if len(lines) >= closings.MaxCountLines || !closingDelimiter(d, '{') {
+		if len(lines) >= closingsCountLineCeiling || !closingDelimiter(d, '{') {
 			return nil, closings.ErrInvalid
 		}
 		var line closings.Counted
@@ -2077,8 +2087,7 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 	if closing.ID < 1 || closing.BranchID < closingsFirstBranch ||
 		closing.BranchID > closings.MaxBranchID || closing.BranchName == "" ||
 		!closingText(closing.BranchName) || !closing.Status.Valid() ||
-		closing.OpenedByAccountID < 1 || !closings.ValidObservation(closing.Observation) ||
-		len(closing.CountLines) > closings.MaxCountLines {
+		closing.OpenedByAccountID < 1 || !closings.ValidObservation(closing.Observation) {
 		return unavailable()
 	}
 	periodStart, ok := closingMoment(closing.PeriodStart)
@@ -2711,11 +2720,13 @@ func closingCorrectionRecord(correction closings.Correction) (closingCorrectionD
 }
 
 // closingCorrectionPayloadRecord admits the payload of one correction: at least one of the four
-// values it can state, the counted sheet inside the database's own bounds and one line per variant,
-// and every amount the canonical money of this vertical. An absent value is published as absent,
-// because a correction never restates a number it does not touch.
+// values it can state, the counted sheet one line per variant, and every amount the canonical money
+// of this vertical. An absent value is published as absent, because a correction never restates a
+// number it does not touch. The sheet of a correction has no line bound of its own either: every
+// line it names must be one the closed settlement counted -- a variant it never counted is refused
+// by the correction's own payload guard (036) -- so the settlement's sheet is what bounds it.
 func closingCorrectionPayloadRecord(payload closings.CorrectionOffer) (closingCorrectionPayloadDTO, bool) {
-	if !payload.Stated() || len(payload.CountedQuantities) > closings.MaxCountLines {
+	if !payload.Stated() {
 		return closingCorrectionPayloadDTO{}, false
 	}
 	record := closingCorrectionPayloadDTO{

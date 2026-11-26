@@ -248,9 +248,13 @@ const (
 	firstBranchID = 2
 	// MaxBranchID is the range of the smallint branch column.
 	MaxBranchID = math.MaxInt16
-	// MaxCountLines, MaxCounted, MaxObservation and MaxReason are the database's own
-	// bounds; every request is judged against them before the first statement runs.
-	MaxCountLines  = 190
+	// MaxCounted, MaxObservation and MaxReason are the database's own bounds of one value a
+	// caller states -- the counted quantity of one line, the observation of the drawer, the reason
+	// of a proposal or a correction -- and every request is judged against them before the first
+	// statement runs. The count sheet states no such bound of its own: a line names one variant and
+	// the write proves every one of them exists in the live catalogue, so the catalogue is what
+	// bounds the sheet (see canonicalCount and loadCountLines). Migration 028 dropped the catalogue's
+	// own 190-variant bound and the sheet must never re-impose a copy of it.
 	MaxCounted     = 1_000_000
 	MaxObservation = 1000
 	MaxReason      = 1000
@@ -1129,11 +1133,18 @@ func correctedAmount(amount *Money, delta Signed) (*Money, error) {
 	return &value, nil
 }
 
-// canonicalCount admits the counted sheet of one request: one to MaxCountLines lines, each
-// naming a variant of the catalogue once, with a count inside the database's bound. The
-// lines are copied in the caller's order; the caller's slice is never modified.
+// canonicalCount admits the counted sheet of one request: one or more lines, each naming a
+// variant of the catalogue once, with a count inside the database's bound. The sheet has no line
+// bound of its own and this function states none: a line names one variant, the caller's list is
+// refused a repeated variant, and the write proves every named variant exists in the live catalogue
+// (checkVariants for a count, the payload guard of 036 for a correction) before a line is written --
+// so the catalogue's own variant count is the bound, and the count sheet of a branch can never be
+// larger than the catalogue it counts. A number copied here would be what the catalogue already
+// outgrew: 028 dropped the catalogue's own 190-variant bound and a fixed sheet bound kept the number
+// the catalogue left behind. The lines are copied in the caller's order; the caller's slice is never
+// modified.
 func canonicalCount(counted []Counted) ([]Counted, error) {
-	if len(counted) < 1 || len(counted) > MaxCountLines {
+	if len(counted) < 1 {
 		return nil, ErrInvalid
 	}
 	seen := make(map[int64]bool, len(counted))
