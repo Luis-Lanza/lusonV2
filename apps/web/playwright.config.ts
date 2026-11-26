@@ -47,5 +47,11 @@ export default defineConfig({
     { name: 'garantías', testMatch: /warranty\/.*\.spec\.ts/, dependencies: ['sesiones'] },
     // El acto de ajuste de la sucursal (S36), el mismo operador sobre su propio stock.
     { name: 'ajustes', testMatch: /adjustments\/.*\.spec\.ts/, dependencies: ['sesiones'] },
+    // El resto del producto, un directorio por grupo de pantallas (odd/tasks/e2e-all-flows.md).
+    {
+      name: 'flujos',
+      testMatch: /(inventory|sales|purchases|cash|closings|metrics|transfers|entries|catalog|administration|account)\/.*\.spec\.ts/,
+      dependencies: ['sesiones'],
+    },
   ],
 });

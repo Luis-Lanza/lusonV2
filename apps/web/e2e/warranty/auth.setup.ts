@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { expect, test as setup } from '@playwright/test';
-import { branchA, login, origin, warehouseRole, type Role } from './harness';
+import { branchA, branchB, login, origin, warehouseRole, type Role } from './harness';
 import { sessionState } from './sessions';
 
 /**
@@ -11,7 +11,7 @@ import { sessionState } from './sessions';
  * than that: signing in here keeps the suite repeatable, and the login the operator uses is still the
  * real one — the same form, the same origin and the same session the screens then read.
  */
-for (const role of [branchA, warehouseRole] satisfies readonly Role[]) {
+for (const role of [branchA, branchB, warehouseRole] satisfies readonly Role[]) {
   setup(`abre la sesión de ${role.locationName}`, async ({ page }) => {
     await login(page, role);
     // La sesión se guarda desde la página ya autenticada: es la cookie que el servidor acaba de emitir.
