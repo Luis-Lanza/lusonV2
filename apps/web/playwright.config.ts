@@ -43,15 +43,17 @@ export default defineConfig({
   projects: [
     // El proyecto que abre las dos sesiones del run; ningún spec firma un login propio.
     { name: 'sesiones', testMatch: /auth\.setup\.ts/, use: { storageState: { cookies: [], origins: [] } } },
+    // El piso de stock que todos los grupos dan por sentado, declarado una vez por corrida.
+    { name: 'suministro', testMatch: /stock\.setup\.ts/, dependencies: ['sesiones'] },
     // Los flujos de la vertical de garantías, como el operador los hace: sobre la sucursal A.
-    { name: 'garantías', testMatch: /warranty\/.*\.spec\.ts/, dependencies: ['sesiones'] },
+    { name: 'garantías', testMatch: /warranty\/.*\.spec\.ts/, dependencies: ['suministro'] },
     // El acto de ajuste de la sucursal (S36), el mismo operador sobre su propio stock.
-    { name: 'ajustes', testMatch: /adjustments\/.*\.spec\.ts/, dependencies: ['sesiones'] },
+    { name: 'ajustes', testMatch: /adjustments\/.*\.spec\.ts/, dependencies: ['suministro'] },
     // El resto del producto, un directorio por grupo de pantallas (odd/tasks/e2e-all-flows.md).
     {
       name: 'flujos',
       testMatch: /(inventory|sales|purchases|cash|closings|metrics|transfers|entries|catalog|administration|account)\/.*\.spec\.ts/,
-      dependencies: ['sesiones'],
+      dependencies: ['suministro'],
     },
   ],
 });
