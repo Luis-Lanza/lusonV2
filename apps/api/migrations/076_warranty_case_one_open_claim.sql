@@ -1,0 +1,52 @@
+-- 076_warranty_case_one_open_claim.sql
+--
+-- One serial carries one open claim (S7). S7 states it from the counter's side -- a used battery that
+-- fails is replaced on the same case and never by a second case for the same client and the same
+-- complaint -- and this file states the same fact from the battery's side: while a case of one serial
+-- is open, no other case of that serial can be opened. A battery that fails twice is a new claim once
+-- the first case closed, which is why the rule reads `phase <> 'closed'` and never "one case per
+-- serial for ever".
+--
+-- Why an index and not a check inside the admission trigger. The claim door of 065 resolves the sale
+-- from the serial inside `admit_warranty_case`, under the lock of the branch and of nothing else: two
+-- counters of two branches, or of one branch at the same instant, would both read "no open claim" and
+-- both insert. A trigger that counted the open claims would be a check-then-write with the race still
+-- inside it. A unique index is the database stating the fact instead: whichever transaction commits
+-- second is refused, with no window between the question and the answer.
+--
+-- What it looks up. `upper(btrim(serial_number))` is the canonical serial of the vertical, the same
+-- key 065 already indexes for the claim lookup (`warranty_cases_claimed_serial`) and the same
+-- comparison `admit_warranty_case` makes against `sale_units`. The counter may type ` abc/1 ` for
+-- `ABC/1` and the two are one battery, so the index is over the folded, trimmed text and never over
+-- the bytes the counter happened to write.
+--
+-- How narrow it is:
+--
+--   * only `origin='warranty_claim'`; a finding on the shelf has no serial at all (S1), so it is
+--     outside the index by predicate as well as by shape;
+--   * only the rows whose `phase` is not `closed`, and `phase` is the copy of the last tramo of the
+--     history that 068 and 073 keep, so a case leaves the index the instant its close is appended;
+--   * the index adds no column, no table and no trigger, and it writes nothing: it refuses a second
+--     open claim and leaves every closed one alone.
+--
+-- The index 065 installed stays. `warranty_cases_claimed_serial` serves the lookup that resolves a
+-- claim against the sale, across both doors and every phase; this one serves the uniqueness of the
+-- open claims. Two facts, two indexes, and the applied file is never edited in place.
+--
+-- Codes (S23). This file states no `LW` number at all. A unique index refuses the second row with
+-- SQLSTATE 23505, which is the database's own statement and not a refusal of this vertical's
+-- vocabulary; `internal/warrantycase` recognises it by this index's name
+-- (`warranty_cases_one_open_claim`) and publishes it as its own sentinel, so no number of the `LW`
+-- prefix is spent here and none is reused.
+--
+-- What a database that already holds two open claims of one serial does. The index is created over
+-- the rows already stored, so such a database refuses this migration instead of silently keeping both
+-- cases. That is deliberate: which of the two is the real complaint is a decision a person takes, and
+-- a migration that guessed it would rewrite a case somebody is answering to a client about.
+--
+-- Nothing of the journey, the loans, the resolution or the stock of this vertical moves here: this
+-- file is one index and the fact it states.
+
+CREATE UNIQUE INDEX warranty_cases_one_open_claim
+    ON warranty_cases(upper(btrim(serial_number)))
+    WHERE origin = 'warranty_claim' AND phase <> 'closed';

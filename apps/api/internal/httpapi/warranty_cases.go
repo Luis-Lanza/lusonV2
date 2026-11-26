@@ -179,13 +179,16 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 		failure(w, 403, "forbidden")
 	case errors.Is(err, warrantycase.ErrNotFound):
 		failure(w, 404, "not_found")
-	// The three refusals of the claim door state their own fact (S2).
+	// The three refusals of the claim door state their own fact (S2), and the fourth one says the serial
+	// already carries an open case of the same branch (S7).
 	case errors.Is(err, warrantycase.ErrSerialNotSold):
 		failure(w, 409, "serial_not_sold")
 	case errors.Is(err, warrantycase.ErrNoWarranty):
 		failure(w, 409, "no_warranty")
 	case errors.Is(err, warrantycase.ErrWarrantyExpired):
 		failure(w, 409, "warranty_expired")
+	case errors.Is(err, warrantycase.ErrClaimAlreadyOpen):
+		failure(w, 409, "claim_already_open")
 	// The shelf of a finding (S16) and the origin of a loan (S25): two different stocks and two
 	// different refusals.
 	case errors.Is(err, warrantycase.ErrNoStock):
@@ -207,6 +210,9 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 	// The journey, its gates and its resolution (S9, S10, S11).
 	case errors.Is(err, warrantycase.ErrTransition):
 		failure(w, 409, "transition_not_allowed")
+	// The client never leaves the branch without a battery (S4).
+	case errors.Is(err, warrantycase.ErrLoanRequired):
+		failure(w, 409, "loan_required")
 	case errors.Is(err, warrantycase.ErrResolutionRequired):
 		failure(w, 409, "resolution_required")
 	case errors.Is(err, warrantycase.ErrResolutionFinal):

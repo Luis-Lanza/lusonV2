@@ -23,6 +23,18 @@
 // number the warehouse transcribes by hand, and the warehouse can refuse before the factory
 // with its own verdict and a mandatory motive (S10).
 //
+// A claim never enters that journey before its client has a battery in hand (S4): the branch's exit
+// is admitted only once at least one used battery has been lent on the case, and the loan that let the
+// case go stays in its history. A finding on the shelf owes no loan, because it never had a client
+// waiting. And the terminal close belongs to the branch that owes the client the answer: the
+// warehouse executes every tramo of the journey but that one, because it moves the battery and never
+// closes the case (S19).
+//
+// One serial carries one open claim (S7). The database states it with a unique partial index over the
+// canonical serial of the open claims (076), not with a check this package could race against, so a
+// second open claim of one battery is refused however many counters press at once; a closed case
+// never blocks the next claim of its serial, because a battery that failed twice is a new case.
+//
 // A claim resolution states the verdict and where the reported battery and the lent battery
 // end (S11). The stock destination is never stated by a claim, because a claim never had
 // branch stock in play. A finding on the shelf resolves by the matrix of its own units: the
@@ -81,6 +93,11 @@ var (
 	ErrSerialNotSold   = errors.New("the claimed serial number was never sold")
 	ErrNoWarranty      = errors.New("the claimed unit was sold without a warranty term")
 	ErrWarrantyExpired = errors.New("the warranty term of the claimed unit has expired")
+	// ErrClaimAlreadyOpen is the refusal of a second claim for a serial another open case of the same
+	// branch already holds (S7, 076). The refusal is the database's: the unique partial index states
+	// that one serial carries one open claim, so two counters pressing at once cannot both open a case,
+	// and a closed case never stands in the way of the next claim of the same battery.
+	ErrClaimAlreadyOpen = errors.New("the serial already has an open claim")
 
 	// ErrClaimOnly is the refusal of the two facts a finding on the shelf never states: it registers no
 	// notice, because it has no client to call, and it authorises no release, because its units are the
@@ -92,6 +109,10 @@ var (
 	// paper documents a loan, so a case without one has nothing to print (S8).
 	ErrNoLoan = errors.New("the case has no loan to print")
 
+	// ErrLoanRequired is the refusal of a claim that would leave the branch before its client has been
+	// given a used battery (S4): the loan is what keeps nobody without one, so the case does not enter
+	// the journey without it. A finding on the shelf owes no loan, because it has no client waiting.
+	ErrLoanRequired = errors.New("a warranty claim does not leave the branch without a loan")
 	// ErrTransition is the refusal of a phase outside the frozen order (S9).
 	ErrTransition = errors.New("the phase transition is not allowed")
 	// ErrResolutionRequired says a case reaches `resolved` through its resolution and
@@ -502,6 +523,10 @@ const (
 	MaxLoanQuantity int64 = 10000
 	// maxLoanSerial is the bound of the optional serial of a used battery.
 	maxLoanSerial = 64
+	// oneOpenClaimIndex is the unique partial index of 076 that states S7: one open claim per serial,
+	// compared on the trimmed, case-folded serial. Its name is how this store recognises the database's
+	// refusal, so it is stated once here and once in the migration.
+	oneOpenClaimIndex = "warranty_cases_one_open_claim"
 )
 
 // CanonicalClaimSerial trims the serial the client brought and refuses a value outside the

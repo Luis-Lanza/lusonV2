@@ -20,9 +20,11 @@ import { parseUsedStock, usedStockPath, type UsedStockRow } from './usedStockMod
 
 export type WarrantyCaseErrorCode =
   | 'invalid_request' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'unauthenticated'
-  | 'serial_not_sold' | 'no_warranty' | 'warranty_expired' | 'no_stock' | 'reserved_stock'
+  | 'serial_not_sold' | 'no_warranty' | 'warranty_expired' | 'claim_already_open'
+  | 'no_stock' | 'reserved_stock'
   | 'loan_source_stock' | 'loan_model_unknown'
-  | 'claim_only' | 'transition_not_allowed' | 'resolution_required' | 'resolution_final'
+  | 'claim_only' | 'transition_not_allowed' | 'loan_required'
+  | 'resolution_required' | 'resolution_final'
   | 'resolution_matrix' | 'resolution_pending' | 'warehouse_verdict' | 'notice_required'
   | 'already_released' | 'nothing_to_release' | 'unit_belongs_to_stock'
   | 'loan_fate_final' | 'loan_fate_required' | 'loan_fate_open' | 'no_loan'
@@ -36,9 +38,10 @@ export const warrantyCaseAdmittedErrors: ReadonlyMap<number, readonly WarrantyCa
   [403, ['forbidden']],
   [404, ['not_found']],
   [405, ['method_not_allowed']],
-  [409, ['serial_not_sold', 'no_warranty', 'warranty_expired', 'no_stock', 'reserved_stock',
+  [409, ['serial_not_sold', 'no_warranty', 'warranty_expired', 'claim_already_open',
+    'no_stock', 'reserved_stock',
     'loan_source_stock', 'loan_model_unknown', 'claim_only',
-    'transition_not_allowed', 'resolution_required', 'resolution_final', 'resolution_matrix',
+    'transition_not_allowed', 'loan_required', 'resolution_required', 'resolution_final', 'resolution_matrix',
     'resolution_pending', 'warehouse_verdict', 'notice_required', 'already_released',
     'nothing_to_release', 'unit_belongs_to_stock', 'loan_fate_final', 'loan_fate_open', 'no_loan']],
   [503, ['service_unavailable']],
@@ -54,6 +57,9 @@ export const warrantyCaseErrorMessages: Record<WarrantyCaseErrorCode, string> = 
   serial_not_sold: 'Ese número de serie no figura en ninguna venta: la garantía no se puede reclamar así.',
   no_warranty: 'Esa unidad se vendió sin plazo de garantía, así que no tiene cobertura que reclamar.',
   warranty_expired: 'El plazo de garantía de esa unidad ya venció y no se reinicia.',
+  // One serial carries one open claim (S7): the message names the claim that is still open, and a
+  // closed case never blocks the next one.
+  claim_already_open: 'Ese número de serie ya tiene un reclamo abierto: un serial lleva un reclamo a la vez. No se registró nada.',
   no_stock: 'La sucursal no tiene esa cantidad de baterías para dar de baja.',
   // The two questions a loan answers apart (S25, S30): the model is one the pool knows, and the origin
   // holds it. A model nobody bought is not an empty shelf, so neither message names the other.
@@ -62,6 +68,9 @@ export const warrantyCaseErrorMessages: Record<WarrantyCaseErrorCode, string> = 
   reserved_stock: 'Esa baja dejaría el saldo por debajo de lo reservado: no se puede dar de baja.',
   claim_only: 'El hallazgo en góndola no tiene cliente al que avisar ni unidad en custodia.',
   transition_not_allowed: 'El caso no puede pasar a esa etapa desde la que tiene. No se registró nada.',
+  // A claim does not leave the branch before the client was given a battery (S4): the tramo is refused,
+  // not the loan, so the message names the loan it is missing.
+  loan_required: 'Un reclamo no sale de la sucursal sin que el cliente tenga una usada en la mano: registrá el préstamo. No se registró nada.',
   resolution_required: 'La etapa resuelta se alcanza con el veredicto, no con un tramo suelto.',
   resolution_final: 'El veredicto de este caso ya está dictado y es definitivo.',
   resolution_matrix: 'El veredicto no admite ese destino para las unidades del caso.',

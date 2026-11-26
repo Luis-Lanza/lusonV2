@@ -1242,3 +1242,108 @@ func decidedLoansFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
 	}
 	return ctx, p
 }
+
+// oneOpenClaimMigration is the version that states S7 where the rule can be enforced: one serial
+// carries one open claim, stated by the database as a unique partial index over the canonical serial
+// and not as a check the admission trigger could race against.
+const oneOpenClaimMigration = "076_warranty_case_one_open_claim.sql"
+
+// TestOneOpenClaimShape reads the embedded version exactly as PostgreSQL receives it: the file states
+// one fact -- the unique partial index over the trimmed, case-folded serial of the open claims -- it
+// writes nothing, restates nothing and spends no `LW` number of the vertical (S7, S23).
+func TestOneOpenClaimShape(t *testing.T) {
+	b, err := migrations.Files.ReadFile(oneOpenClaimMigration)
+	if err != nil {
+		t.Fatal("the one open claim migration must be embedded", err)
+	}
+	sql := statements(string(b))
+	for _, required := range []string{
+		"CREATE UNIQUE INDEX warranty_cases_one_open_claim",
+		"ON warranty_cases(upper(btrim(serial_number)))",
+		"WHERE origin = 'warranty_claim' AND phase <> 'closed'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("the one open claim index is incomplete: missing %s", required)
+		}
+	}
+	// The version is one index and nothing else: it adds no table, no column, no trigger and no row.
+	for _, forbidden := range []string{
+		"CREATE TABLE", "ALTER TABLE", "CREATE TRIGGER", "CREATE OR REPLACE FUNCTION",
+		"CREATE FUNCTION", "DROP ", "INSERT INTO", "UPDATE ", "DELETE FROM", "TRUNCATE",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("the one open claim index must not contain %s", forbidden)
+		}
+	}
+	// The rule needs no code of its own: a unique index refuses the second row with SQLSTATE 23505, so
+	// no number of the `LW` prefix is spent here and none is reused (S23).
+	if strings.Contains(sql, "ERRCODE=") {
+		t.Errorf("the one open claim index spends no LW code: %s", sql)
+	}
+	// The file documents the decision it takes, so the next reader does not reconstruct it.
+	for _, documented := range []string{
+		"S7", "065", "warranty_cases_claimed_serial", "23505", "warranty_cases_one_open_claim",
+	} {
+		if !strings.Contains(string(b), documented) {
+			t.Errorf("076 must document its own decision: %s", documented)
+		}
+	}
+}
+
+// TestOneOpenClaimOnALiveDatabase proves S7 on the admitted fixture: a second open claim of one serial
+// is refused by the database however the counter typed the serial, the refused insert writes no case, a
+// finding on the shelf is outside the rule because it states no serial, and a closed case frees the
+// serial for the next claim of the same battery.
+func TestOneOpenClaimOnALiveDatabase(t *testing.T) {
+	ctx, p := usedPoolFixture(t, 76)
+	// The branch sells the battery the claims below are about, so its counter has a price for it.
+	if _, err := p.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,
+ suggested_price,updated_by_account_id) VALUES(2,1,0.01,100.00,1)`); err != nil {
+		t.Fatal("the branch prices could not be configured")
+	}
+	serial := "UNICO/1"
+	sellWarrantyUnit(t, ctx, p, 2, 1, "100.00", serial, term(12), time.Now())
+	var first int64
+	if err := p.QueryRow(ctx, claimCaseSQL, 2, serial, 2).Scan(&first); err != nil {
+		t.Fatalf("the covered claim must be admitted: %v", err)
+	}
+	opened := warrantyCaseCount(t, ctx, p)
+
+	// The same battery brought back twice: the second claim is refused for the case it would duplicate
+	// and not for its sale, which is the same sale as the first one. ` unico/1 ` is the serial of the
+	// first case the way a counter types it, and it is one battery (S7).
+	for _, typed := range []string{serial, " unico/1 "} {
+		var second int64
+		err := p.QueryRow(ctx, claimCaseSQL, 2, typed, 2).Scan(&second)
+		if got := execRefusalCode(err); got != "23505" {
+			t.Fatalf("the serial %q already carries an open claim, got %q: %v", typed, got, err)
+		}
+	}
+	if got := warrantyCaseCount(t, ctx, p); got != opened {
+		t.Fatalf("the refused claim writes no case: %d became %d", opened, got)
+	}
+	// A finding on the shelf states no serial at all, so the rule never reaches it: its shape is the model
+	// and the quantity (S1), and 067's write-off is what a finding states.
+	if _, err := p.Exec(ctx, `INSERT INTO warranty_cases(branch_location_id,origin,variant_id,quantity,
+ declared_failure,reason,created_by_account_id)
+ VALUES(2,'stock_defect',1,1,'No retiene carga','Probada en mostrador',2)`); err != nil {
+		t.Fatalf("a finding on the shelf is outside the one open claim rule: %v", err)
+	}
+
+	// The case closes and the serial is free again: the index holds the open claims and never a closed
+	// one, because a battery that failed twice is a new claim (S7).
+	warrantyMove(t, ctx, p, first, "closed", "", 2, "Devuelta al cliente")
+	if phase := warrantyPhase(t, ctx, p, first); phase != "closed" {
+		t.Fatalf("the first claim is closed, got %s", phase)
+	}
+	var second int64
+	if err := p.QueryRow(ctx, claimCaseSQL, 2, serial, 2).Scan(&second); err != nil {
+		t.Fatalf("a closed case never blocks the next claim of its serial: %v", err)
+	}
+	if second == first {
+		t.Fatalf("the second claim is a case of its own, got %d", second)
+	}
+	if phase := warrantyPhase(t, ctx, p, second); phase != "received" {
+		t.Fatalf("the second claim is born received, got %s", phase)
+	}
+}

@@ -135,6 +135,11 @@ POST /api/warranty-cases/claims
 * The claim is judged against the sale: a serial nobody sold is `409 serial_not_sold`, a unit sold
   without a warranty term — a recorded decision, never missing data — is `409 no_warranty`, and a term
   that has already run out is `409 warranty_expired`. None of the three writes a case.
+* One serial carries one open claim (S7). While a case of that serial is not `closed`, a second claim
+  of the same battery is `409 claim_already_open` and writes nothing; the comparison is on the trimmed,
+  case-folded serial, so ` abc/1 ` and `ABC/1` are one battery. The refusal is the database's own
+  (a unique partial index over the open claims, `076`), so two counters pressing at once cannot both
+  open a case. A `closed` case never blocks the next claim: a battery that failed twice is a new case.
 * The term counts from the sale's own date and never restarts, so a factory replacement does not
   renew it.
 * Only the branch opens a claim: the warehouse is `403 forbidden`.
@@ -306,10 +311,18 @@ POST /api/warranty-cases/1/advance
   {"error":"transition_not_allowed","from":"received","to":"at_factory"}`, and it writes nothing.
 * `resolved` is reached through the resolution and never through a bare tramo:
   `409 resolution_required`.
+* A claim does not leave the branch before its client has a battery in hand (S4): `in_transit` on a
+  `warranty_claim` with no loan is `409 loan_required`, and the refused tramo writes neither a phase
+  nor an event. The loan that let the case go stays in its history. A finding on the shelf owes no
+  loan — the branch never had a client waiting on the shelf it found failed — so the same tramo is
+  admitted for it without one.
 * The shipment to the factory carries its file number: `at_factory` without one is
   `400 factory_file_required`, and a file number on any other tramo is `400 factory_file_not_allowed`.
 * `note` is the reason of the tramo, at most five hundred characters.
 * The branch records `in_transit` and `closed`; the warehouse records `at_warehouse` and `at_factory`.
+  The terminal `closed` tramo is the answer the branch owes its client and never the warehouse's
+  (S19): a warehouse session that states it is `403 forbidden`, and the branch keeps every other
+  tramo it has.
 
 ## The verdict
 
@@ -443,10 +456,12 @@ because it has no client and its units came back at its resolution.
 | 409 | `serial_not_sold` | The claimed serial was never sold |
 | 409 | `no_warranty` | The claimed unit was sold without a warranty term |
 | 409 | `warranty_expired` | The term of the claimed unit has run out |
+| 409 | `claim_already_open` | Another case of the same serial is still open; the serial carries one open claim at a time (S7) |
 | 409 | `no_stock` | The branch does not have that many batteries to write off |
 | 409 | `reserved_stock` | The write-off would take stock the branch already promised |
 | 409 | `claim_only` | A finding on the shelf states no notice, no release and no loan receipt: it has no client to call, no unit in custody and no used battery handed over |
 | 409 | `transition_not_allowed` | The phase is not the next edge of the journey; the body names `from` and `to` |
+| 409 | `loan_required` | A claim leaves the branch before its client was given a used battery (S4) |
 | 409 | `resolution_required` | A case reaches `resolved` through its resolution |
 | 409 | `resolution_final` | The resolution of a case is already stated |
 | 409 | `resolution_matrix` | The destinations do not match the verdict |
