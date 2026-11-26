@@ -57,6 +57,9 @@ func (f *fixture) unchanged(t *testing.T, before, after map[string]int64, scopes
 // publishes nothing, and a refused write publishes nothing because its transaction rolled back.
 func TestACaseWritePublishesAWarrantyRevision(t *testing.T) {
 	f := newFixture(t)
+	// The branch holds the battery the counter lends, because a loan never invents one (S25).
+	f.fund(t, 2, "1000.00")
+	f.buyUsed(t, 2, "realtime-loan-0001", "NS60L", 1, "10.00", "10.00")
 	f.sell(t, 2, "AVISO/1", months(12), time.Now())
 	before := f.revisions(t)
 	for _, scope := range []string{"warranty:1", "warranty:2", "warranty:3"} {
@@ -102,7 +105,7 @@ func TestACaseWritePublishesAWarrantyRevision(t *testing.T) {
 
 	// The loan is a write of the case as well, even though it moves no stock and no phase (S5).
 	if _, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
-		Model: "NS60L", Quantity: 1, SourceLocationID: 1}); err != nil {
+		Model: "NS60L", Quantity: 1, SourceLocationID: 2}); err != nil {
 		t.Fatalf("the branch must be able to lend: %v", err)
 	}
 	lent := f.revisions(t)

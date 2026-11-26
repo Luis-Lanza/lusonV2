@@ -1,6 +1,6 @@
 import { transferDetailPath } from './transferModel';
 
-export type NavigationRoute = { section: 'inventory' } | { section: 'administration'; screen?: 'branches' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' | 'other-products' | 'suppliers' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'cash' } | { section: 'metrics' } | { section: 'warranty' } | { section: 'settlements' } | { section: 'settlementDecision' } | { section: 'transfers'; id: string | null };
+export type NavigationRoute = { section: 'inventory' } | { section: 'administration'; screen?: 'branches' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' | 'other-products' | 'suppliers' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'cash' } | { section: 'metrics' } | { section: 'warranty'; screen?: 'used-stock' } | { section: 'settlements' } | { section: 'settlementDecision' } | { section: 'transfers'; id: string | null };
 
 export function readNavigation(): NavigationRoute {
   const hash = window.location.hash;
@@ -31,6 +31,9 @@ export function readNavigation(): NavigationRoute {
   // The two settlement screens live in the hash like every other section: the warehouse
   // workspace and the branch decision, each behind its own identity gate.
   // The guarantee tray of the branch: its own section, never a query of the counter or the settlement.
+  // The warehouse's stock of used batteries is a screen of that same section (S24): it is the other
+  // reading of the one thing both sides share, and it has its own hash so a reload lands back on it.
+  if (hash === '#/garantias/usadas') return { section: 'warranty', screen: 'used-stock' };
   if (hash === '#/garantias') return { section: 'warranty' };
   if (hash === '#/rendiciones') return { section: 'settlements' };
   if (hash === '#/rendicion') return { section: 'settlementDecision' };
@@ -61,7 +64,7 @@ export function navigationHash(route: NavigationRoute): string {
   if (route.section === 'purchases') return '#/compras';
   if (route.section === 'cash') return '#/caja';
   if (route.section === 'metrics') return '#/metricas';
-  if (route.section === 'warranty') return '#/garantias';
+  if (route.section === 'warranty') return route.screen === 'used-stock' ? '#/garantias/usadas' : '#/garantias';
   if (route.section === 'settlements') return '#/rendiciones';
   if (route.section === 'settlementDecision') return '#/rendicion';
   return '#/transferencias' + (route.id === null ? '' : '/' + route.id);

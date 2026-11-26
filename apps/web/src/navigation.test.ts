@@ -108,6 +108,18 @@ describe('T6 private navigation and existing transfer paths', () => {
       expect(readNavigation()).toEqual(hash === '/#/ventas' ? { section: 'sales' } : { section: 'inventory' });
     }
   });
+  it('gives the warehouse stock of used batteries its own hash inside the guarantee section', () => {
+    expect(navigationHash({ section: 'warranty', screen: 'used-stock' })).toBe('#/garantias/usadas');
+    writeNavigation({ section: 'warranty', screen: 'used-stock' });
+    expect(window.location.hash).toBe('#/garantias/usadas');
+    expect(readNavigation()).toEqual({ section: 'warranty', screen: 'used-stock' });
+    // The desk stays the section's own hash, and a path below the stock is not a screen either.
+    expect(navigationHash({ section: 'warranty' })).toBe('#/garantias');
+    window.history.replaceState(null, '', '/#/garantias');
+    expect(readNavigation()).toEqual({ section: 'warranty' });
+    window.history.replaceState(null, '', '/#/garantias/usadas/2');
+    expect(readNavigation()).toEqual({ section: 'inventory' });
+  });
   it('preserves list/detail navigation and malformed-path refusal', () => {
     expect(navigationHash({ section: 'transfers', id: null })).toBe('#/transferencias');
     writeNavigation({ section: 'transfers', id: '9007199254740993' });

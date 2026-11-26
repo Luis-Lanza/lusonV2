@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -139,6 +140,9 @@ func (a *API) warrantyCaseRoutes(store *warrantycase.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(warrantyCaseCollectionPath, a.warrantyCaseTray(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/counts", a.warrantyCasePending(store))
+	// The stock of used batteries is a literal suffix of the collection, exactly like the counts, so
+	// the `{id}` pattern never reads it as a case number (S24, S26).
+	mux.HandleFunc(warrantyCaseCollectionPath+warrantyUsedStockPath, a.warrantyUsedStock(store))
 	mux.HandleFunc(warrantyCaseClaimPath, a.warrantyClaim(store))
 	mux.HandleFunc(warrantyCaseDefectPath, a.warrantyDefect(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}", a.warrantyCaseDetail(store))
@@ -182,9 +186,16 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "no_warranty")
 	case errors.Is(err, warrantycase.ErrWarrantyExpired):
 		failure(w, 409, "warranty_expired")
-	// The shelf of a finding (S16).
+	// The shelf of a finding (S16) and the origin of a loan (S25): two different stocks and two
+	// different refusals.
 	case errors.Is(err, warrantycase.ErrNoStock):
 		failure(w, 409, "no_stock")
+	case errors.Is(err, warrantycase.ErrLoanSourceStock):
+		failure(w, 409, "loan_source_stock")
+	// The model of a loan is one the pool already knows, and the origin holds it (S25, S30): a model
+	// nobody bought and an empty shelf are two refusals and never one.
+	case errors.Is(err, warrantycase.ErrLoanModelUnknown):
+		failure(w, 409, "loan_model_unknown")
 	case errors.Is(err, warrantycase.ErrReservedStock):
 		failure(w, 409, "reserved_stock")
 	case errors.Is(err, warrantycase.ErrClaimOnly):
@@ -464,6 +475,109 @@ func (a *API) warrantyCaseDetail(store *warrantycase.Store) http.HandlerFunc {
 		}
 		a.warrantyRecord(w, 200, document)
 	}
+}
+
+// warrantyUsedStockPath is the literal suffix of the derived stock (S24): the warehouse reads what it
+// holds and the branch reads what it can lend, per location and per model, and it is one segment beside
+// the case id so the stock is never mistaken for a case.
+const warrantyUsedStockPath = "/used-stock"
+
+// warrantyUsedStock serves the stock of used batteries: every location and model the installation has
+// a fact of, with the terms of S24 and their signed sum. It is one read of the store, no body and no
+// query, and every number is the derived one: this handler recomposes no term and never invents a
+// zero for a key no document states (S18, S24).
+func (a *API) warrantyUsedStock(store *warrantycase.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		actor, ok := a.warrantyActorOf(w, r)
+		if !ok {
+			return
+		}
+		// The stock is one table and not a search: a query is a framing this route does not have.
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		stock, err := store.UsedStock(r.Context(), actor)
+		if err != nil {
+			warrantyFailure(w, err)
+			return
+		}
+		record, err := warrantyUsedStockRecord(stock)
+		if err != nil {
+			warrantyFailure(w, err)
+			return
+		}
+		respond(w, 200, record)
+	}
+}
+
+// warrantyUsedStockRecord publishes the derived stock after revalidating it: a location of the
+// installation, five quantities that are not negative, a sum that is exactly the arithmetic of S24 and
+// a strictly ordered list, so two rows of one key can never be published as one balance. The balance
+// itself may be negative, because it is a sum of the whole history and never a clamp.
+func warrantyUsedStockRecord(stock []warrantycase.StockPosition) (warrantyUsedStockDTO, error) {
+	unavailable := func() (warrantyUsedStockDTO, error) {
+		return warrantyUsedStockDTO{}, warrantycase.ErrUnavailable
+	}
+	record := warrantyUsedStockDTO{Stock: make([]warrantyUsedStockRowDTO, 0, len(stock))}
+	for _, row := range stock {
+		if row.LocationID < warrantyCaseWarehouse || row.LocationID > math.MaxInt16 ||
+			row.Purchased < 0 || row.FactoryReturns < 0 || row.LoansReturned < 0 ||
+			row.Delivered < 0 || row.LoansGiven < 0 || row.Available != warrantyStockSum(row) {
+			return unavailable()
+		}
+		if len(record.Stock) > 0 {
+			previous := record.Stock[len(record.Stock)-1]
+			if previous.LocationID > int64(row.LocationID) ||
+				(previous.LocationID == int64(row.LocationID) && previous.Model >= row.Model) {
+				return unavailable()
+			}
+		}
+		record.Stock = append(record.Stock, warrantyUsedStockRowDTO{
+			LocationID:     int64(row.LocationID),
+			Model:          row.Model,
+			Purchased:      strconv.FormatInt(row.Purchased, 10),
+			FactoryReturns: strconv.FormatInt(row.FactoryReturns, 10),
+			LoansReturned:  strconv.FormatInt(row.LoansReturned, 10),
+			Delivered:      strconv.FormatInt(row.Delivered, 10),
+			LoansGiven:     strconv.FormatInt(row.LoansGiven, 10),
+			Available:      strconv.FormatInt(row.Available, 10)})
+	}
+	return record, nil
+}
+
+// warrantyStockSum is the signed sum of one row: the same arithmetic the store states, and the reason
+// this handler never publishes a balance of its own. The delivered quantity is the branch's outflow
+// and the warehouse's inflow -- one delivery, counted once on each side (S24).
+func warrantyStockSum(row warrantycase.StockPosition) int64 {
+	total := row.Purchased + row.FactoryReturns + row.LoansReturned - row.LoansGiven
+	if row.LocationID == warrantyCaseWarehouse {
+		return total + row.Delivered
+	}
+	return total - row.Delivered
+}
+
+// warrantyUsedStockDTO is the stock as the contract publishes it: one row per location and model, each
+// term of the formula as a decimal string and the signed sum beside them, so a client that shows the
+// stock can show why it is that number.
+type warrantyUsedStockDTO struct {
+	Stock []warrantyUsedStockRowDTO `json:"stock"`
+}
+
+// warrantyUsedStockRowDTO is one position of the derived stock (S24): where the battery is, which
+// model it is -- the only identity a used battery has (S26) -- and the five facts that make the sum.
+type warrantyUsedStockRowDTO struct {
+	LocationID     int64  `json:"location_id"`
+	Model          string `json:"model"`
+	Purchased      string `json:"purchased"`
+	FactoryReturns string `json:"factory_returns"`
+	LoansReturned  string `json:"loans_returned"`
+	Delivered      string `json:"delivered"`
+	LoansGiven     string `json:"loans_given"`
+	Available      string `json:"available"`
 }
 
 // warrantyCaseLoans hands one used battery to the client of a case (S5, S6).

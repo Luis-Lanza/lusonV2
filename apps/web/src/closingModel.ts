@@ -100,12 +100,16 @@ export type ClosingBatteryLine = ClosingLineKey & ClosingBatteryIdentity & {
   /** Frozen at the cut and never recalculated: the sheet stays a fact of the opening (S4). */
   readonly expected_quantity: number;
   readonly counted_quantity: number | null;
+  /** Units of this variant a warranty case holds instead of the branch (derived on read). */
+  readonly held_in_case_quantity?: number;
 };
 
 /** One product line of the sheet, with its name and detail and no battery attribute. */
 export type ClosingProductLine = ClosingLineKey & ClosingProductIdentity & {
   readonly expected_quantity: number;
   readonly counted_quantity: number | null;
+  /** Units of this variant a warranty case holds instead of the branch (derived on read). */
+  readonly held_in_case_quantity?: number;
 };
 
 /**

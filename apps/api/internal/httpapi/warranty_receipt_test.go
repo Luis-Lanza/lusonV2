@@ -56,8 +56,39 @@ func TestWarrantyReceiptOverPostgreSQL(t *testing.T) {
 	// A claim that has not lent its used battery has no paper to hand over: the refusal is
 	// its own and it writes nothing.
 	f.refused(t, f.request(2, "GET", receiptPath, ""), 409, "no_loan")
+	// The warehouse holds the unit the counter lends, because a loan never invents one (S25): the
+	// factory refused a battery of the branch's own shelf and sent it back to the used pool, which is
+	// the warehouse's who shipped it and who received it (S27).
+	var model string
+	if err := f.p.QueryRow(f.ctx, `SELECT entry.model FROM catalog_entries entry
+ JOIN catalog_variants variant ON variant.catalog_entry_id=entry.id WHERE variant.id=$1`,
+		f.variant).Scan(&model); err != nil {
+		t.Fatalf("the model of the fixture's battery could not be read: %v", err)
+	}
+	finding := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/stock-defects",
+		fmt.Sprintf(`{"variant_id":%d,"quantity":1,"declared_failure":"No retiene carga",`+
+			`"reason":"Probada en mostrador"}`, f.variant))), 201)
+	for _, tramo := range []struct {
+		actor int
+		body  string
+	}{
+		{2, `{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`},
+		{1, `{"phase":"at_warehouse","factory_case_number":"","note":"Recibida"}`},
+		{1, `{"phase":"at_factory","factory_case_number":"LEG-90","note":"A fábrica"}`},
+	} {
+		if w := f.serve(t, f.request(tramo.actor, "POST",
+			fmt.Sprintf("/api/warranty-cases/%d/advance", finding.ID), tramo.body)); w.Code != 200 {
+			t.Fatalf("the finding walks its journey: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if w := f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/warranty-cases/%d/resolution", finding.ID),
+		`{"verdict":"not_covered","reported_destination":"stock","note":"Fábrica rechazó"}`)); w.Code != 200 {
+		t.Fatalf("the factory refusal returns the unit to the pool: %d %s", w.Code, w.Body.String())
+	}
 	if w := f.serve(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/loans", claim.ID),
-		`{"model":"NS60L","quantity":1,"serial_number":"","source_location_id":1}`)); w.Code != 201 {
+		fmt.Sprintf(`{"model":%q,"quantity":1,"serial_number":"","source_location_id":1}`,
+			model))); w.Code != 201 {
 		t.Fatalf("the branch lends a used battery: %d %s", w.Code, w.Body.String())
 	}
 
@@ -85,7 +116,7 @@ func TestWarrantyReceiptOverPostgreSQL(t *testing.T) {
 	}
 	text := receiptDrawn(pdf)
 	for _, want := range []string{claim.CaseNumber, serial, "No arranca el motor",
-		"Cliente Mostrador", "700-00000", "NS60L", "Almac", "CONDICIONES DEL CANJE"} {
+		"Cliente Mostrador", "700-00000", model, "Almac", "CONDICIONES DEL CANJE"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the downloaded receipt does not draw %q:\n%s", want, text)
 		}
@@ -105,11 +136,11 @@ func TestWarrantyReceiptOverPostgreSQL(t *testing.T) {
 
 	// A finding on the shelf has no client to hand a paper to: its units are the branch's own
 	// and it lent no battery, so the receipt is the claim's fact.
-	finding := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/stock-defects",
+	unfound := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/stock-defects",
 		fmt.Sprintf(`{"variant_id":%d,"quantity":1,"declared_failure":"No retiene carga",`+
 			`"reason":"Probada en mostrador"}`, f.variant))), 201)
 	f.refused(t, f.request(2, "GET",
-		fmt.Sprintf("/api/warranty-cases/%d/receipt.pdf", finding.ID), ""), 409, "claim_only")
+		fmt.Sprintf("/api/warranty-cases/%d/receipt.pdf", unfound.ID), ""), 409, "claim_only")
 }
 
 // receiptDrawn is the drawn text of a rendered PDF in one line, so an assertion is about the

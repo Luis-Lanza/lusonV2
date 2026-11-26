@@ -35,6 +35,7 @@ const line = (variant_id: number, expected: number, counted: number | null,
   overrides: Partial<ClosingCountLine> = {}): ClosingCountLine => Object.freeze({
   variant_id, catalog_entry_id: variant_id, brand: 'Bosch', model: 'S4', capacity_ah: '45',
   polarity: variant_id % 2 === 0 ? 'R' : 'L', expected_quantity: expected, counted_quantity: counted,
+  held_in_case_quantity: 0,
   ...overrides,
 });
 
@@ -42,7 +43,7 @@ const line = (variant_id: number, expected: number, counted: number | null,
 // its typed fields, with no battery attribute at all (S3).
 const productLine = (overrides: Partial<ClosingProductLine> = {}): ClosingProductLine =>
   Object.freeze({ variant_id: 20, catalog_entry_id: 11, name: 'Agua acidulada', detail: '1 L',
-    expected_quantity: 3, counted_quantity: 3, ...overrides });
+    expected_quantity: 3, counted_quantity: 3, held_in_case_quantity: 0, ...overrides });
 
 const lines: readonly ClosingCountLine[] = [
   line(1, 12, 12), line(2, 9, 8), line(3, 14, 14), line(4, 11, 13), line(5, 7, 7), line(6, 6, 6),
@@ -1390,5 +1391,16 @@ describe('S1, S7 the receipt of a pay-out', () => {
     for (const id of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
       expect(() => closingEvidencePath(id)).toThrow();
     }
+  });
+});
+
+describe('the units a warranty case holds', () => {
+  // A written-off battery leaves the balance but stays on the shelf until it ships, so the sheet
+  // states how many units of the variant a case holds and the operator does not count them as stock.
+  it('keeps the held quantity of a counted line apart from the snapshot and the count', () => {
+    const held = line(1, 12, 12, { held_in_case_quantity: 2 });
+    expect(held.held_in_case_quantity).toBe(2);
+    expect(held.expected_quantity).toBe(12);
+    expect(held.counted_quantity).toBe(12);
   });
 });

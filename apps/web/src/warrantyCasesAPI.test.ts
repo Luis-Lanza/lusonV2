@@ -116,6 +116,13 @@ describe('the transport of the case contract', () => {
     const wrong = createWarrantyCasesAPI(stub(json(loan({ model: 'OTRO' }), 201)));
     await expect(wrong.addLoan(1, () => ({ model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1 }), csrf))
       .rejects.toMatchObject({ code: 'invalid_response' });
+    // The two questions a loan answers apart (S25, S30): a model the pool never saw and an origin that
+    // does not hold it. Each keeps its own code, so neither is ever published as the other.
+    for (const code of ['loan_model_unknown', 'loan_source_stock']) {
+      await expect(createWarrantyCasesAPI(stub(failure(code, 409)))
+        .addLoan(1, () => ({ model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1 }), csrf))
+        .rejects.toMatchObject({ code, status: 409 });
+    }
   });
   it('states the fate of one lent battery and keeps the decision final (S7)', async () => {
     const failed = loan({ fate: 'failed', fate_decided_at: '2026-03-09T12:00:00Z' });
@@ -154,6 +161,23 @@ describe('the transport of the case contract', () => {
     await expect(createWarrantyCasesAPI(stub(failure('transition_not_allowed', 409)))
       .advance(1, { phase: 'in_transit', factory_case_number: '', note: 'Sale' }, csrf))
       .rejects.toMatchObject({ code: 'transition_not_allowed' });
+  });
+  it('reads the derived stock of used batteries as one table and refuses any other shape', async () => {
+    const stockRow = { location_id: 1, model: 'NS60ZL', purchased: '0', factory_returns: '2',
+      loans_returned: '1', delivered: '3', loans_given: '1', available: '5' };
+    const fetch = stub(json({ stock: [stockRow] }));
+    const rows = await createWarrantyCasesAPI(fetch).usedStock();
+    expect(rows[0]).toMatchObject({ location_id: 1, model: 'NS60ZL', available: 5 });
+    const calls = (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls;
+    expect(calls[0][0]).toBe('/api/warranty-cases/used-stock');
+    expect(calls[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    // A refusal is the contract's own code, and a table of another shape is never published as stock.
+    await expect(createWarrantyCasesAPI(stub(failure('service_unavailable', 503))).usedStock())
+      .rejects.toMatchObject({ code: 'service_unavailable', status: 503 });
+    await expect(createWarrantyCasesAPI(stub(json({ stock: [{ location_id: 1 }] }))).usedStock())
+      .rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(createWarrantyCasesAPI(stub(json({ stock: [{ ...stockRow, available: '9' }] }))).usedStock())
+      .rejects.toMatchObject({ code: 'invalid_response' });
   });
   it('reports a lost connection and an aborted read as their own codes', async () => {
     const offline = createWarrantyCasesAPI(vi.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof globalThis.fetch);

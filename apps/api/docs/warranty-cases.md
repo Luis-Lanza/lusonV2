@@ -19,6 +19,7 @@ warehouse authorises it.
 | `/api/warranty-cases` | GET | 200 with the tray of the session's branch, newest first |
 | `/api/warranty-cases/claims` | POST | 201 with the case opened by a warranty claim |
 | `/api/warranty-cases/stock-defects` | POST | 201 with the case opened by a finding on the shelf |
+| `/api/warranty-cases/used-stock` | GET | 200 with the derived stock of used batteries, per location and per model |
 | `/api/warranty-cases/{id}` | GET | 200 with the whole case, its loans and its history |
 | `/api/warranty-cases/{id}/loans` | POST | 201 with the loan of a used battery |
 | `/api/warranty-cases/{id}/loans/{ordinal}/fate` | POST | 200 with the loan and the fate it now states |
@@ -191,8 +192,20 @@ POST /api/warranty-cases/1/loans
 * All four keys are required; `serial_number` is the explicit empty text when nobody wrote the used
   battery's serial down. `model` follows the model contract of a used battery — trimmed and
   upper-cased, `1` to `40` characters — and `quantity` is from `1` to `10000`.
-* `source_location_id` is the case's branch, the warehouse or another branch; the loan records it and
-  moves nothing: no transfer, no balance and no used-battery stock.
+* `model` must also be one the used pool already knows (S30): the closed list is what the flows that
+  bring a battery into the pool ever stated — the used batteries bought, the used lines of a closed
+  settlement and the batteries the factory refused and sent back — and a loan is never one of those
+  sources, so a model cannot enter the system by being lent. A code outside that list is refused with
+  `409 loan_model_unknown`, and no row is written. The list is judged before the shelf, so a typo is
+  refused for being unknown and not for naming an empty origin.
+* `source_location_id` is the case's branch, the warehouse or another branch. The origin must hold the
+  requested model: it is the derived stock of [the stock of used batteries](#the-stock-of-used-batteries)
+  and the database refuses the loan with `409 loan_source_stock` when it does not, inside the
+  transaction of the handover (S25). Existence and availability are two questions and never one: a
+  model the pool knows with nothing left in that origin is `loan_source_stock`, and a model it never
+  saw is `loan_model_unknown`. Two loans never consume one unit: the write takes a lock on the
+  origin and the model before it reads the stock. The loan still writes no transfer and no balance —
+  the battery it takes out is the loan itself, and the stock is what those loans sum.
 * A loan is born `open`; a case holds as many loans as it needs, and a failed used battery is marked
   and replaced on the same case. Only the branch that owns the case lends: the warehouse is
   `403 forbidden`.
@@ -206,6 +219,42 @@ POST /api/warranty-cases/1/loans/1/fate
 The instant of the decision is the database's own. A fate once decided is final
 (`409 loan_fate_final`), and a `failed` battery is replaced by another loan of the same case, never by
 rewriting the one that failed.
+
+## The stock of used batteries
+
+```
+GET /api/warranty-cases/used-stock
+{"stock":[{"location_id":1,"model":"NS60ZL","purchased":"0","factory_returns":"2",
+           "loans_returned":"0","delivered":"3","loans_given":"0","available":"5"}]}
+```
+
+The stock of used batteries of every location and every model, derived from the facts already
+registered (S24). There is no balance row, no stored total and no second inventory (S18): a fifth
+number would be the one that desynchronises, so the read is the sum of the documents and the
+documents are the only truth. One row per location and model, and every number is a decimal string.
+
+| Field | Meaning |
+|---|---|
+| `location_id` | The branch or the warehouse (`1`) |
+| `model` | The only identity of a used battery: trimmed and upper-cased, exactly like a purchase line, so `ns60zl` and ` NS60ZL ` are one row (S26) |
+| `purchased` | What the location bought of the model, counter-documents included as they are stored |
+| `factory_returns` | The units the factory refused and sent back to the used pool. The warehouse's only (S27) |
+| `loans_returned` | The units of this location's loans the counter got back |
+| `delivered` | What the closed settlements counted of the model. A branch delivered it; the warehouse received it |
+| `loans_given` | The units handed to the client of a case out of this location |
+| `available` | `purchased + factory_returns + loans_returned + delivered - loans_given` for the warehouse and `purchased + factory_returns + loans_returned - delivered - loans_given` for a branch: the same units counted once on each side of a delivery |
+
+A location with no fact of a model has no row; the read never invents a zero. `available` may be
+negative, because it is the sum of the whole history and never a clamp — a loan that was handed over
+before this contract checked the origin still counts. Every branch and warehouse session reads the
+whole table: the counter has to see the stock of the three of them before it promises a battery from
+one (S6).
+
+A factory return is never the branch of the case (S27). The warehouse shipped the battery to the
+factory and the warehouse receives it back, so the units enter the warehouse's row — and they are not
+a term of the branch's settlement sheet either, which is why the two numbers never disagree: at a
+cut, a branch's `expected_quantity` per model is exactly its `available` at that cut, and a branch
+that delivers everything it holds ends at zero with the same quantity on the warehouse's row (S29).
 
 ## The loan receipt
 
@@ -379,6 +428,8 @@ The delivery hands the battery to the client and closes the case, in one act:
 | 409 | `already_released` | The notice or the release of this case was already recorded |
 | 409 | `nothing_to_release` | The case holds no unit: its battery never came back |
 | 409 | `loan_fate_final` | A decided loan fate is final |
+| 409 | `loan_model_unknown` | The model of the loan is one the used pool never saw; the closed list is the one the flows state |
+| 409 | `loan_source_stock` | The origin of the loan does not hold the requested model, or another loan already took the last unit |
 | 409 | `no_loan` | The case has not handed a used battery over, so it has no loan receipt to print |
 | 503 | `service_unavailable` | The store or the database could not answer |
 
@@ -394,6 +445,11 @@ release of a claim puts back the single unit the claim held in custody, in the t
 the warehouse's authorisation. The three write `existing` and never `reserved`, all name the case's own
 branch and the case's own variant, and nothing else of this contract touches `inventory_balances`,
 `stock_entries`, `stock_adjustments`, any transfer or any cash row.
+
+The used batteries are the fourth stock of this vertical and they are written nowhere: a purchase,
+a settlement, a loan and a factory return are the facts, and
+[the stock of used batteries](#the-stock-of-used-batteries) is their signed sum. Nothing of this
+vertical writes a used-battery balance, because there is none.
 
 The settlement of the branch publishes those units on the count line as `held_in_case_quantity`: the
 units of the variant a case holds instead of the branch having them in stock, derived on read and

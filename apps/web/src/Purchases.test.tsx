@@ -88,6 +88,8 @@ interface Routes {
   detail: Reply;
   create: Reply;
   reverse: Reply;
+  // The derived stock of used batteries: the loans the branch gave and the ones the counter got back.
+  usedStock: Reply;
 }
 
 /** The whole history and a closed settlement publish the same documents but own their period. */
@@ -101,7 +103,8 @@ function setup(overrides: Partial<Routes> = {}) {
   const routes: Routes = {
     models: () => json(models), materials: () => json(materials), lastPrices: () => json(lastPrices),
     received: () => json(received), listing: listingFor, detail: () => json(documentBody()),
-    create: () => json(documentBody(), 201), reverse: () => json(reversalBody(), 201), ...overrides,
+    create: () => json(documentBody(), 201), reverse: () => json(reversalBody(), 201),
+    usedStock: () => json(JSON.stringify({ stock: [] })), ...overrides,
   };
   const fetch = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
@@ -112,6 +115,7 @@ function setup(overrides: Partial<Routes> = {}) {
     if (url === '/api/purchases/materials') return routes.materials();
     if (url === '/api/purchases/last-prices') return routes.lastPrices();
     if (url === '/api/purchases/received') return routes.received();
+    if (url === '/api/warranty-cases/used-stock') return routes.usedStock();
     if (url.startsWith('/api/purchases?page=')) {
       const parameters = new URL(url, 'http://test').searchParams;
       return routes.listing({ period: parameters.get('period') ?? '',
@@ -120,7 +124,7 @@ function setup(overrides: Partial<Routes> = {}) {
     if (/^\/api\/purchases\/\d+$/.test(url)) return routes.detail();
     throw new Error('Unexpected mocked URL: ' + url);
   });
-  render(<Purchases csrf={csrf} branch="Sucursal A" fetcher={fetch} />);
+  render(<Purchases csrf={csrf} branch="Sucursal A" location={2} fetcher={fetch} />);
   const listings = () => fetch.mock.calls.map(([url]) => String(url)).filter(url => url.startsWith('/api/purchases?page='));
   return { fetch, listings };
 }
@@ -586,5 +590,58 @@ describe('purchases by period', () => {
     expect(screen.queryByLabelText('Período')).not.toBeInTheDocument();
     expect(screen.queryByText('NS60ZL')).not.toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+});
+
+// The saldo of the pending period is the branch's position, and a used battery that left the branch in
+// the hands of a client is not stock the branch still owes the warehouse (S24, L29).
+describe('the used battery loans inside the saldo of Compras', () => {
+  const stockBody = (...rows: Record<string, unknown>[]) => json(JSON.stringify({ stock: rows }));
+  const lent = () => stockBody(
+    { location_id: 2, model: 'NS60ZL', purchased: '12', factory_returns: '0', loans_returned: '0',
+      delivered: '10', loans_given: '1', available: '1' },
+    // The same model held by another branch is that branch's stock and never this one's.
+    { location_id: 3, model: 'NS60ZL', purchased: '4', factory_returns: '0', loans_returned: '0',
+      delivered: '0', loans_given: '4', available: '0' });
+  const cell = (row: HTMLElement, label: string) => row.querySelector(`[data-label="${label}"]`)!;
+
+  it('takes the lent battery out of the saldo the branch still holds', async () => {
+    setup({ usedStock: lent });
+    const panel = await screen.findByRole('tabpanel');
+    const model = (await within(panel).findByText('NS60ZL')).closest('tr') as HTMLElement;
+    expect(cell(model, 'Compradas')).toHaveTextContent('12');
+    expect(cell(model, 'Entregadas')).toHaveTextContent('10');
+    // One unit went out as a loan and none came back: the branch holds one and not two.
+    expect(cell(model, 'Prestadas')).toHaveTextContent('1');
+    expect(cell(model, 'Devueltas')).toHaveTextContent('0');
+    expect(cell(model, 'Saldo')).toHaveTextContent('1');
+    expect(within(panel).getByText(/descontando la usada que salió prestada/i)).toBeInTheDocument();
+    const hero = await periodHero();
+    const band = hero.querySelector('.purchases-metrics') as HTMLElement;
+    expect(within(band).getByText('1 u.')).toBeInTheDocument();
+    expect(within(band).getByText('17 compradas · 15 entregadas · 1 prestada')).toBeInTheDocument();
+  });
+
+  it('keeps the saldo as bought minus delivered when the branch lent nothing', async () => {
+    setup();
+    const panel = await screen.findByRole('tabpanel');
+    const model = (await within(panel).findByText('NS60ZL')).closest('tr') as HTMLElement;
+    expect(cell(model, 'Prestadas')).toHaveTextContent('0');
+    expect(cell(model, 'Devueltas')).toHaveTextContent('0');
+    expect(cell(model, 'Saldo')).toHaveTextContent('2');
+    const hero = await periodHero();
+    const band = hero.querySelector('.purchases-metrics') as HTMLElement;
+    expect(within(band).getByText('2 u.')).toBeInTheDocument();
+    expect(within(band).getByText('17 compradas · 15 entregadas')).toBeInTheDocument();
+  });
+
+  it('never publishes a saldo it could not complete with the loans', async () => {
+    setup({ usedStock: () => json(JSON.stringify({ error: 'service_unavailable' }), 503) });
+    expect(await screen.findByText(/No se pudieron leer los préstamos de usadas/)).toBeInTheDocument();
+    const panel = await screen.findByRole('tabpanel');
+    // The table is the branch's position and the position needs the loans, so it is not published
+    // half made: no row, no saldo and the reason in words.
+    expect(within(panel).queryByRole('table')).not.toBeInTheDocument();
+    expect(within(panel).queryByText('NS60ZL')).not.toBeInTheDocument();
   });
 });

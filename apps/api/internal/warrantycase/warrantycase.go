@@ -12,8 +12,10 @@
 // A loan names a model code and a quantity and never a serial as an identity (S5). The serial
 // of a used battery is optional free text, two loans of the same model and quantity are two
 // independent rows, and a case holds as many loans as it needs because a failed used battery
-// is marked and replaced on the same case (S7). The source location is recorded and nothing
-// moves: a loan writes no transfer, no balance and no used-battery stock (S6, S18).
+// is marked and replaced on the same case (S7). The source location is recorded and no stock moves
+// between locations: a loan writes no transfer and no inventory balance (S6), and the used-battery
+// stock of S24 is derived from these very rows. The origin must hold the requested model, which the
+// database refuses with its own code when it does not (S25), so a loan never invents a battery.
 //
 // The journey is the append-only history of the case (S9). Every tramo carries its actor,
 // its instant and its note, the phase is the phase of the last tramo, a transition outside
@@ -27,6 +29,11 @@
 // verdict returns them to the branch's sellable stock when it repairs or replaces them, and
 // leaves the write-off of its admission standing when it does not. The frozen vocabulary of S23
 // is the only one this package accepts; the database refuses it too.
+//
+// The stock of used batteries is a read and never a document (S18, S24): UsedStock publishes, per
+// location and per model, what was bought, what the factory returned to the pool, what came back from
+// a loan, what a closed settlement delivered and what was lent, with their signed sum. The arithmetic
+// is the database's own function, so the settlement's expectation and this stock cannot disagree.
 //
 // Three facts of a case are not phases of its journey (S13, S14, S19): the notice the branch
 // registers for the client, the release the warehouse authorises and the delivery that closes the
@@ -105,6 +112,14 @@ var (
 	// ErrNoStock is the refusal of a finding the branch does not have on its shelf (LW016): a
 	// write-off never invents a balance and never leaves negative stock.
 	ErrNoStock = errors.New("the branch does not have that many batteries in stock")
+	// ErrLoanSourceStock is the refusal of a loan whose origin does not hold the requested model
+	// (S25, LW033): a used battery is lent out of a stock that exists, and two loans never consume
+	// one unit.
+	ErrLoanSourceStock = errors.New("the origin of the loan holds no stock of that model")
+	// ErrLoanModelUnknown is the refusal of a loan whose model the used pool never saw (S30, LW034):
+	// the model is chosen from a closed list, so a code nobody bought is not a shelf that is empty
+	// but a model that does not exist, and a loan never creates one.
+	ErrLoanModelUnknown = errors.New("the used pool does not know that model")
 	// ErrReservedStock is the refusal of a write-off that would leave the balance below the stock the
 	// branch already promised (LW017).
 	ErrReservedStock = errors.New("the write-off would take stock the branch already reserved")
@@ -285,6 +300,33 @@ type Case struct {
 	// shape is one answer: the case a caller receives carries the loans and the history it just wrote.
 	Loans  []Loan
 	Events []Event
+}
+
+// StockPosition is the derived stock of one model in one location (S24): the terms of the two
+// formulas and their signed sum. The sum is never stored -- it is the residue of the facts below,
+// which are the only persisted things -- so a purchase, a factory return, a loan and a delivery move
+// it and there is no second balance to desynchronise (S18).
+type StockPosition struct {
+	LocationID int
+	Model      string
+	// Purchased is what the location bought of the model, counter-documents included as they are
+	// stored: a reversal subtracts by itself.
+	Purchased int64
+	// FactoryReturns is the units the factory refused and sent back to the used pool. They are the
+	// warehouse's, which is who shipped them and who receives them (S27), so a branch states zero.
+	FactoryReturns int64
+	// LoansReturned is the units of this location's loans the counter got back: the battery is in the
+	// location that lent it again.
+	LoansReturned int64
+	// Delivered is what the closed settlements of this branch counted: the branch delivered it and
+	// the warehouse holds it, so the same quantity is subtracted here and added there.
+	Delivered int64
+	// LoansGiven is the units handed to the client of a case out of this location.
+	LoansGiven int64
+	// Available is the signed sum of the five terms: bought + returned by the factory + loans back
+	// - delivered - lent. It is the stock of the model in the location, and it may be negative for a
+	// location that lent more than it ever had, because it is a sum and never a clamp.
+	Available int64
 }
 
 // Loan is one used battery handed to the client of a case. It identifies a model and a

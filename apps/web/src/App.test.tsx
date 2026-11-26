@@ -1992,6 +1992,7 @@ describe('branch purchases', () => {
     if (url === '/api/purchases/materials') return Promise.resolve(purchasesResponse({ materials: [{ id: 1, name: 'Cobre' }] }));
     if (url === '/api/purchases/last-prices') return Promise.resolve(purchasesResponse({ models: [], materials: [] }));
     if (url === '/api/purchases/received') return Promise.resolve(purchasesResponse({ used: [], scrap: [] }));
+    if (url === '/api/warranty-cases/used-stock') return Promise.resolve(purchasesResponse({ stock: [] }));
     if (url.startsWith('/api/purchases?page=')) return Promise.resolve(purchasesResponse({
       page: 1, page_size: 25, total_purchases: 0, purchases: [],
       // The screen opens on the pending period, so the answer carries the selector, that period, the
@@ -2152,6 +2153,44 @@ describe('the guarantee section of each side', () => {
     expect(screen.queryByRole('heading', { name: 'Mesa de fábrica' })).not.toBeInTheDocument();
     expect(warrantyCalls(mock).map(([url]) => String(url))).toEqual(['/api/warranty-cases']);
   });
+
+  // The Almacén holds the used batteries of the whole installation (S24): its own screen, inside the
+  // guarantee section, and never a screen the branch side can open.
+  const usedStockRow = { location_id: 1, model: 'NS60ZL', purchased: '0', factory_returns: '2',
+    loans_returned: '0', delivered: '3', loans_given: '0', available: '5' };
+  const stockSetup = (current: unknown = session) => setup(current, url => {
+    if (url === '/api/warranty-cases/counts') return Promise.resolve(transferResponse({ action_count: '0' }));
+    if (url === '/api/warranty-cases/used-stock') return Promise.resolve(response({ stock: [usedStockRow] }));
+    if (url.startsWith('/api/warranty-cases')) return Promise.resolve(warrantyTray());
+    return undefined;
+  });
+
+  it('opens the stock of used batteries from the guarantee section and restores it from its hash', async () => {
+    const mock = stockSetup();
+    render(<App />); await inventory();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+      .getByRole('button', { name: 'Garantías' }));
+    const tabs = await screen.findByRole('group', { name: 'Pantallas de garantías del Almacén' });
+    fireEvent.click(within(tabs).getByRole('button', { name: 'Stock de usadas' }));
+    await screen.findByRole('heading', { name: 'Stock de usadas' });
+    expect(window.location.hash).toBe('#/garantias/usadas');
+    expect(screen.getByText('Luson Garantías')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Garantías' })).toHaveAttribute('aria-current', 'page');
+    // The stock is one read of the contract, and it is never a write.
+    const reads = mock.mock.calls.filter(([url]) => String(url) === '/api/warranty-cases/used-stock');
+    expect(reads).toHaveLength(1);
+    expect(reads.every(([, init]) => init?.method !== 'POST')).toBe(true);
+  });
+
+  it('never opens the warehouse stock for a branch identity, even from a typed hash', async () => {
+    window.history.replaceState(null, '', '/#/garantias/usadas');
+    const mock = stockSetup(branchSession);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Casos de garantía' });
+    expect(screen.queryByRole('heading', { name: 'Stock de usadas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Pantallas de garantías del Almacén' })).not.toBeInTheDocument();
+    expect(mock.mock.calls.some(([url]) => String(url) === '/api/warranty-cases/used-stock')).toBe(false);
+  });
 });
 
 describe('warehouse settlement workspace', () => {
@@ -2259,7 +2298,8 @@ describe('branch settlement decision', () => {
   const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
   const countLine = (variant_id: number, expected: number, counted: number, extra: Record<string, unknown> = {}) => ({
     variant_id, catalog_entry_id: variant_id, brand: 'Bosch', model: 'S4', capacity_ah: '45',
-    polarity: 'L', expected_quantity: expected, counted_quantity: counted, ...extra });
+    polarity: 'L', expected_quantity: expected, counted_quantity: counted,
+    held_in_case_quantity: 0, ...extra });
   const settlement = {
     id: 1, branch_location_id: 2, branch_name: 'Sucursal A', status: 'proposed',
     period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,

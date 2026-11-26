@@ -12,9 +12,12 @@ import {
 import {
   createPurchaseAPI, PurchaseAPIError, purchaseErrorMessages, purchaseFailureIsDefinite, purchaseHistoryUnavailable,
   purchaseModelsUnavailable, purchasePeriodToken, purchaseReceivedUnavailable, type PurchaseBalance,
-  type PurchaseDocument, type PurchaseErrorCode, type PurchaseLastPrices, type PurchaseMaterial,
-  type PurchasePeriod, type PurchaseReceived, type PurchaseTotals,
+  type PurchaseBalanceUsed, type PurchaseDocument, type PurchaseErrorCode, type PurchaseLastPrices,
+  type PurchaseMaterial, type PurchasePeriod, type PurchaseReceived, type PurchaseTotals,
 } from './purchasesAPI';
+import { createWarrantyCasesAPI } from './warrantyCasesAPI';
+import { usedStockLoansOf, usedStockUnavailable, type UsedStockRow } from './usedStockModel';
+import { subscribeWarrantyInvalidation } from './useInventory';
 import './administration.css';
 import './stock-entry.css';
 
@@ -66,14 +69,30 @@ interface ReceiptState {
   readonly document: PurchaseDocument | null;
   readonly problem: string;
 }
+interface LoanTermsState {
+  readonly phase: 'loading' | 'ready' | 'error';
+  readonly rows: readonly UsedStockRow[];
+  readonly problem: string;
+}
 
 export interface PurchasesProps {
   // The parent remounts this section per session fence, so a rotated session or
   // CSRF token can never publish a result into a newer branch session.
   csrf: string;
   branch?: string;
+  /** The session's own location: the derived stock of used batteries is read per location and model. */
+  location: number;
   fetcher?: typeof globalThis.fetch;
 }
+
+/**
+ * The branch's position of one model is the saldo of the settlement plus the loans: a used battery that
+ * left the counter in the hands of a client is not a unit the branch still owes the warehouse (S24).
+ * The two loan terms are the published stock's own and this screen recomputes neither of them.
+ */
+const purchaseLoansUnavailable = 'No se pudieron leer los préstamos de usadas: el saldo no se publica sin ellos. Revisá la conexión e intentá de nuevo.';
+const lentUnits = (quantity: number): string => `${quantity} ${quantity === 1 ? 'prestada' : 'prestadas'}`;
+const returnedUnits = (quantity: number): string => `${quantity} ${quantity === 1 ? 'devuelta' : 'devueltas'}`;
 
 const draftLineKey = (line: DraftLine): string =>
   line.kind === 'used' ? `used:${line.model}` : `scrap:${line.material_id}`;
@@ -124,8 +143,9 @@ const receiptPrintStyle = `@media print {
   .purchase-receipt { position: absolute; left: 0; top: 0; width: 100%; padding: 0; }
 }`;
 
-export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = globalThis.fetch }: PurchasesProps) {
+export default function Purchases({ csrf, branch = 'esta sucursal', location, fetcher = globalThis.fetch }: PurchasesProps) {
   const api = useMemo(() => createPurchaseAPI(fetcher), [fetcher]);
+  const stockAPI = useMemo(() => createWarrantyCasesAPI(fetcher), [fetcher]);
   const [tab, setTab] = useState<PurchaseTab>('used');
   const [revision, setRevision] = useState(0);
   const [received, setReceived] = useState<ReceivedState>({ phase: 'loading', received: null, problem: purchaseReceivedUnavailable });
@@ -136,6 +156,10 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
   const [historyRevision, setHistoryRevision] = useState(0);
   const [listing, setListing] = useState<ListingState>({ phase: 'loading', rows: [], total: 0,
     periods: [], period: null, totals: null, balance: null, problem: purchaseHistoryUnavailable });
+  // The loan terms of the derived stock of used batteries: the branch's own position is the saldo of the
+  // settlement minus what it lent plus what the counter got back (S24, L29).
+  const [loansRevision, setLoansRevision] = useState(0);
+  const [loans, setLoans] = useState<LoanTermsState>({ phase: 'loading', rows: [], problem: usedStockUnavailable });
 
   const [draftOpen, setDraftOpen] = useState(false);
   const [kind, setKind] = useState<DraftKind>('used');
@@ -287,6 +311,26 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
     })();
     return () => controller.abort();
   }, [api, detailId, detailRevision]);
+
+  useEffect(() => {
+    // The loan terms of the branch, read from the derived stock of used batteries (S24). A model the
+    // branch never moved has no row there, which is a loan of zero and not a missing answer.
+    void loansRevision;
+    const controller = new AbortController();
+    const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
+    setLoans(current => ({ phase: 'loading', rows: current.rows, problem: usedStockUnavailable }));
+    void (async () => {
+      try {
+        const rows = await stockAPI.usedStock(controller.signal);
+        if (alive()) setLoans({ phase: 'ready', rows, problem: '' });
+      } catch { if (alive()) setLoans({ phase: 'error', rows: [], problem: purchaseLoansUnavailable }); }
+    })();
+    return () => controller.abort();
+  }, [stockAPI, loansRevision]);
+
+  // A loan takes a used battery out of the branch and the delivery of the exchange settles it: the
+  // guarantee invalidation re-reads the loan terms, so the saldo moves without a reload (S24).
+  useEffect(() => subscribeWarrantyInvalidation(() => setLoansRevision(value => value + 1)), []);
 
   function forgetAttempt() { operationKey.current = null; }
   function resetForms() {
@@ -528,13 +572,28 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
   const balance = pendingView ? listing.balance : null;
   const pendingUsedRows = balance?.used ?? [];
   const pendingScrapRows = balance?.scrap ?? [];
-  // A key whose balance is zero is not a position: it disappears from the pending reading while
-  // the bought and delivered figures that explain the zero stay in the header.
-  const pendingUsed = pendingUsedRows.filter(row => row.balance !== 0);
+  const loansReady = loans.phase === 'ready';
+  /**
+   * The branch's position of one model: the saldo of the pending period, minus the used batteries that
+   * left the counter as a loan and plus the ones the counter got back. A unit a client walked away with
+   * is not a unit the branch still owes the warehouse, which is the whole reason the loans are here.
+   */
+  const positionOf = (row: PurchaseBalanceUsed): number => {
+    const term = usedStockLoansOf(loans.rows, location, row.model);
+    return row.balance - term.given + term.returned;
+  };
+  const loanTermsOf = (row: PurchaseBalanceUsed) => usedStockLoansOf(loans.rows, location, row.model);
+  // A key whose position is zero is not a position: it disappears from the pending reading while the
+  // bought and delivered figures that explain the zero stay in the header.
+  const pendingUsed = loansReady
+    ? pendingUsedRows.filter(row => positionOf(row) !== 0)
+    : pendingUsedRows.filter(row => row.balance !== 0);
   const pendingScrap = pendingScrapRows.filter(row => row.balance_milli !== 0n);
-  const pendingUnits = pendingUsedRows.reduce((sum, row) => sum + row.balance, 0);
+  const pendingUnits = loansReady ? pendingUsedRows.reduce((sum, row) => sum + positionOf(row), 0) : null;
   const pendingBought = pendingUsedRows.reduce((sum, row) => sum + row.bought, 0);
   const pendingDelivered = pendingUsedRows.reduce((sum, row) => sum + row.delivered, 0);
+  const pendingGiven = pendingUsedRows.reduce((sum, row) => sum + loanTermsOf(row).given, 0);
+  const pendingReturned = pendingUsedRows.reduce((sum, row) => sum + loanTermsOf(row).returned, 0);
   const pendingKg = pendingScrapRows.reduce((sum, row) => sum + row.balance_milli, 0n);
   const pendingBoughtKg = pendingScrapRows.reduce((sum, row) => sum + row.bought_milli, 0n);
   const pendingDeliveredKg = pendingScrapRows.reduce((sum, row) => sum + row.delivered_milli, 0n);
@@ -560,7 +619,15 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
     ? `${listing.total} ${listing.total === 1 ? 'documento' : 'documentos'}` : 'Documentos';
   const historyCount = listingReady
     ? `${listing.total} ${listing.total === 1 ? 'compra' : 'compras'}` : 'Sucursal';
-  const usedCount = pendingView ? `${pendingUnits} u.` : `${usedUnits} u. · ${formatMoney(usedValue)}`;
+  const usedCount = pendingView
+    ? (pendingUnits === null ? '…' : `${pendingUnits} u.`)
+    : `${usedUnits} u. · ${formatMoney(usedValue)}`;
+  // The pending figure is the branch's position, and the loans that explain it travel with it.
+  const pendingFigure = pendingUnits === null ? '—' : `${pendingUnits} u.`;
+  const pendingLoanNote = [pendingGiven > 0 ? lentUnits(pendingGiven) : '',
+    pendingReturned > 0 ? `${returnedUnits(pendingReturned)} al canje` : ''].filter(part => part !== '').join(' · ');
+  const pendingBasis = `${pendingBought} compradas · ${pendingDelivered} entregadas`
+    + (pendingLoanNote === '' ? '' : ` · ${pendingLoanNote}`);
   const scrapCount = pendingView ? formatKg(pendingKg) : `${formatKg(scrapKg)} · ${formatMoney(scrapValue)}`;
   const documentsTabCount = listingReady ? String(listing.total) : '…';
   const nextHistoryPage = () => {
@@ -591,9 +658,9 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
         {pendingView ? <>
           <div className="purchases-metric purchases-metric-total">
             <dt>Baterías usadas</dt>
-            <dd>{receivedFigure(`${periodUnits} u.`, overviewReady)}</dd>
+            <dd>{receivedFigure(pendingFigure, overviewReady)}</dd>
             <span className="purchases-metric-sub">{overviewReady
-              ? `${pendingBought} compradas · ${pendingDelivered} entregadas` : 'Lo que queda en la sucursal'}</span>
+              ? pendingBasis : 'Lo que queda en la sucursal'}</span>
           </div>
           <div className="purchases-metric">
             <dt>Chatarra</dt>
@@ -693,7 +760,11 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
 
       <div className="stock-entry-panel purchases-panel" id="purchases-panel-used" role="tabpanel"
         aria-labelledby="purchases-tab-used" hidden={tab !== 'used'}>
-        {pendingView && (pendingUsed.length === 0
+        {pendingView && loans.phase === 'loading'
+          && <p className="stock-message" role="status">Consultando los préstamos de usadas…</p>}
+        {pendingView && loans.phase === 'error' && <p className="stock-message" role="alert">{loans.problem}
+          <button type="button" onClick={() => setLoansRevision(value => value + 1)}>Reintentar préstamos</button></p>}
+        {pendingView && loansReady && (pendingUsed.length === 0
           ? <p className="stock-message">No queda saldo pendiente de baterías usadas: todo lo comprado ya se entregó en las rendiciones cerradas.</p>
           : <div className="stock-table-wrap"><table className="stock-table purchases-table">
             <caption className="sr-only">Saldo pendiente de baterías usadas por modelo</caption>
@@ -701,20 +772,29 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
               <th scope="col">Modelo</th>
               <th scope="col" className="num">Compradas</th>
               <th scope="col" className="num">Entregadas</th>
+              <th scope="col" className="num">Prestadas</th>
+              <th scope="col" className="num">Devueltas</th>
               <th scope="col" className="num">Saldo</th>
             </tr></thead>
-            <tbody>{pendingUsed.map(row => <tr key={row.model} data-model={row.model}>
-              <td data-label="Modelo"><strong>{row.model}</strong></td>
-              <td data-label="Compradas" className="num">{row.bought}</td>
-              <td data-label="Entregadas" className="num">{row.delivered}</td>
-              <td data-label="Saldo" className="num">{row.balance}
-                <span className="purchases-unit">unidades</span></td>
-            </tr>)}</tbody>
+            <tbody>{pendingUsed.map(row => {
+              const term = loanTermsOf(row);
+              return <tr key={row.model} data-model={row.model}>
+                <td data-label="Modelo"><strong>{row.model}</strong></td>
+                <td data-label="Compradas" className="num">{row.bought}</td>
+                <td data-label="Entregadas" className="num">{row.delivered}</td>
+                <td data-label="Prestadas" className="num">{term.given}</td>
+                <td data-label="Devueltas" className="num">{term.returned}</td>
+                <td data-label="Saldo" className="num">{positionOf(row)}
+                  <span className="purchases-unit">unidades</span></td>
+              </tr>;
+            })}</tbody>
             <tfoot><tr>
-              <td className="label">{`${pendingUsed.length} modelos · ${pendingUnits} unidades`}</td>
+              <td className="label">{`${pendingUsed.length} modelos · ${pendingUnits ?? 0} unidades`}</td>
               <td className="num">{pendingBought}</td>
               <td className="num">{pendingDelivered}</td>
-              <td className="num">{pendingUnits}</td>
+              <td className="num">{pendingGiven}</td>
+              <td className="num">{pendingReturned}</td>
+              <td className="num">{pendingUnits ?? 0}</td>
             </tr></tfoot>
           </table></div>)}
         {listingReady && !pendingView && received.phase === 'loading'
@@ -756,12 +836,13 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
           </table></div>)}
         <p className="purchases-note">{pendingView
           ? <><strong>Es saldo, no stock de venta.</strong> Estas baterías usadas no se revenden ni entran al
-            catálogo: el saldo es lo que la sucursal todavía no entregó al almacén.</>
+            catálogo: el saldo es lo que la sucursal todavía no entregó al almacén, descontando la usada que
+            salió prestada a un cliente y sumando la que volvió al canje.</>
           : <><strong>Es recibido, no es stock de venta.</strong> Estas baterías
             usadas no se revenden, no entran al catálogo ni descuentan stock de venta. La cifra es lo que la
             sucursal gastó.</>}</p>
         <p className="purchases-footline">{pendingView
-          ? 'El saldo es lo comprado menos lo que contaron las rendiciones cerradas: una anulación lo descuenta sola y lo contado de menos sigue a la vista.'
+          ? 'El saldo es lo comprado más lo que volvió de un préstamo, menos lo que contaron las rendiciones cerradas y menos la usada que salió prestada: una unidad prestada no la debe nadie, salió con un cliente. Una anulación lo descuenta sola y lo contado de menos sigue a la vista.'
           : 'El acumulado sale de las líneas de cada documento: una anulación lo descuenta sola y no hay un saldo aparte que pueda quedar desfasado.'}</p>
       </div>
 

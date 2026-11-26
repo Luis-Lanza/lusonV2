@@ -36,6 +36,22 @@
 /* The boundary of the desk (S19): stated once, under the acts, so a missing act is never a mystery. */
 .warranty-desk-boundary { padding-top: 12px; border-top: 1px solid var(--border); }
 
+/* The two screens of the warehouse side: the factory desk and the derived stock of used batteries. The
+   tabs are the section's own and reuse the tray's filter buttons; only one screen is on the page. */
+.warranty-screens { display: flex; flex-direction: column; gap: 16px; }
+
+/* The stock of used batteries (S24, S27): two tables of one read. The five terms, their sum and the
+   note that they are derived and never a ledger, all inside the tray's own table and notice styles. */
+.used-stock { display: flex; flex-direction: column; gap: 16px; max-width: 1600px; }
+.used-stock-title { padding: 14px 16px 0; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted); }
+.used-stock-note { padding: 4px 16px 12px; }
+.used-stock-table tfoot td { padding: 10px 16px; background: var(--page); border-top: 1px solid var(--border);
+  font-weight: 600; font-variant-numeric: tabular-nums; }
+.used-stock-table tfoot .label { text-transform: uppercase; font-size: 11px; letter-spacing: .03em;
+  color: var(--muted); }
+.used-stock-footline { padding-top: 4px; }
+
 @media (max-width: 1050px) {
   .warranty-desk-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -49,4 +65,5 @@
 @media (prefers-reduced-motion: reduce) {
   .warranty-desk *, .warranty-desk-figures * { transition: none !important; animation: none !important;
     scroll-behavior: auto !important; }
+  .used-stock * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }

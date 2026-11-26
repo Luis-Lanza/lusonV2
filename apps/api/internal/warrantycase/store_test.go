@@ -256,10 +256,24 @@ func (f *fixture) openClaim(t *testing.T, serial string) warrantycase.Case {
 // and a failed loan is marked and replaced on the same case.
 func TestLoansAreModelsAndQuantitiesFromAnywhere(t *testing.T) {
 	f := newFixture(t)
+	// Every location the counter can lend from holds the battery it hands over (S25): the two
+	// branches bought four and two of one model, and the warehouse got one back from the factory.
+	f.fund(t, 2, "1000.00")
+	f.fund(t, 3, "1000.00")
+	f.buyUsed(t, 2, "loans-anywhere-0001", "YUASA NP7-12", 4, "10.00", "40.00")
+	f.buyUsed(t, 3, "loans-anywhere-0002", "YUASA NP7-12", 2, "10.00", "20.00")
+	returned := f.openClaim(t, "PRESTAMO/0")
+	f.atFactory(t, returned)
+	if _, err := f.store.Resolve(f.ctx, f.actor(1), returned.ID, warrantycase.ResolutionInput{
+		Verdict: warrantycase.VerdictNotCovered, ReportedDestination: warrantycase.DestinationStock,
+		LoanDestination: warrantycase.DestinationCustomer, Note: "Fábrica rechazó la garantía"}); err != nil {
+		t.Fatalf("the factory refusal must be admitted: %v", err)
+	}
 	claim := f.openClaim(t, "PRESTAMO/1")
 	balances := f.balances(t)
 	transfers := f.count(t, "transfer_requests")
 	claims := f.count(t, "warranty_cases")
+	bought := f.count(t, "purchase_used_lines")
 
 	first, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
 		Model: "yuasa np7-12", Quantity: 2, SerialNumber: " USADA-1 ", SourceLocationID: 2})
@@ -271,13 +285,16 @@ func TestLoansAreModelsAndQuantitiesFromAnywhere(t *testing.T) {
 		first.Fate != warrantycase.LoanOpen || first.FateDecidedAt != nil {
 		t.Fatalf("the loan states its model, quantity, source and open fate: %+v", first)
 	}
-	// The same model and quantity twice, one from the warehouse and one from another branch:
-	// a serial is never identity, so these are three independent rows (S5, S6).
+	// The same model from the warehouse and from another branch: a serial is never identity, and the
+	// three loans are three independent rows of one case (S5, S6). The warehouse's battery is the one
+	// the factory refused and returned to the pool, under the catalogue's model (S27).
 	for _, next := range []struct {
 		source, ordinal int
-	}{{1, 2}, {3, 3}} {
+		model           string
+		quantity        int64
+	}{{1, 2, "NP7-12", 1}, {3, 3, "YUASA NP7-12", 2}} {
 		loan, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
-			Model: "YUASA NP7-12", Quantity: 2, SerialNumber: "USADA-1",
+			Model: next.model, Quantity: next.quantity, SerialNumber: "USADA-1",
 			SourceLocationID: next.source})
 		if err != nil {
 			t.Fatalf("a loan from source %d must be admitted: %v", next.source, err)
@@ -321,8 +338,8 @@ func TestLoansAreModelsAndQuantitiesFromAnywhere(t *testing.T) {
 	if got := f.count(t, "transfer_requests"); got != transfers {
 		t.Fatalf("a loan writes no transfer: %d became %d", transfers, got)
 	}
-	if got := f.count(t, "purchase_used_lines"); got != 0 {
-		t.Fatalf("a loan buys no used battery, got %d lines", got)
+	if got := f.count(t, "purchase_used_lines"); got != bought {
+		t.Fatalf("a loan buys no used battery: %d lines became %d", bought, got)
 	}
 	if got := f.count(t, "warranty_cases"); got != claims {
 		t.Fatalf("loans never open another case, got %d cases", got)

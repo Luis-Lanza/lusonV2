@@ -15,14 +15,14 @@ const json = (body: unknown, status = 200) => new Response(
 
 const countedLine = (overrides: Record<string, unknown> = {}) => ({
   variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: '45',
-  polarity: 'L', expected_quantity: 12, counted_quantity: 12, ...overrides,
+  polarity: 'L', expected_quantity: 12, counted_quantity: 12, held_in_case_quantity: 0, ...overrides,
 });
 
 // One line of the second kind as the sheet publishes it: the name of the product and the detail the
 // catalogue composes of its typed fields, and no battery attribute at all (S3).
 const productLine = (overrides: Record<string, unknown> = {}) => ({
   variant_id: 20, catalog_entry_id: 11, name: 'Agua acidulada', detail: 'volumen: 1 L',
-  expected_quantity: 3, counted_quantity: 3, ...overrides,
+  expected_quantity: 3, counted_quantity: 3, held_in_case_quantity: 0, ...overrides,
 });
 
 // One row of the branch's own ledger as the document publishes it: the expense the branch paid out of

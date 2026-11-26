@@ -12,7 +12,8 @@ const json = (body: unknown, status = 200) => new Response(
 const line = (variant_id: number, expected: number, counted: number | null,
   overrides: Record<string, unknown> = {}) => ({
   variant_id, catalog_entry_id: variant_id, brand: 'Bosch', model: 'S4', capacity_ah: '45',
-  polarity: 'L', expected_quantity: expected, counted_quantity: counted, ...overrides });
+  polarity: 'L', expected_quantity: expected, counted_quantity: counted, held_in_case_quantity: 0,
+  ...overrides });
 
 /** The three counted variants of the decision artboard, with the two that differ from the system. */
 const sheet = () => [

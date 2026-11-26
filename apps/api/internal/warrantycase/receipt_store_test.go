@@ -31,6 +31,15 @@ func cp1252(value string) string {
 // never recalculated -- and a claim that lent nothing has no receipt to print.
 func TestReceiptPrintsWhatTheCasePersisted(t *testing.T) {
 	f := newFixture(t)
+	// The two loans of the paper come out of two stocks that exist (S25): the warehouse holds the
+	// two units the branch bought and delivered in a closed settlement, and the other branch bought
+	// the one it lends.
+	f.fund(t, 2, "1000.00")
+	f.buyUsed(t, 2, "receipt-loan-0001", "YUASA NP7-12", 2, "10.00", "20.00")
+	closing, _ := f.openBranchSettlement(t, 2)
+	f.closeBranchSettlement(t, 2, closing)
+	f.fund(t, 3, "1000.00")
+	f.buyUsed(t, 3, "receipt-loan-0002", "WILLARD NS60L", 1, "10.00", "10.00")
 	claim := f.openClaim(t, "RECIBO/1")
 
 	// One refusal before the battery is lent: a claim with no loan has nothing to print.
