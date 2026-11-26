@@ -51,6 +51,17 @@ Qué tiene que hacer la migración cuando se encare, como feature propio y con r
 3. Test que abra una rendición sobre una sucursal con más de 190 variantes con stock y la cierre, hoy imposible.
 4. Recién con eso, los specs de rendición pueden volver a cualquier sucursal grande y el grupo deja de depender de que Sucursal A esté debajo del tope.
 
+## Resuelto: el tope de la planilla de rendición
+
+El defecto que esta sección difería quedó arreglado en su propio feature, `odd/tasks/rendicion-sin-tope-fijo.md`, y **no necesitó migración**: el 190 vivía solo en Go (`MaxCountLines`), nunca en el esquema. Lo que la base tenía era el límite de 190 variantes del catálogo, que `apps/api/migrations/028_catalog_operational_authority.sql:14` ya había borrado.
+
+- Se borró la constante y sus cuatro usos (`canonicalCount`, `loadCountLines`, `closingRecord`, `closingCorrectionPayloadRecord`): la planilla está acotada por el catálogo por construcción —una línea por variante, con la clave primaria `(closing_id, variant_id)` y la clave foránea a `catalog_variants` como único límite.
+- El único número que queda es el límite de transporte (32 KiB), y el tope del decodificador **se calcula desde él** (910 líneas), así que no pueden desalinearse.
+- Siguen en pie los topes de entrada del operador: `MaxCounted`, `MaxObservation`, `MaxReason`, `MaxMaterialLines` y el de líneas de un documento de ajuste.
+- Test que lo prueba: `TestClosingsBranchAboveTheOldSheetBoundSettles` (192 variantes con stock), RED `503 service_unavailable` → GREEN.
+
+Los specs de rendición pueden volver a cualquier sucursal grande; Sucursal A y su margen de tres líneas dejan de importar.
+
 ## Log
 
 L1. User: "bien pa, entonces puedes levantarlo en local para que lo revise,"
@@ -70,4 +81,10 @@ L7. Los grupos no se commitean con el verde del worker: cada uno se corre desde 
 L8. Hallazgo de producto (T8, fuera de alcance): **crear una transferencia de baterías por pantalla no funciona** en el catálogo actual. `apps/web/src/sourceInventory.ts:33` lee como máximo 4 páginas de 50 filas (200 variantes) y el catálogo publica más baterías que eso, así que la pantalla de origen muestra «No se pudo actualizar el catálogo completo. Reintentá la consulta.» y deja «Revisar solicitud» deshabilitado. Los tres actos de creación del grupo se cubren con un documento de **otros productos** —mismo acto, misma regla de stock— porque el defecto es de la pantalla, no del producto. Arreglarlo es subir el tope de páginas y reconstruir el frontend: comportamiento de producto, necesita decisión del humano.
 
 L9. Decisión del humano (T6): **la rendición se prueba sobre Sucursal A**, que hoy tiene 180 variantes con stock, y el tope de la planilla queda documentado como defecto con su migración pendiente (ver «Pendiente» arriba), no arreglado en este feature. User: "dale si dale con sucursal A pero eso debe quedar documentado que hay que hacer una migracion luego!"
+
+L10. Defecto de producto arreglado con autorización del humano (T8): el cargador de origen de `#/transferencias` caminaba cuatro páginas de cincuenta y después exigía igualdad exacta con el total publicado, así que un catálogo de más de 200 variantes se rechazaba como `malformed` y **la pantalla no dejaba crear ninguna transferencia**. Ahora las páginas se derivan del total de la primera página (commit `584f2ed`), con todas las garantías previas y un tope de mentira (50 000) para que un total imposible no pagine para siempre.
+
+L11. Defecto de producto arreglado con autorización del humano (T4): el historial de compras validaba el balance pendiente —una fila por modelo, 240 hoy— contra `purchaseMaxLines` (190, límite de líneas de un documento), así que **la sucursal no podía leer su historial**. El balance tiene ahora su propio tope (`purchaseMaxBalanceRows`) y el de líneas sigue guardando lo suyo (commit `4cb3228`).
+
+L12. El patrón de la sesión, para el que venga: **cinco pantallas rotas por el mismo error** —un número fijo copiado donde el dato crece con el uso— y ninguna la detectó un test unitario; las detectó el navegador recorriendo el flujo completo contra una base con meses de uso. Proveedor 50, cargador de transferencias 200, balance de compras 190, directorio de administración por id de texto, planilla de rendición 190. Al revisar una lista nueva, la pregunta no es «¿anda con los datos de la semilla?» sino «¿qué pasa cuando esta lista crece?».
 
