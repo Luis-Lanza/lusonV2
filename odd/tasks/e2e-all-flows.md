@@ -27,7 +27,7 @@ T2 — Inventario (S2): consulta, filtros, paginación, cambio en vivo. Commit `
 T3 — Ventas (S2): venta con serial y garantía, cobro, historial, comprobante. Commit `test(e2e): sales`.
 T4 — Compras (S2): usadas y chatarra, documentos, reverso. Commit `test(e2e): used purchases`.
 T5 — Caja (S2): movimiento, comprobante, corrección, libro, motivos. Commit `test(e2e): drawer`.
-T6 — Rendiciones (S2): almacén y sucursal, sobre Sucursal B, porque una rendición abierta congela la sucursal. Commit `test(e2e): closings`.
+T6 — Rendiciones (S2): almacén y sucursal, sobre **Sucursal A** porque hoy es la única que entra debajo del tope de la planilla (ver «Pendiente»); cada rendición que se abre se decide y se cierra en su propio test. Commit `test(e2e): closings`.
 T7 — Métricas (S2): corte por período. Commit `test(e2e): metrics`.
 T8 — Transferencias (S2): el ciclo completo y la conciliación. Commit `test(e2e): transfers`.
 T9 — Ingresos (S2): registro, detalle, reverso. Commit `test(e2e): warehouse entries`.
@@ -35,6 +35,21 @@ T10 — Catálogo (S2): precios, baterías, otros productos, proveedores. Commit
 T11 — Administración y contraseña (S2): cuentas, contraseña temporal, alta/baja de sucursal, saldos, fondos, mi contraseña. Commit `test(e2e): administration`.
 T12 — Ajuste del almacén (S2): el mismo acto desde el Almacén, con su propia ubicación. Commit `test(e2e): warehouse adjustment`.
 T13 — Cierre (S2, S3, S4, S5, S6): corrida completa, segunda corrida, `git status` limpio, informe de qué afirma cada spec. Commit `test(e2e): record the full-suite result`.
+
+## Pendiente: migración para el tope de la planilla de rendición
+
+Defecto confirmado en T6 y diferido por decisión del humano (`L9`): **una sucursal con más de 190 variantes con stock no puede rendir cuentas nunca**. Abrir la rendición responde `503 service_unavailable` y no hay camino alternativo en el producto.
+
+- El tope es `MaxCountLines = 190` en `apps/api/internal/closings/closing.go:253` y se aplica al armar la planilla en `apps/api/internal/closings/store.go:2662` (`len(sheet) > MaxCountLines` → `ErrUnavailable`), dentro de la transacción de apertura.
+- La planilla escribe una línea por variante con `existing > 0` de la sucursal, sin tope propio: `apps/api/migrations/043_closing_assumed_count.sql:71-82` (`seed_closing_count_lines`).
+- El catálogo **ya no** está limitado a 190 variantes: `apps/api/migrations/028_catalog_operational_authority.sql:14` borra `catalog_variants_id_check` (`id BETWEEN 1 AND 190`). El tope del cierre se quedó con el número viejo.
+- Medición del día: Almacén 353, Sucursal B 235 (184 baterías + 51 otros productos creados por la suite), Sucursal A 180 variantes con stock.
+
+Qué tiene que hacer la migración cuando se encare, como feature propio y con riesgo item 1 (esquema):
+1. Subir `MaxCountLines` en Go y su contraparte en la base al mismo número, o reemplazar el tope por paginación de la planilla. Un número más grande es un parche: el catálogo crece y el problema vuelve.
+2. Revisar los otros dos topes que quedaron con el mismo 190 y dependen del catálogo: `MaxMaterialLines` (`closing.go:260`) y el límite de 1..190 ítems de `apps/api/migrations/003_pending_requests.sql:40`.
+3. Test que abra una rendición sobre una sucursal con más de 190 variantes con stock y la cierre, hoy imposible.
+4. Recién con eso, los specs de rendición pueden volver a cualquier sucursal grande y el grupo deja de depender de que Sucursal A esté debajo del tope.
 
 ## Log
 
@@ -51,4 +66,8 @@ L5. Throttle del arnés (L2): el servidor admite diez logins por minuto por dire
 L6. Hallazgo de producto (T9, fuera de alcance): el control de proveedor de `#/ingresos` publica **solo la primera página de 50 proveedores activos**, ordenada por `lower(name), id`, sin búsqueda ni paginación (`apps/web/src/StockEntry.tsx:153`, `stockEntryModel.ts:97`, `apps/api/internal/suppliers/store.go:256-257`). Con la base local ya en 167 proveedores, un operador cuyo proveedor ordene después del puesto 50 no puede elegirlo. No se toca en este feature: es comportamiento del producto y necesita decisión del humano.
 
 L7. Los grupos no se commitean con el verde del worker: cada uno se corre desde el árbol del padre sobre la base ya poblada por los otros grupos. Ingresos pasó de 10 verdes reportados a 2 rojos reales en esa corrida, y el arreglo destapó además que el paginador del historial se salteaba la página 1 mientras la tabla se recargaba.
+
+L8. Hallazgo de producto (T8, fuera de alcance): **crear una transferencia de baterías por pantalla no funciona** en el catálogo actual. `apps/web/src/sourceInventory.ts:33` lee como máximo 4 páginas de 50 filas (200 variantes) y el catálogo publica más baterías que eso, así que la pantalla de origen muestra «No se pudo actualizar el catálogo completo. Reintentá la consulta.» y deja «Revisar solicitud» deshabilitado. Los tres actos de creación del grupo se cubren con un documento de **otros productos** —mismo acto, misma regla de stock— porque el defecto es de la pantalla, no del producto. Arreglarlo es subir el tope de páginas y reconstruir el frontend: comportamiento de producto, necesita decisión del humano.
+
+L9. Decisión del humano (T6): **la rendición se prueba sobre Sucursal A**, que hoy tiene 180 variantes con stock, y el tope de la planilla queda documentado como defecto con su migración pendiente (ver «Pendiente» arriba), no arreglado en este feature. User: "dale si dale con sucursal A pero eso debe quedar documentado que hay que hacer una migracion luego!"
 
