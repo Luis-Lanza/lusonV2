@@ -1,5 +1,5 @@
 import {
-  actionBar, arrangedOpen, blockReason, branchA, centsOf, closingDocument, ensureCommission,
+  actionBar, arrangedOpen, blockReason, branchB, centsOf, closingDocument, ensureCommission,
   countedField, expect, freeBranch, knownBranchId, openWarehouseSettlement,
   plainDraft, saveCashDraft, settleLiveClosing, statusTag, test, warehouseRole, warehouseSessionState,
 } from './harness';
@@ -20,7 +20,7 @@ test.use({ storageState: warehouseSessionState });
 
 test('el Almacén propone el cierre y la oferta queda esperando a la sucursal', async ({ page, api }) => {
   const warehouse = await api.as(warehouseRole);
-  const branch = await api.as(branchA);
+  const branch = await api.as(branchB);
   const rate = await ensureCommission(warehouse, knownBranchId);
   const opened = await arrangedOpen(warehouse, branch, knownBranchId);
   // La caja ya está declarada y guardada: lo único que falta es la propuesta.

@@ -1,5 +1,5 @@
 import {
-  actionBar, arrangedOpen, branchA, cashCountedField, cashFundField, cashObservationField, centsOf,
+  actionBar, arrangedOpen, branchB, cashCountedField, cashFundField, cashObservationField, centsOf,
   closingDocument, ensureCommission, decideClosing, drawerPanel, expect, freeBranch, knownBranchId,
   moneyText, openWarehouseSettlement, proposeClosing, signedMoneyText, summaryValue, test, typedMoney,
   uniqueText, warehouseRole, warehouseSessionState, wire,
@@ -22,7 +22,7 @@ test.use({ storageState: warehouseSessionState });
 test('el Almacén declara la caja contada, el fondo que queda y la observación del cierre',
   async ({ page, api }) => {
     const warehouse = await api.as(warehouseRole);
-    const branch = await api.as(branchA);
+    const branch = await api.as(branchB);
     await ensureCommission(warehouse, knownBranchId);
     const opened = await arrangedOpen(warehouse, branch, knownBranchId);
 

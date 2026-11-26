@@ -1,5 +1,5 @@
 import {
-  arrangeBatterySale, arrangedOpen, branchA, branchASession, branchCashPanel, centsOf, closingDocument,
+  arrangeBatterySale, arrangedOpen, branchB, branchBSession, branchCashPanel, centsOf, closingDocument,
   ensureCommission, expect, expenseMotive, freeBranch, knownBranchId, moneyText,
   openBranchDecision, plainDraft, proposeClosing, recordContribution, recordExpense, saveCashDraft, stamp,
   summaryValue, test, uniqueText, warehouseRole,
@@ -17,12 +17,12 @@ import {
 
 freeBranch();
 
-test.use({ storageState: branchASession });
+test.use({ storageState: branchBSession });
 
 test('la sucursal lee su comisión del período con los gastos y los movimientos de caja',
   async ({ page, api }) => {
     const warehouse = await api.as(warehouseRole);
-    const branch = await api.as(branchA);
+    const branch = await api.as(branchB);
     const configuredRate = await ensureCommission(warehouse, knownBranchId);
     // El período: una venta de batería (la única base de la comisión), un aporte al cajón y un gasto.
     const sale = await arrangeBatterySale({ branch, warehouse }, `C${stamp()}`);

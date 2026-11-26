@@ -1,5 +1,5 @@
 import type { APIResponse, Locator, Page } from '@playwright/test';
-import { branchA, expect, test, warehouseRole, type Session } from '../warranty/harness';
+import { branchB, expect, test, warehouseRole, type Session } from '../warranty/harness';
 
 /**
  * El arnés de las rendiciones (S2, T6): las dos pantallas del cierre —la del Almacén, `#/rendiciones`,
@@ -14,20 +14,22 @@ import { branchA, expect, test, warehouseRole, type Session } from '../warranty/
  *
  * **Una rendición abierta congela su sucursal** (`branch_closure_blocker`): mientras el documento no
  * esté `closed` la sucursal no vende, no carga gastos ni recibe stock ni concilia. Por eso todo cierre
- * que una prueba abre, propone y decide vive sobre la **Sucursal A**, y toda prueba lo deja cerrado
+ * que una prueba abre, propone y decide vive sobre la **Sucursal B**, y toda prueba lo deja cerrado
  * antes de terminar: el gancho `freeBranch()` cierra por el contrato lo que una prueba haya dejado
  * abierto, de modo que una falla no deje a la sucursal congelada para las demás suites (S4).
  *
- * **Por qué la A y no la B.** Una rendición se abre con una línea de planilla por variante que la
- * sucursal tiene con existencia, y el documento se rechaza entero cuando la planilla pasa de
- * `MaxCountLines` (190) líneas, y la ruta publica `503 service_unavailable` sin escribir el documento
- * (`apps/api/internal/closings/closing.go:253`, `apps/api/internal/closings/store.go:2662`). Ese tope
- * quedó del catálogo cerrado y nunca acompañó a la migración `028_catalog_operational_authority.sql`,
- * que soltó la cota de 190 variantes de `catalog_variants`: hoy el catálogo crece y la planilla no.
- * Subirlo es un cambio de producto con migración, fuera de esta entrega. Con la base local la
- * Sucursal B tiene 235 variantes con existencia —184 baterías y las otras que dejaron las corridas de
- * transferencias— y por eso no se puede rendir; la Sucursal A está hoy debajo del tope y sí. El límite es un defecto
- * del producto y queda documentado para la migración que lo corrija; acá no se toca.
+ * **Por qué la B.** Una rendición se abre con una línea de planilla por variante que la sucursal tiene
+ * con existencia, y esa planilla se leía cortada en `MaxCountLines` (190) líneas: la lectura respondía
+ * `503 service_unavailable` y la sucursal no podía rendir cuentas nunca. El tope sobrevivió al
+ * catálogo que lo justificaba —la migración `028_catalog_operational_authority.sql` soltó la cota de
+ * 190 variantes de `catalog_variants`— y ya no existe: la planilla no tiene tope propio y la limita el
+ * catálogo (S1, S2), y el cliente lee publicada la planilla entera que el servidor escribe. La
+ * Sucursal B es la que el tope dejaba sin rendir —la medición del feature dio 235 variantes con
+ * existencia, 184 baterías y el resto de las corridas de transferencias, y la base local de hoy pasa de
+ * trescientas—, así que es donde esta suite rinde: una sucursal grande es exactamente el caso que el
+ * tope rompía, y por eso correr el cierre acá es la prueba de que el defecto está muerto de punta a
+ * punta. La Sucursal A (187 variantes, tres líneas de margen sobre el viejo tope) ya no hace falta para
+ * nada.
  *
  * Nada de acá importa los módulos de la aplicación: la prueba no puede pasar por coincidir con el
  * código que revisa. Cada arreglo previo va por la API pública de la misma sesión (S3) y lleva el
@@ -35,14 +37,17 @@ import { branchA, expect, test, warehouseRole, type Session } from '../warranty/
  * tiempo.
  */
 
-export { branchA, expect, origin, test, warehouseRole } from '../warranty/harness';
+export { branchB, expect, origin, test, warehouseRole } from '../warranty/harness';
 export type { Session } from '../warranty/harness';
 export { arrangeBatterySale } from '../warranty/harness';
-export { branchASession, warehouseSessionState } from '../warranty/sessions';
+export { branchBSession, warehouseSessionState } from '../warranty/sessions';
 
-/** La sucursal de toda rendición de esta suite: la que la planilla puede cubrir entera (ver arriba). */
-export const knownBranchId = 2;
-export const knownBranchName = 'Sucursal A';
+/**
+ * La sucursal de toda rendición de esta suite: la que el tope de la planilla dejaba sin rendir y por eso
+ * la que prueba que la planilla ya se lee entera (ver arriba).
+ */
+export const knownBranchId = 3;
+export const knownBranchName = 'Sucursal B';
 
 /**
  * La tasa que esta suite deja configurada en la sucursal cuando el Almacén no fijó ninguna. Sin tasa el
@@ -506,7 +511,7 @@ export async function closeEverything(warehouse: Session, branch: Session,
 export function freeBranch(): void {
   test.afterEach(async ({ api }) => {
     const warehouse = await api.as(warehouseRole);
-    const branch = await api.as(branchA);
+    const branch = await api.as(branchB);
     await closeEverything(warehouse, branch, knownBranchId);
   });
 }

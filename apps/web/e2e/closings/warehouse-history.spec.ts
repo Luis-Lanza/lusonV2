@@ -1,5 +1,5 @@
 import {
-  arrangedClosure, branchA, closingHistory, ensureCommission, expect, freeBranch, knownBranchId,
+  arrangedClosure, branchB, closingHistory, ensureCommission, expect, freeBranch, knownBranchId,
   knownBranchName, openWarehouseClosings, selectBranch, statusTag, test, uniqueText, warehouseRole,
   warehouseSessionState,
 } from './harness';
@@ -20,7 +20,7 @@ test.use({ storageState: warehouseSessionState });
 test('el Almacén elige la sucursal y lee la última rendición de su historia',
   async ({ page, api }) => {
     const warehouse = await api.as(warehouseRole);
-    const branch = await api.as(branchA);
+    const branch = await api.as(branchB);
     await ensureCommission(warehouse, knownBranchId);
     const observation = uniqueText('Cierre del historial');
     const closed = await arrangedClosure(warehouse, branch, knownBranchId, observation);

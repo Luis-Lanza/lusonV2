@@ -1,5 +1,5 @@
 import {
-  actionBar, arrangeUsedPurchase, arrangedOpen, branchA, closingDocument, ensureCommission,
+  actionBar, arrangeUsedPurchase, arrangedOpen, branchB, closingDocument, ensureCommission,
   expect, freeBranch, knownBranchId, materialRow, materialsPanel, openWarehouseSettlement,
   settleLiveClosing, test, warehouseRole, warehouseSessionState,
 } from './harness';
@@ -21,7 +21,7 @@ test.use({ storageState: warehouseSessionState });
 test('el Almacén cuenta la estantería de materiales rendidos y el cierre se lleva lo contado',
   async ({ page, api }) => {
     const warehouse = await api.as(warehouseRole);
-    const branch = await api.as(branchA);
+    const branch = await api.as(branchB);
     await ensureCommission(warehouse, knownBranchId);
     // Lo que el período compró: una usada de un modelo que ninguna otra corrida usa (S4).
     const model = await arrangeUsedPurchase(warehouse, branch, knownBranchId);

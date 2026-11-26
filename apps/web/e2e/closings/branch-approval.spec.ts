@@ -1,5 +1,5 @@
 import {
-  arrangedProposal, branchA, branchASession, closingDocument, ensureCommission, expect, freeBranch,
+  arrangedProposal, branchB, branchBSession, closingDocument, ensureCommission, expect, freeBranch,
   knownBranchId, openBranchDecision, statusTag, stockOf, test, warehouseRole,
 } from './harness';
 
@@ -14,12 +14,12 @@ import {
 
 freeBranch();
 
-test.use({ storageState: branchASession });
+test.use({ storageState: branchBSession });
 
 test('la sucursal acepta la propuesta, cierra la rendición y la existencia queda en lo contado',
   async ({ page, api }) => {
     const warehouse = await api.as(warehouseRole);
-    const branch = await api.as(branchA);
+    const branch = await api.as(branchB);
     await ensureCommission(warehouse, knownBranchId);
     const proposed = await arrangedProposal(warehouse, branch, knownBranchId);
     expect(proposed.status).toBe('proposed');

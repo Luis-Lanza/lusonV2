@@ -1,5 +1,5 @@
 import {
-  actionBar, blockReason, branchA, closeEverything, closingDocument, ensureCommission, expect,
+  actionBar, blockReason, branchB, closeEverything, closingDocument, ensureCommission, expect,
   freeBranch, knownBranchId, knownBranchName, liveClosing, openWarehouseSettlement, refused, statusTag,
   test, warehouseRole, warehouseSessionState,
 } from './harness';
@@ -20,7 +20,7 @@ test.use({ storageState: warehouseSessionState });
 
 test('el Almacén abre la rendición de la sucursal y la deja congelada', async ({ page, api }) => {
   const warehouse = await api.as(warehouseRole);
-  const branch = await api.as(branchA);
+  const branch = await api.as(branchB);
   await ensureCommission(warehouse, knownBranchId);
   // El punto de partida es una sucursal libre: la corrida no hereda un cierre de otra prueba.
   await closeEverything(warehouse, branch, knownBranchId);

@@ -1,5 +1,5 @@
 import {
-  arrangedClosure, branchA, branchASession, centsOf, closingDocument, ensureCommission,
+  arrangedClosure, branchB, branchBSession, centsOf, closingDocument, ensureCommission,
   expect, freeBranch, knownBranchId, moneyText, openBranchDecision,
   pendingCorrectionPanel, proposeCorrection, signedMoneyText, statusTag, summaryValue, test, uniqueText,
   warehouseRole,
@@ -17,12 +17,12 @@ import {
 
 freeBranch();
 
-test.use({ storageState: branchASession });
+test.use({ storageState: branchBSession });
 
 test('la sucursal acepta la corrección de un cierre y el documento queda con el número corregido',
   async ({ page, api }) => {
     const warehouse = await api.as(warehouseRole);
-    const branch = await api.as(branchA);
+    const branch = await api.as(branchB);
     await ensureCommission(warehouse, knownBranchId);
     const closed = await arrangedClosure(warehouse, branch, knownBranchId,
       uniqueText('Cierre con una corrección pendiente'));
