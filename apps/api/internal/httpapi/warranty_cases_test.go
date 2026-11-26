@@ -798,6 +798,91 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 	}
 }
 
+// TestWarrantyCaseStockBoundCaseOverPostgreSQL proves S31 on the contract: a claim whose factory
+// verdict returned a usable battery and whose destination is the branch's shelf is never delivered --
+// neither with the delivery route nor with a bare closing tramo -- and it closes with the release the
+// warehouse authorises, which is also the act that puts the unit into sellable stock of its branch.
+func TestWarrantyCaseStockBoundCaseOverPostgreSQL(t *testing.T) {
+	f := warrantyFixture(t)
+	if w := f.serve(t, f.request(2, "POST", "/api/sales",
+		saleBody(f.variant, 1, "96000.00", 12))); w.Code != 201 {
+		t.Fatalf("the sale of the fixture must be admitted: %d %s", w.Code, w.Body.String())
+	}
+	serial := f.lastSerial(t)
+	claim := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
+		fmt.Sprintf(`{"serial_number":%q,"declared_failure":"No arranca el motor"}`, serial))), 201)
+	advance := func(actor int, path, body string) *http.Request {
+		return f.request(actor, "POST", fmt.Sprintf("/api/warranty-cases/%d/%s", claim.ID, path), body)
+	}
+	for _, tramo := range []struct {
+		actor int
+		body  string
+	}{
+		{2, `{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`},
+		{1, `{"phase":"at_warehouse","factory_case_number":"","note":"Recibida"}`},
+		{1, `{"phase":"at_factory","factory_case_number":"LEG-77","note":"A fábrica"}`},
+	} {
+		if w := f.serve(t, advance(tramo.actor, "advance", tramo.body)); w.Code != 200 {
+			t.Fatalf("the case walks its journey: %d %s", w.Code, w.Body.String())
+		}
+	}
+	resolved := f.caseWire(t, f.serve(t, advance(1, "resolution", `{"verdict":"repaired",`+
+		`"reported_destination":"stock","loan_destination":"customer",`+
+		`"note":"Reparada: el cliente no la retira"}`)), 200)
+	if resolved.Phase != "resolved" || resolved.ReportedDestination == nil ||
+		*resolved.ReportedDestination != "stock" {
+		t.Fatalf("the factory returns a usable unit destined to the shelf: %+v", resolved)
+	}
+	shelf := f.balance(t, 2, f.variant)
+
+	// The delivery asserts the unit left the branch with the client, so it is refused with its own
+	// code and writes nothing at all: no tramo, no loan fate and no balance (S31).
+	f.refused(t, advance(2, "delivery", `{"loan_fate":"kept_by_customer","note":"Entregada"}`),
+		409, "unit_belongs_to_stock")
+	// The close is the release's and never a tramo of the journey.
+	f.refused(t, advance(2, "advance", `{"phase":"closed","factory_case_number":"",`+
+		`"note":"Cerrado a mano"}`), 409, "unit_belongs_to_stock")
+	if got := f.balance(t, 2, f.variant); got != shelf {
+		t.Fatalf("the refused acts write no stock: %d became %d", shelf, got)
+	}
+
+	// The notice is the branch's, the release is the warehouse's, and the release closes the case and
+	// sells its unit once (S13, S14, S31).
+	f.refused(t, advance(2, "release", `{"note":"El cliente no la retira"}`), 403, "forbidden")
+	if w := f.serve(t, advance(2, "notice", `{"note":"Avisado el cliente"}`)); w.Code != 200 {
+		t.Fatalf("the branch notifies the client: %d %s", w.Code, w.Body.String())
+	}
+	if got := f.balance(t, 2, f.variant); got != shelf {
+		t.Fatalf("a notice writes no stock: %d became %d", shelf, got)
+	}
+	released := f.caseWire(t, f.serve(t, advance(1, "release",
+		`{"note":"El cliente no la retira"}`)), 200)
+	if released.Phase != "closed" {
+		t.Fatalf("the release closes the case bound for stock: %+v", released)
+	}
+	last := released.Events[len(released.Events)-1]
+	if last.Kind != "release" || last.Phase != "closed" ||
+		last.Note != "El cliente no la retira" {
+		t.Fatalf("the release is the tramo that closes the case: %+v", last)
+	}
+	if got := f.balance(t, 2, f.variant); got != shelf+1 {
+		t.Fatalf("the released unit is sellable stock of the branch: %d became %d", shelf, got)
+	}
+	// The case is released once, and it is closed: nothing delivers it afterwards.
+	f.refused(t, advance(1, "release", `{"note":"Otra vez"}`), 409, "already_released")
+	before := f.snapshot(t)
+	late := f.serve(t, advance(2, "delivery", `{"loan_fate":"returned","note":"Entrega"}`))
+	if late.Code != 409 || !strings.Contains(late.Body.String(), `"transition_not_allowed"`) {
+		t.Fatalf("a closed case is never delivered: %d %s", late.Code, late.Body.String())
+	}
+	if f.snapshot(t) != before {
+		t.Fatalf("a refused delivery of a closed case changed stored state: %s", late.Body.String())
+	}
+	if got := f.balance(t, 2, f.variant); got != shelf+1 {
+		t.Fatalf("the refused acts write no stock: %d", got)
+	}
+}
+
 // TestWarrantyCasePendingOverPostgreSQL proves the notification of the section over the real
 // fixture: the count is the session's own side, it follows the write of the other side, and the
 // route publishes one decimal string and nothing else.
@@ -852,4 +937,26 @@ func TestWarrantyCasePendingOverPostgreSQL(t *testing.T) {
 		400, "invalid_request")
 	f.refused(t, f.request(2, "POST", "/api/warranty-cases/counts", ""), 405, "method_not_allowed")
 	f.refused(t, f.request(0, "GET", "/api/warranty-cases/counts", ""), 401, "unauthenticated")
+}
+
+// TestWarrantyFailureOfAnUndecidedLoan pins the mapping of S32: the refusal of a case that would close
+// with an undecided loan is one status and one stable code, and it is not the one of a loan that is
+// born open, which is the counter's own mistake.
+func TestWarrantyFailureOfAnUndecidedLoan(t *testing.T) {
+	w := httptest.NewRecorder()
+	warrantyFailure(w, warrantycase.ErrCaseHasOpenLoan)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("an undecided loan is a conflict, got %d %s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body["error"] != "loan_fate_open" {
+		t.Fatalf("the refusal carries its own code: %s", w.Body.String())
+	}
+	// The loan that is born open keeps its own refusal, so one code never answers two questions.
+	w = httptest.NewRecorder()
+	warrantyFailure(w, warrantycase.ErrLoanFateOpen)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil ||
+		w.Code != http.StatusBadRequest || body["error"] != "loan_fate_required" {
+		t.Fatalf("a loan born open keeps its own refusal: %d %s", w.Code, w.Body.String())
+	}
 }

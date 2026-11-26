@@ -44,6 +44,13 @@
 // a finding on the shelf has no client to call and no unit in custody. The release is the one stock
 // write of the claim door and the exact mirror of the finding's write-off (067); the resolution of a
 // finding is the other half of the same boundary, and it is the finding's own (069).
+//
+// The destination of a unit and the condition it came back in are two facts, and only the pair says
+// whether the branch may sell the battery (S31). A claim the factory returned repaired or replaced
+// whose destination is the shelf never leaves with the client: the release sells it and is the act that
+// closes the case, so the delivery of that case is refused and a tramo cannot close it either. The same
+// destination on any other verdict is the damaged battery of the used pool (071), which the release
+// still refuses and which the branch never sells.
 package warrantycase
 
 import (
@@ -137,6 +144,19 @@ var (
 	// named usages check accepts only the combinations S11 states; a claim never states a
 	// stock destination, and `not_covered` leaves the loan with the client.
 	ErrMatrix = errors.New("the resolution destinations do not match the verdict")
+
+	// ErrUnitBelongsToStock is the refusal of the delivery of a case whose unit is the branch's
+	// sellable stock (S31, LW035): a claim the factory returned repaired or replaced with its
+	// destination in the shelf never leaves with the client, so the delivery would assert a handover
+	// that did not happen. That unit enters sellable stock through the release the warehouse
+	// authorises, and the release is the act that closes the case.
+	ErrUnitBelongsToStock = errors.New("the unit of the case belongs to stock and is released, not delivered")
+
+	// ErrCaseHasOpenLoan is the refusal of a release that would close a case while one of its loans is
+	// still undecided (S32, LW036). The used pool is derived from the fate of every loan, so closing
+	// with one open leaves that unit counted in the wrong place for ever. The release never decides
+	// that fate -- the branch does -- it only refuses to close until none is missing.
+	ErrCaseHasOpenLoan = errors.New("the case has an open loan and does not close")
 )
 
 // PhaseRefusal names the two phases of a refused transition, so a caller can point at the

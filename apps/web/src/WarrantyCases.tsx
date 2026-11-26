@@ -14,7 +14,7 @@ import {
   canonicalLoanBody, canonicalLoanFateBody, canonicalNoticeBody, warrantyCustodyUnits,
   warrantyDeliveryFates, warrantyDestinationLabels, warrantyDispatchAvailable, warrantyEventKindLabels,
   warrantyCloseAvailable, warrantyDaysSince, warrantyDeliveryAvailable, warrantyLendAvailable,
-  warrantyLoanFateLabels, warrantyLoanFatesStated, warrantyLoanRegistered, warrantyNoticeAvailable,
+  warrantyLoanFateLabels, warrantyLoanRegistered, warrantyNoticeAvailable,
   warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseLabels, warrantyPhaseShortLabels,
   warrantyPhaseTone, warrantyPhases, warrantyReleased, warrantyReceiptAvailable, warrantyReceiptFileName,
   warrantyReceiptPath, warrantyVerdictLabels,
@@ -101,6 +101,23 @@ const locationName = (locations: readonly Location[], id: number): string =>
   locations.find(entry => entry.id === id)?.name ?? `Ubicación ${id}`;
 const units = (quantity: number): string => `${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}`;
 const days = (value: number): string => value === 1 ? '1 día' : `${value} días`;
+/**
+ * Whether the case's unit goes to sellable stock instead of leaving with the client (S31). Such a unit
+ * is never delivered: it enters the branch's stock through the release the Almacén authorises, and the
+ * server refuses the delivery of it (`409 unit_belongs_to_stock`), so the screen never offers the try.
+ */
+const unitBelongsToStock = (value: WarrantyCase): boolean =>
+  value.origin === 'warranty_claim' && value.reported_destination === 'stock';
+/**
+ * The four facts a lent battery can have become, in the words the counter says them and with the fate
+ * each one records (S33). The fate is never chosen from a list: it is the fact that happened.
+ */
+const warrantyLoanFateFacts: readonly { readonly fate: WarrantyLoanFateStated; readonly label: string }[] = [
+  { fate: 'failed', label: 'La usada falló' },
+  { fate: 'returned', label: 'El cliente la devolvió' },
+  { fate: 'kept_by_customer', label: 'El cliente se la quedó' },
+  { fate: 'lost', label: 'Se perdió' },
+];
 
 /** The battery of the claim: the line and the unit of the sale the client brought back. */
 function claimedUnit(sale: SaleDetail | null, serial: string | null) {
@@ -328,8 +345,8 @@ interface CaseDetailProps {
 
 function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, onChanged, onClose }: CaseDetailProps) {
   const [notice, setNotice] = useState({ note: '', busy: false, problem: '' });
-  const [delivery, setDelivery] = useState<{ fate: WarrantyDeliveryFate; note: string; busy: boolean; problem: string }>({
-    fate: 'returned', note: '', busy: false, problem: '',
+  const [delivery, setDelivery] = useState<{ fate: WarrantyDeliveryFate | ''; note: string; busy: boolean; problem: string }>({
+    fate: '', note: '', busy: false, problem: '',
   });
   const [dispatch, setDispatch] = useState({ note: '', busy: false, problem: '' });
   const [closing, setClosing] = useState({ note: '', busy: false, problem: '' });
@@ -358,13 +375,16 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
   }
   async function submitDelivery(event: FormEvent) {
     event.preventDefault();
-    if (delivery.busy) return;
+    // The fate of the lent battery moves the used pool's stock, so an unanswered one posts nothing: the
+    // screen never decides for the counter, and a decided fate is final (S31).
+    if (delivery.busy || delivery.fate === '') return;
+    const fate = delivery.fate;
     setDelivery(current => ({ ...current, busy: true, problem: '' }));
     try {
-      const body = canonicalDeliveryBody(delivery.fate, delivery.note);
+      const body = canonicalDeliveryBody(fate, delivery.note);
       const updated = await api.deliver(record.id, body, csrf);
-      setDelivery({ fate: 'returned', note: '', busy: false, problem: '' });
-      onChanged(updated, `Canje entregado en ${updated.case_number}: el caso queda cerrado y la usada, ${warrantyLoanFateLabels[delivery.fate].toLowerCase()}.`);
+      setDelivery({ fate: '', note: '', busy: false, problem: '' });
+      onChanged(updated, `Canje entregado en ${updated.case_number}: el caso queda cerrado y la usada, ${warrantyLoanFateLabels[fate].toLowerCase()}.`);
     } catch (failure) {
       setDelivery(current => ({ ...current, busy: false, problem: failureMessage(failure, 'No se pudo entregar el canje.') }));
     }
@@ -491,7 +511,7 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
     {openLoans.length > 0 && record.phase !== 'closed' && <div className="warranty-action">
       <h4>Desenlace de la usada</h4>
       <p className="warranty-note">Si la usada prestada falló, se marca acá y se agrega otra al mismo caso: el cliente nunca queda sin batería y el caso sigue siendo uno solo.</p>
-      {openLoans.map(entry => <LoanFateForm key={entry.ordinal} record={record} loan={entry} api={api} csrf={csrf}
+      {openLoans.map(entry => <LoanFateActions key={entry.ordinal} record={record} loan={entry} api={api} csrf={csrf}
         onChanged={onChanged} />)}
     </div>}
 
@@ -504,6 +524,22 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
 
     <h3 className="warranty-section-title">Acciones de la sucursal</h3>
     <div className="warranty-actions">
+      {/* The order follows the dependency: the loan is what the departure waits for, so it comes first (S34). */}
+      {warrantyLendAvailable(record) && (lending
+        ? <LendForm record={record} api={api} csrf={csrf} locations={locations}
+          onCancel={() => setLending(false)}
+          onChanged={(loanRecord, message) => {
+            setLending(false);
+            onChanged(loanRecord, message);
+          }} />
+        : <div className="warranty-action">
+          <h4>{record.loans.length === 0 ? 'Prestar la usada del cliente' : 'Prestar otra usada'}</h4>
+          <p className="warranty-note">{openLoan === null
+            ? 'El cliente nunca queda sin batería: la usada se presta por modelo y cantidad, y su serial es opcional.'
+            : `El caso tiene ${units(openLoan.quantity)} del modelo ${openLoan.model} en préstamo. Si esa usada falla, se marca y se agrega otra al mismo caso.`}</p>
+          <button type="button" onClick={() => setLending(true)}>Registrar préstamo</button>
+        </div>)}
+
       {warrantyDispatchAvailable(record) && <form className="warranty-action" onSubmit={submitDispatch}>
         <h4>Sale de la sucursal</h4>
         <p className="warranty-note">El viaje lo sigue el Almacén: acá sólo se registra que la batería dejó el local.</p>
@@ -527,29 +563,39 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
         {notice.problem !== '' && <p className="warranty-problem" role="alert">{notice.problem}</p>}
       </form>}
 
-      {warrantyDeliveryAvailable(record) && <form className="warranty-action" onSubmit={submitDelivery}>
+      {warrantyDeliveryAvailable(record) && !unitBelongsToStock(record) && <form className="warranty-action" onSubmit={submitDelivery}>
         <h4>Entregar el canje</h4>
         <p className="warranty-note">Se entrega la batería que volvió de fábrica y el caso queda cerrado, con la usada resuelta en el mismo acto.</p>
         <label htmlFor={`delivery-fate-${record.id}`}>Qué pasó con la usada</label>
         <select id={`delivery-fate-${record.id}`} value={delivery.fate}
           onChange={event => {
             const next = event.target.value;
-            if (warrantyDeliveryFates.includes(next as WarrantyDeliveryFate)) {
-              setDelivery(current => ({ ...current, fate: next as WarrantyDeliveryFate }));
+            if (warrantyDeliveryFates.includes(next as WarrantyDeliveryFate) || next === '') {
+              setDelivery(current => ({ ...current, fate: next as WarrantyDeliveryFate | '' }));
             }
           }}>
+          <option value="">Elegí qué pasó con la usada</option>
           <option value="returned">Volvió al local</option>
           <option value="kept_by_customer">Se la quedó el cliente</option>
         </select>
         <label htmlFor={`delivery-note-${record.id}`}>Palabras del mostrador</label>
         <textarea id={`delivery-note-${record.id}`} value={delivery.note} maxLength={500} required rows={2}
           onChange={event => setDelivery(current => ({ ...current, note: event.target.value }))} />
-        <button type="submit" className="primary" disabled={delivery.busy || !warrantyLoanRegistered(record)}>Entregar canje</button>
+        <button type="submit" className="primary"
+          disabled={delivery.busy || delivery.fate === '' || !warrantyLoanRegistered(record)}>Entregar canje</button>
+        {delivery.fate === '' && <p className="warranty-reason">
+          Falta decir qué pasó con la usada prestada: ninguna pantalla elige ese desenlace por el mostrador.
+        </p>}
         {!warrantyLoanRegistered(record) && <p className="warranty-reason">
           Falta registrar la usada que se entregó al cliente: sin préstamo el canje no se cierra.
         </p>}
         {delivery.problem !== '' && <p className="warranty-problem" role="alert">{delivery.problem}</p>}
       </form>}
+
+      {unitBelongsToStock(record) && record.phase !== 'closed' && <div className="warranty-action">
+        <h4>El caso cierra con la liberación</h4>
+        <p className="warranty-note">La unidad de este caso va al stock vendible de la sucursal: no se entrega a ningún cliente. El caso queda cerrado con el aviso al cliente y la liberación que autoriza el Almacén, no con la entrega.</p>
+      </div>}
 
       {warrantyCloseAvailable(record) && <form className="warranty-action" onSubmit={submitClose}>
         <h4>Cerrar el caso</h4>
@@ -561,20 +607,6 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
         {closing.problem !== '' && <p className="warranty-problem" role="alert">{closing.problem}</p>}
       </form>}
 
-      {warrantyLendAvailable(record) && (lending
-        ? <LendForm record={record} api={api} csrf={csrf} locations={locations}
-          onCancel={() => setLending(false)}
-          onChanged={(loanRecord, message) => {
-            setLending(false);
-            onChanged(loanRecord, message);
-          }} />
-        : <div className="warranty-action">
-          <h4>{record.loans.length === 0 ? 'Prestar la usada del cliente' : 'Prestar otra usada'}</h4>
-          <p className="warranty-note">{openLoan === null
-            ? 'El cliente nunca queda sin batería: la usada se presta por modelo y cantidad, y su serial es opcional.'
-            : `El caso tiene ${units(openLoan.quantity)} del modelo ${openLoan.model} en préstamo. Si esa usada falla, se marca y se agrega otra al mismo caso.`}</p>
-          <button type="button" onClick={() => setLending(true)}>Registrar préstamo</button>
-        </div>)}
       {record.phase === 'closed' && <p className="warranty-note">El caso está cerrado: no admite más acciones de la sucursal.</p>}
     </div>
   </>;
@@ -583,45 +615,47 @@ function branchLabel(record: WarrantyCase, locations: readonly Location[]): stri
   return locationName(locations, record.branch_location_id);
 }
 
-function LoanFateForm({ record, loan, api, csrf, onChanged }: {
+function LoanFateActions({ record, loan, api, csrf, onChanged }: {
   record: WarrantyCase;
   loan: WarrantyLoan;
   api: ReturnType<typeof createWarrantyCasesAPI>;
   csrf: string;
   onChanged: (record: WarrantyCase, message: string) => void;
 }) {
-  const [fate, setFate] = useState<WarrantyLoanFateStated | ''>('');
+  const [confirming, setConfirming] = useState<WarrantyLoanFateStated | ''>('');
   const [state, setState] = useState({ busy: false, problem: '' });
-  const fieldID = `loan-fate-${record.id}-${loan.ordinal}`;
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (state.busy || fate === '') return;
+  async function submit(fate: WarrantyLoanFateStated) {
+    if (state.busy) return;
     setState({ busy: true, problem: '' });
     try {
       const body = canonicalLoanFateBody(fate);
       const settled = await api.decideLoan(record.id, loan.ordinal, body.fate, csrf);
       const updated = { ...record, loans: record.loans.map(entry => entry.ordinal === loan.ordinal ? settled : entry) };
-      setFate('');
+      setConfirming('');
       onChanged(updated, `Préstamo ${loan.ordinal} de ${record.case_number}: ${warrantyLoanFateLabels[settled.fate].toLowerCase()}.`);
     } catch (failure) {
       setState({ busy: false, problem: failureMessage(failure, 'No se pudo registrar el desenlace del préstamo.') });
     }
   }
-  return <form className="warranty-fate" onSubmit={submit}>
-    <label htmlFor={fieldID}>{`Préstamo ${loan.ordinal} · ${loan.model} · ${units(loan.quantity)}`}</label>
-    <select id={fieldID} value={fate}
-      onChange={event => {
-        const next = event.target.value;
-        if (warrantyLoanFatesStated.includes(next as WarrantyLoanFateStated) || next === '') {
-          setFate(next as WarrantyLoanFateStated | '');
-        }
-      }}>
-      <option value="">Elegí el desenlace</option>
-      {warrantyLoanFatesStated.map(value => <option key={value} value={value}>{warrantyLoanFateLabels[value]}</option>)}
-    </select>
-    <button type="submit" disabled={state.busy || fate === ''}>Registrar desenlace</button>
+  const labelled = warrantyLoanFateFacts.find(fact => fact.fate === confirming)?.label ?? '';
+  return <div className="warranty-fate">
+    <strong>{`Préstamo ${loan.ordinal} · ${loan.model} · ${units(loan.quantity)}`}</strong>
+    <p className="warranty-fate-state">Desenlace: sin decidir · se pide al cerrar el caso</p>
+    {confirming === ''
+      ? <div className="warranty-action-row">
+        {warrantyLoanFateFacts.map(fact => <button type="button" key={fact.fate}
+          onClick={() => { setState({ busy: false, problem: '' }); setConfirming(fact.fate); }}>{fact.label}</button>)}
+      </div>
+      : <div className="warranty-fate-ask" role="group" aria-label={`Confirmar el desenlace del préstamo ${loan.ordinal}`}>
+        <p className="warranty-fate-confirm">{`${labelled}: el desenlace es definitivo y no se puede editar.`}</p>
+        <div className="warranty-action-row">
+          <button type="button" className="primary" disabled={state.busy}
+            onClick={() => void submit(confirming)}>Sí, registrar el desenlace</button>
+          <button type="button" disabled={state.busy} onClick={() => setConfirming('')}>Cancelar</button>
+        </div>
+      </div>}
     {state.problem !== '' && <p className="warranty-problem" role="alert">{state.problem}</p>}
-  </form>;
+  </div>;
 }
 
 function LendForm({ record, api, csrf, locations, onCancel, onChanged }: {
@@ -826,7 +860,7 @@ function ExchangeDialog({ api, sales, csrf, branch, locations, onClose, onCase }
       </form>}
 
       {step === 'loan' && created !== null && <>
-        <p className="warranty-dialog-case" role="status">{`Caso ${created.case_number} abierto por la serie ${created.serial_number ?? ''}.`}</p>
+        <p className="warranty-confirm" role="status">{`Caso ${created.case_number} abierto por la serie ${created.serial_number ?? ''}.`}</p>
         {sale.phase === 'loading' && <p className="warranty-message" role="status">Leyendo la venta de la serie…</p>}
         {sale.phase === 'error' && <p className="warranty-note">{sale.problem}</p>}
         {sale.phase === 'ready' && sale.value !== null && (() => {

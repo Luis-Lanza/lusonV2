@@ -186,9 +186,11 @@ func TestNoticeAndReleaseOnALiveDatabase(t *testing.T) {
 	execRefusalMessage(t, err, "LW021", "factory")
 	_, err = p.Exec(ctx, releaseSQL, pending, "received", 1, "Liberada a stock")
 	execRefusalMessage(t, err, "LW021", "factory")
-	// A release without a recorded notice is refused, not silently ignored (S14).
+	// A release without a recorded notice is refused, not silently ignored (S14). The second claim is
+	// resolved `not_covered`, which is the verdict whose damaged unit is the used pool's: its
+	// destination is `stock` and it is still nothing the branch may sell (S11, S27, S31).
 	reachedResolved(t, ctx, p, pending)
-	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='repaired',
+	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='not_covered',
  reported_destination='customer',loan_destination='stock' WHERE id=$1`, pending); err != nil {
 		t.Fatalf("the resolution of the second claim could not be stated: %v", err)
 	}
@@ -252,8 +254,9 @@ func TestNoticeAndReleaseOnALiveDatabase(t *testing.T) {
 	_, err = p.Exec(ctx, `INSERT INTO warranty_case_events(case_id,kind,phase,factory_case_number,
  actor_account_id,note) VALUES($1,'notice','resolved','LEG-1',2,'Avisado el cliente')`, pending)
 	execRefusalMessage(t, err, "LW007", "file number")
-	// A claim whose reported battery never came back to the branch holds nothing to release: the used
-	// pool is not the branch's sellable stock (S11, S13).
+	// A claim whose reported battery never came back as a sellable unit holds nothing to release: the
+	// damaged battery of a `not_covered` verdict is the used pool's, not the branch's sellable stock
+	// (S11, S13, S27, S31).
 	if _, err := p.Exec(ctx, noticeSQL, pending, "resolved", 2, "Avisado el cliente"); err != nil {
 		t.Fatalf("the second claim registers its notice: %v", err)
 	}

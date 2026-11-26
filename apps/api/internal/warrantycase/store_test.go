@@ -632,3 +632,70 @@ func TestResolveStatesTheVerdictAndTheDestinationsOfTheClaim(t *testing.T) {
 		t.Fatalf("a resolution never writes a sold unit: %d became %d", units, got)
 	}
 }
+
+// TestReleaseRefusesACaseWithAnUndecidedLoan pins S32 on the store: the release that closes a case
+// whose unit is bound for stock returns the sentinel instead of closing while a loan of that case is
+// still `open`, and it writes nothing at all; once the branch decides, the same release closes the
+// case exactly as 073 states it.
+func TestReleaseRefusesACaseWithAnUndecidedLoan(t *testing.T) {
+	f := newFixture(t)
+	f.fund(t, 2, "1000.00")
+	f.buyUsed(t, 2, "undecided-loan-0001", "NS60L", 1, "10.00", "10.00")
+	claim := f.openClaim(t, "DECIDIR/1")
+	if _, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
+		Model: "NS60L", Quantity: 1, SourceLocationID: 2}); err != nil {
+		t.Fatalf("the branch lends the used battery of the case: %v", err)
+	}
+	f.atFactory(t, claim)
+	if _, err := f.store.Resolve(f.ctx, f.actor(1), claim.ID, warrantycase.ResolutionInput{
+		Verdict: warrantycase.VerdictRepaired, ReportedDestination: warrantycase.DestinationStock,
+		LoanDestination: warrantycase.DestinationCustomer, Note: "Reparada: el cliente no la retira"}); err != nil {
+		t.Fatalf("the factory returns the usable unit to the branch's shelf: %v", err)
+	}
+	if _, err := f.store.RegisterNotice(f.ctx, f.actor(2), claim.ID, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch notifies the client of its own case: %v", err)
+	}
+	events := len(f.read(t, claim.ID).Events)
+	shelf := f.existing(t, 2, 1)
+	stock := f.balances(t)
+
+	// The release is the act that closes this case, and it states nothing about the fate of the loan:
+	// closing with one still open leaves the unit counted in the wrong place for ever (S32).
+	if _, err := f.store.AuthorizeRelease(f.ctx, f.actor(1), claim.ID,
+		"El cliente no la retira"); !errors.Is(err, warrantycase.ErrCaseHasOpenLoan) {
+		t.Fatalf("a case does not close with an undecided loan, got %v", err)
+	}
+	read := f.read(t, claim.ID)
+	if read.Phase != warrantycase.PhaseResolved || len(read.Events) != events {
+		t.Fatalf("a refused release writes nothing: %+v", read)
+	}
+	if len(read.Loans) != 1 || read.Loans[0].Fate != warrantycase.LoanOpen ||
+		read.Loans[0].FateDecidedAt != nil {
+		t.Fatalf("the release decides no loan fate: %+v", read.Loans)
+	}
+	if got := f.existing(t, 2, 1); got != shelf {
+		t.Fatalf("a refused release writes no stock: %d became %d", shelf, got)
+	}
+	if got := f.balances(t); got != stock {
+		t.Fatalf("a refused release moves no balance: %s became %s", stock, got)
+	}
+
+	// The branch decides and the release closes the case and sells its unit exactly as before.
+	if _, err := f.store.DecideLoan(f.ctx, f.actor(2), claim.ID, 1,
+		warrantycase.LoanKeptByCustomer); err != nil {
+		t.Fatalf("the branch decides the fate of the loan: %v", err)
+	}
+	released, err := f.store.AuthorizeRelease(f.ctx, f.actor(1), claim.ID, "El cliente no la retira")
+	if err != nil {
+		t.Fatalf("a case whose loans are all decided is released: %v", err)
+	}
+	if released.Phase != warrantycase.PhaseClosed {
+		t.Fatalf("the release closes the case bound for stock, got %s", released.Phase)
+	}
+	if len(released.Loans) != 1 || released.Loans[0].Fate != warrantycase.LoanKeptByCustomer {
+		t.Fatalf("the release never rewrites the fate the branch decided: %+v", released.Loans)
+	}
+	if got := f.existing(t, 2, 1); got != shelf+1 {
+		t.Fatalf("the released unit is sellable stock: %d became %d", shelf, got)
+	}
+}
