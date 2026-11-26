@@ -26,7 +26,7 @@ import { branchA, expect, test, warehouseRole, type Session } from '../warranty/
  * que soltó la cota de 190 variantes de `catalog_variants`: hoy el catálogo crece y la planilla no.
  * Subirlo es un cambio de producto con migración, fuera de esta entrega. Con la base local la
  * Sucursal B tiene 235 variantes con existencia —184 baterías y las otras que dejaron las corridas de
- * transferencias— y por eso no se puede rendir; la Sucursal A tiene 180 y sí. El límite es un defecto
+ * transferencias— y por eso no se puede rendir; la Sucursal A está hoy debajo del tope y sí. El límite es un defecto
  * del producto y queda documentado para la migración que lo corrija; acá no se toca.
  *
  * Nada de acá importa los módulos de la aplicación: la prueba no puede pasar por coincidir con el
@@ -521,16 +521,34 @@ interface InventoryRow {
   readonly reserved: number;
 }
 
-/** Las existencias de todas las variantes de una ubicación, leídas por páginas del contrato. */
+/**
+ * Las existencias de **todas** las variantes de una ubicación, leídas por páginas del contrato.
+ *
+ * La planilla del cierre tiene una línea por variante con existencia, así que la estantería contra la
+ * que se la contrasta tiene que estar entera: la lectura camina las páginas hasta cubrir el total que
+ * el contrato publica, sin un número fijo de páginas —el inventario de la sucursal crece con cada
+ * grupo de la suite y ya pasó de las 500 variantes que dejaba leer un tope de diez páginas—. Si una
+ * escritura de otra suite entra entre dos páginas y corre el orden por `variant_id`, la fila del
+ * borde se saltea; el total publicado es la cota que se exige cubrir, así que la lectura se repite
+ * hasta cubrirlo y, si no lo logra, falla en vez de comparar contra una estantería incompleta.
+ */
 export async function stockOf(session: Session, location: number): Promise<ReadonlyMap<number, number>> {
-  const stock = new Map<number, number>();
-  for (let page = 1; page <= 10; page += 1) {
-    const answer = await read<{ items: readonly InventoryRow[]; total_variants: number }>(
-      session, `/api/inventory?location_id=${location}&page=${page}&page_size=50&kind=all`);
-    for (const row of answer.items) stock.set(row.variant_id, row.existing);
-    if (answer.items.length < 50 || page * 50 >= answer.total_variants) break;
+  const pageSize = 50;
+  let stock = new Map<number, number>();
+  let total = 0;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    stock = new Map<number, number>();
+    for (let page = 1; ; page += 1) {
+      const answer = await read<{ items: readonly InventoryRow[]; total_variants: number }>(
+        session, `/api/inventory?location_id=${location}&page=${page}&page_size=${pageSize}&kind=all`);
+      for (const row of answer.items) stock.set(row.variant_id, row.existing);
+      total = answer.total_variants;
+      if (answer.items.length === 0 || page * pageSize >= answer.total_variants) break;
+    }
+    if (stock.size >= total) return stock;
   }
-  return stock;
+  throw new Error(`la lectura del inventario de la ubicación ${location} quedó incompleta: `
+    + `${stock.size} de ${total} variantes`);
 }
 
 /** Los motivos del cajón que el catálogo cerrado ofrece, para registrar un gasto con uno. */
