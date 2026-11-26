@@ -59,12 +59,12 @@ S23. Vocabulario congelado, para que la migración, el backend y el frontend se 
 T1 [S1–S22] Documento y direcciones visuales, canvas abierto y artboard elegido — route inline (diseño); done: `design/battery-warranty/` con manifest y artboards.
 T2 [S1,S2,S5,S6,S7,S9,S11,S14,S20] Migración: caso, eventos append-only, préstamos, numeración por sucursal y guardas — route delegated (worker); done: `apps/api/migrations/065_warranty_cases.sql` y `warranty_cases_schema_test.go`, commit `57d69b6`; 4/4 en PostgreSQL real y el paquete de migraciones completo en verde.
 T3 [S12,S17,S18] Migración del sembrado de usadas en `closing_material_lines`, con cierres históricos intactos — route delegated (worker); done en `808aa9d` (`066_closing_materials_used_pool.sql` y su schema test, con el esperado firmado y `apps/api/docs/closings.md` actualizado); el término "menos liquidaciones a chatarra" queda fuera porque el repositorio no registra ese hecho.
-T4 [S1,S2,S11,S16] Paquete Go del caso: validación de serial y plazo, alta de las dos entradas, transiciones y matriz de resolución — route delegated; pendiente.
-T5 [S3,S8,S14,S19,S20] Store y HTTP: rutas del caso, comprobante PDF y guardas de actor — route delegated; pendiente.
-T6 [S4,S5,S6,S7] UI sucursal: registrar el canje, elegir el préstamo y emitir el comprobante — route delegated; artboard elegido `design/battery-warranty/02-bandeja-de-casos.html` (handoff en curso); pendiente.
-T7 [S9,S10,S13,S14,S15] UI Almacén: mesa de casos, legajo, custodia y liberación — route delegated; pendiente.
-T8 [S12,S15,S17,S18] Colas de trabajo y lectura del pool de usadas — route delegated; pendiente.
-T9 [S21,S22] Verificación integral y cierre con evidencia — route inline; pendiente.
+T4 [S1,S2,S11,S16] Paquete Go del caso: validación de serial y plazo, alta de las dos entradas, transiciones y matriz de resolución — route delegated; done en `ab35f2f` (`internal/warrantycase`, la entrada de garantía) y `d47b5b9` (la matriz del hallazgo, `069`).
+T5 [S3,S8,S14,S19,S20] Store y HTTP: rutas del caso, comprobante PDF y guardas de actor — route delegated; done en `7eefb0e` (once rutas, `068`, montadas en `cmd/server`), `1f1e5c5` (comprobante) y `e1fa4e6` (contrato de esquema).
+T6 [S4,S5,S6,S7] UI sucursal: registrar el canje, elegir el préstamo y emitir el comprobante — route delegated; done en `0aa2b70`, sobre el artboard elegido `design/battery-warranty/02-bandeja-de-casos.html` (handoff `implemented`).
+T7 [S9,S10,S13,S14,S15] UI Almacén: mesa de casos, legajo, custodia y liberación — route delegated; done en `85f0b87` (mesa de fábrica, gated por lado).
+T8 [S12,S15,S17,S18] Colas de trabajo y lectura del pool de usadas — route delegated; done en `808aa9d` y `ed52be8` (`066`, el pool firmado) y en las colas por fase de ambas pantallas; la cifra del pool no se publica todavía en la mesa del Almacén.
+T9 [S21,S22] Verificación integral y cierre con evidencia — route inline; done: `go build ./...`, `go vet ./...` y `go test ./...` completos sobre fixture limpio (todo `ok` tras `e1fa4e6`), más `typecheck`, `build` y la suite del frontend (4 653 tests).
 
 ## Log
 
@@ -146,3 +146,21 @@ L21. T5 detenida por el worker con tres hallazgos correctos: el store expone sei
 - Las operaciones faltantes van al store (`internal/warrantycase/`), nunca a `httpapi`.
 - Nuevo `068`: `warranty_case_events.kind` con `phase | notice | release`, y `LW006` pasa a exigir que un evento de fase cambie la fase y que un aviso o una liberación no la cambien. Un solo historial, sin fases nuevas.
 - La liberación **sí escribe el balance**: S14 ya dice que la unidad liberada pasa a stock vendible, y es el espejo exacto de la baja de `067`. Son las dos únicas escrituras de stock de la vertical, y las dos son el caso cruzando la frontera entre stock y custodia. La instrucción previa de "no mover stock fuera de la puerta de baja" era mía y estaba de más.
+
+L22. Comprobante en PDF (`1f1e5c5`): una A4 desde datos persistidos, con las condiciones del canje y el número persistido del caso. Sin migración: todo lo que imprime ya existía.
+
+L23. Pantalla de sucursal (`0aa2b70`): bandeja con filtros por fase y origen, detalle con línea de tiempo, custodia y préstamos, alta del canje con búsqueda por serial, comprobante descargable, aviso y entrega. Verificado acá: 61 tests de los archivos nuevos y de navegación, typecheck y build en verde.
+
+L24. Brecha aceptada y no tapada: la fila de la bandeja no lleva el nombre del cliente ni el instante del aviso, porque el contrato publica sólo la cabecera del caso. El artboard los mostraba por fila y ahora viven en el detalle. Va como seguimiento: sumar la referencia de la venta a la fila cuesta un join en el store, el DTO, el documento y el decodificador estricto del frontend; no bloquea el circuito y no se hace en este slice para no abrir el contrato a mitad de camino.
+
+L25. Pantalla del Almacén (`85f0b87`): mesa de fábrica con las cuatro preguntas del escritorio, la bandeja por fase, el detalle con línea de tiempo y custodia, y sólo los actos que el contrato le da al Almacén. La sección quedó con acceso por lado: una cuenta de sucursal no ve el escritorio y una del Almacén no ve la bandeja de sucursal.
+
+L26. Incidente de proceso, corregido: un `git add -A` mío mezcló el fix del contrato de esquema con la pantalla del Almacén que estaba en vuelo en ese momento. Se separó en `e1fa4e6` (API) y `85f0b87` (frontend) reordenando la rama antes de publicarla. La lección: con workers en background, `git add` por ruta, nunca `-A`.
+
+L27. Verificación integral sobre fixture limpio desde cero, con la rama ya ordenada:
+- `go build ./...` y `go vet ./...` sin salida; `go test -count=1 ./...` con todos los paquetes en `ok`, incluidos `httpapi`, `closings`, `migrations`, `transfers` y `warrantycase`.
+- La corrida completa encontró un único fallo que ninguna unidad vio: `internal/bootstrap` congela la lista exacta de tablas del dominio y las tres nuevas no estaban. Corregido en `e1fa4e6`.
+- Frontend: `typecheck` en 0, `build` en 0, y 4 653 tests pasando sobre 93 archivos (1 skipped).
+- Los tests de `TransferPending` y `AccountAdministration` son inestables por carga y ya lo eran en la base: el worker lo probó copiando la base y fallando 2 de 5 corridas sin este cambio.
+
+L28. Estado final: el circuito completo funciona de punta a punta y está verificado. Queda afuera, por decisión y anotado: el nombre del cliente en la fila de la bandeja, el desenlace de `refused_at_warehouse` en un hallazgo de góndola, el documento de conversión de usadas a chatarra, la cifra del pool en la mesa del Almacén, y el aviso previo a la liberación cuando el caso ya está cerrado.

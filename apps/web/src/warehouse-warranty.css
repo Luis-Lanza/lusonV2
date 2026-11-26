@@ -1,0 +1,52 @@
+/* The warehouse's factory desk (S9, S10, S13, S14, S15). It reuses the branch pane's own stylesheet for
+   the layout, the table, the detail, the timeline and the actions, and adds only the four figures of the
+   desk and the three crossings of stock. Every colour, size, radius and shadow below is a token of
+   design/system.md: the wine/tint/page/border/muted family, the warn/ok pairs the product already
+   carries, the 4px radius and the two surface shadows. Nothing outside that set. */
+
+.warranty-desk { display: flex; flex-direction: column; gap: 16px; max-width: 1600px; }
+
+/* The four questions of the desk, joined by the page seam and never a card inside a card. Each cell is
+   the queue it counts, so the figure and the filter are the same control. */
+.warranty-desk-figures { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+  background: var(--border); border: 1px solid var(--border); border-radius: 4px;
+  box-shadow: 0 1px 2px #2421240d; overflow: hidden; }
+.warranty-desk-figure { display: grid; gap: 2px; align-content: start; min-height: 44px; padding: 16px 18px;
+  text-align: left; background: white; border: 0; border-radius: 0; cursor: pointer; }
+.warranty-desk-figure:hover { background: var(--page); }
+.warranty-desk-figure[aria-pressed="true"] { background: var(--tint); box-shadow: inset 0 0 0 2px var(--wine); }
+.warranty-desk-figure-label { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; }
+.warranty-desk-figure[aria-pressed="true"] .warranty-desk-figure-label { color: var(--wine); }
+.warranty-desk-figure-value { color: var(--ink); font-size: 26px; font-weight: 700; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; line-height: 32px; }
+.warranty-desk-figure.hot .warranty-desk-figure-value { color: var(--wine); }
+.warranty-desk-figure-note { color: var(--muted); font-size: 12px; line-height: 16px; }
+
+/* The three crossings of stock of one case: what left the shelf, what the case holds and what the
+   release returns. The units are stated beside the crossing and never as sellable while they are held. */
+.warranty-crossings { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.warranty-crossings li { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.warranty-crossings p { margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.warranty-crossing-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.warranty-crossing-head strong { font-size: 13px; font-weight: 600; }
+.warranty-crossing-units { margin-left: auto; color: var(--ink); font-size: 12px; font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* The boundary of the desk (S19): stated once, under the acts, so a missing act is never a mystery. */
+.warranty-desk-boundary { padding-top: 12px; border-top: 1px solid var(--border); }
+
+@media (max-width: 1050px) {
+  .warranty-desk-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .warranty-desk-figures { grid-template-columns: minmax(0, 1fr); }
+  .warranty-desk-figure { padding: 12px 16px; }
+  .warranty-desk-figure-value { font-size: 22px; line-height: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .warranty-desk *, .warranty-desk-figures * { transition: none !important; animation: none !important;
+    scroll-behavior: auto !important; }
+}

@@ -769,3 +769,59 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 		t.Fatalf("the branch closes its own finding: %+v", closed)
 	}
 }
+
+// TestWarrantyCasePendingOverPostgreSQL proves the notification of the section over the real
+// fixture: the count is the session's own side, it follows the write of the other side, and the
+// route publishes one decimal string and nothing else.
+func TestWarrantyCasePendingOverPostgreSQL(t *testing.T) {
+	f := warrantyFixture(t)
+	pending := func(actor int) string {
+		t.Helper()
+		w := f.serve(t, f.request(actor, "GET", "/api/warranty-cases/counts", ""))
+		if w.Code != 200 {
+			t.Fatalf("the pending count must answer 200: %d %s", w.Code, w.Body.String())
+		}
+		var counts map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &counts); err != nil || len(counts) != 1 ||
+			counts["action_count"] == "" {
+			t.Fatalf("the pending count is one decimal field: %s", w.Body.String())
+		}
+		return counts["action_count"]
+	}
+	if got := pending(2); got != "0" {
+		t.Fatalf("no case waits yet, got %s", got)
+	}
+	if w := f.serve(t, f.request(2, "POST", "/api/sales", saleBody(f.variant, 1, "96000.00", 12))); w.Code != 201 {
+		t.Fatalf("the sale of the fixture must be admitted: %d %s", w.Code, w.Body.String())
+	}
+	claim := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
+		fmt.Sprintf(`{"serial_number":%q,"declared_failure":"No arranca el motor"}`, f.lastSerial(t)))), 201)
+
+	// The branch opened it and has to ship it; the warehouse cannot act on it yet and another branch
+	// never counts it (S19).
+	if got := pending(2); got != "1" {
+		t.Fatalf("the branch must count the case it opened, got %s", got)
+	}
+	if got := pending(1); got != "0" {
+		t.Fatalf("the warehouse cannot act on a case still at its branch, got %s", got)
+	}
+	if got := pending(3); got != "0" {
+		t.Fatalf("another branch must not count this case, got %s", got)
+	}
+	if w := f.serve(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/advance", claim.ID),
+		`{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`)); w.Code != 200 {
+		t.Fatalf("the branch must ship the case: %d %s", w.Code, w.Body.String())
+	}
+	if got := pending(2); got != "0" {
+		t.Fatalf("a case already shipped does not wait for the branch, got %s", got)
+	}
+	if got := pending(1); got != "1" {
+		t.Fatalf("the warehouse must count the case it now moves, got %s", got)
+	}
+	// The route is one read and nothing else: an unknown query, another method and no session are
+	// refused without asking the store.
+	f.refused(t, f.request(2, "GET", "/api/warranty-cases/counts?phase=received", ""),
+		400, "invalid_request")
+	f.refused(t, f.request(2, "POST", "/api/warranty-cases/counts", ""), 405, "method_not_allowed")
+	f.refused(t, f.request(0, "GET", "/api/warranty-cases/counts", ""), 401, "unauthenticated")
+}

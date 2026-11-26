@@ -23,6 +23,7 @@ class FakeSource {
 }
 function options(patch: Partial<RealtimeOptions> = {}): RealtimeOptions {
   return { enabled: true, epoch: 1, resync: vi.fn(), inventory: vi.fn(), transfers: vi.fn(),
+    catalogue: vi.fn(), warranty: vi.fn(),
     error: vi.fn(async () => 'authorized' as Recovery), ...patch };
 }
 async function flush() { await act(async () => { await Promise.resolve(); }); }
@@ -39,9 +40,12 @@ describe('R03 realtime lifecycle', () => {
     const source = FakeSource.instances[0]; expect(source.url).toBe('/api/events');
     act(() => source.emit('open')); expect(callbacks.resync).not.toHaveBeenCalled();
     const latest = vi.fn(); rerender({ ...callbacks, enabled: true, inventory: latest });
-    act(() => { source.emit('resync'); source.emit('inventory'); source.emit('transfers'); });
+    act(() => { source.emit('resync'); source.emit('inventory'); source.emit('transfers');
+      source.emit('catalogue'); source.emit('warranty'); });
     expect(callbacks.resync).toHaveBeenCalledOnce(); expect(latest).toHaveBeenCalledOnce();
     expect(callbacks.inventory).not.toHaveBeenCalled(); expect(callbacks.transfers).toHaveBeenCalledOnce();
+    // The battery case is its own participant invalidation, beside the catalogue and the transfers.
+    expect(callbacks.catalogue).toHaveBeenCalledOnce(); expect(callbacks.warranty).toHaveBeenCalledOnce();
     expect(FakeSource.instances).toHaveLength(1); unmount(); expect(source.close).toHaveBeenCalledOnce();
   });
   it.each(['[]', 'null', 'true', '{"id":1}', '{', ' '.repeat(513) + '{}'])('rejects bounded nonempty or malformed payload %j', data => {

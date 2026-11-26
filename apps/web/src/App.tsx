@@ -7,6 +7,7 @@ import { validTransferLocation } from './transferModel';
 import type { Item } from './model';
 import { useInventory, type Controller } from './useInventory';
 import { useTransfers } from './useTransfers';
+import { useWarrantyPending } from './useWarrantyPending';
 import TransferCreation from './TransferCreation';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import { createTransferRecovery } from './transferRecovery';
@@ -28,6 +29,7 @@ import Purchases from './Purchases';
 import Cash from './Cash';
 import Metrics from './Metrics';
 import WarrantyCases from './WarrantyCases';
+import WarehouseWarrantyCases from './WarehouseWarrantyCases';
 
 function Login({ state }: { state: Controller }) {
   const [username, setUsername] = useState('');
@@ -95,8 +97,9 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword, stock, stockActive, onStock, adjustments, adjustmentsActive, onAdjustments, catalog, catalogActive, onCatalog, settlements, settlementsActive, onSettlements, settlementDecision, settlementDecisionActive, onSettlementDecision, sales, salesActive, onSales, salesHistory, salesHistoryActive, onSalesHistory, purchases, purchasesActive, onPurchases, cash, cashActive, onCash, metrics, metricsActive, onMetrics, warranty, warrantyActive, onWarranty }: {
+function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, warrantyCount, warrantyUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword, stock, stockActive, onStock, adjustments, adjustmentsActive, onAdjustments, catalog, catalogActive, onCatalog, settlements, settlementsActive, onSettlements, settlementDecision, settlementDecisionActive, onSettlementDecision, sales, salesActive, onSales, salesHistory, salesHistoryActive, onSalesHistory, purchases, purchasesActive, onPurchases, cash, cashActive, onCash, metrics, metricsActive, onMetrics, warranty, warrantyActive, onWarranty }: {
   mobile?: boolean; transfers: boolean; disabled: boolean; actionCount: string | null; countUnavailable: boolean;
+  warrantyCount: string | null; warrantyUnavailable: boolean;
   onInventory: () => void; onPending: () => void; privateSection?: string; admin: boolean;
   onAdmin: () => void; onPassword: () => void; stock: boolean; stockActive: boolean; onStock: () => void;
   adjustments: boolean; adjustmentsActive: boolean; onAdjustments: () => void;
@@ -113,6 +116,11 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
   const statusID = mobile ? 'mobile-transfer-count' : 'desktop-transfer-count';
   const countStatus = actionCount !== null ? `Acciones requeridas: ${actionCount}`
     : countUnavailable ? 'Contador de acciones no disponible.' : 'Consultando acciones requeridas…';
+  // The same badge, the same unknown/zero treatment and the same spoken status as transfers, for the
+  // section that tells this side how many cases wait for it (S19).
+  const warrantyStatusID = mobile ? 'mobile-warranty-count' : 'desktop-warranty-count';
+  const warrantyStatus = warrantyCount !== null ? `Casos de garantía que esperan tu acción: ${warrantyCount}`
+    : warrantyUnavailable ? 'Contador de casos de garantía no disponible.' : 'Consultando casos de garantía…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
     <a href="#inventario" aria-current={!transfers && !privateSection && !stockActive && !adjustmentsActive && !catalogActive && !settlementsActive && !settlementDecisionActive && !salesActive && !salesHistoryActive && !purchasesActive && !cashActive && !metricsActive && !warrantyActive ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
@@ -128,10 +136,13 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
     {purchases && <button type="button" disabled={disabled} aria-current={purchasesActive ? 'page' : undefined} onClick={onPurchases}><Icon name="sale" /><span>Compras</span></button>}
     {cash && <button type="button" disabled={disabled} aria-current={cashActive ? 'page' : undefined} onClick={onCash}><Icon name="sale" /><span>Caja</span></button>}
     {metrics && <button type="button" disabled={disabled} aria-current={metricsActive ? 'page' : undefined} onClick={onMetrics}><Icon name="metrics" /><span>Métricas</span></button>}
-    {warranty && <button type="button" disabled={disabled} aria-current={warrantyActive ? 'page' : undefined} onClick={onWarranty}><Icon name="history" /><span>Garantías</span></button>}
+    {warranty && <button type="button" disabled={disabled} aria-current={warrantyActive ? 'page' : undefined} aria-describedby={warrantyStatusID} onClick={onWarranty}><Icon name="history" /><span>Garantías</span>
+      <span className={'transfer-action-badge' + (warrantyCount === null ? ' unknown' : warrantyCount === '0' ? ' zero' : '')} aria-hidden="true">{warrantyCount ?? (warrantyUnavailable ? '—' : '…')}</span>
+    </button>}
     {admin && <button type="button" disabled={disabled} aria-current={privateSection === 'administration' ? 'page' : undefined} onClick={onAdmin}><Icon name="administration" /><span>Administración</span></button>}
     <button type="button" disabled={disabled} aria-current={privateSection === 'password' ? 'page' : undefined} onClick={onPassword}><Icon name="password" /><span>Mi contraseña</span></button>
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
+    <span id={warrantyStatusID} className="sr-only" role="status">{warrantyStatus}</span>
   </nav>;
 }
 // The catalogue holds five screens of one section: the price matrix, the battery
@@ -185,6 +196,12 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   const countUnavailable = ownerTag !== null && !!shellTransfers.countsError;
   const actionCount = ownerTag !== null && counts && !shellTransfers.countsBusy && !countUnavailable
     ? counts.action_count.toString() : null;
+  // The guarantee section notifies the same way transfers do: the cases waiting for this side, read
+  // again on the warranty invalidation and honest when the count cannot be known (S19).
+  const warrantyPending = useWarrantyPending({ controller: state, enabled: ownerTag !== null });
+  const warrantyCount = ownerTag !== null && warrantyPending.actionCount !== null
+    ? warrantyPending.actionCount.toString() : null;
+  const warrantyUnavailable = ownerTag !== null && warrantyPending.unavailable;
   const [creationOwner, setCreationOwner] = useState<string | null>(null);
   const creation = creationRequested && creationOwner === ownerTag && ownerTag !== null;
   const [route, setRoute] = useState<NavigationRoute>(readNavigation);
@@ -258,8 +275,10 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   // The metrics of the branch publish one branch: its own. The warehouse consolidated read belongs
   // to another vertical, so this identity never sees the section nor reaches it with a typed hash.
   const metrics = branch && route.section === 'metrics';
-  // The guarantee tray is the branch's own: it owns the case and the relationship with the client (S19).
-  const warranty = branch && route.section === 'warranty';
+  // The guarantee section has two sides of the same case: the branch owns it and answers its client
+  // (S19), and the warehouse moves the battery through its own factory desk. Neither reaches the
+  // other's acts: the section is gated per identity, like every other warehouse/branch pair.
+  const warranty = (branch || warehouse) && route.section === 'warranty';
   const session = state.session;
   const csrf = session !== null && session.authenticated ? session.csrf_token : '';
   const administration = route.section === 'administration' && adminOwner !== null;
@@ -371,7 +390,7 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     if (navDisabled || warranty || latest !== ownerTag) return;
     changeRoute({ section: 'warranty' });
   }
-  const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, privateSection, admin: adminOwner !== null,
+  const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, warrantyCount, warrantyUnavailable, privateSection, admin: adminOwner !== null,
     stock: warehouse, stockActive: stock, onStock: navigateStock,
     adjustments: warehouse, adjustmentsActive: adjustments, onAdjustments: navigateAdjustments,
     catalog: warehouse, catalogActive: catalog, onCatalog: navigateCatalog,
@@ -383,7 +402,7 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     purchases: branch, purchasesActive: purchases, onPurchases: navigatePurchases,
     cash: branch, cashActive: cash, onCash: navigateCash,
     metrics: branch, metricsActive: metrics, onMetrics: navigateMetrics,
-    warranty: branch, warrantyActive: warranty, onWarranty: navigateWarranty,
+    warranty: branch || warehouse, warrantyActive: warranty, onWarranty: navigateWarranty,
     onAdmin: () => navigatePrivate('administration'), onPassword: () => navigatePrivate('password'), onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '') + (privateSection ? ' private-shell' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
@@ -420,9 +439,12 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         : cash ? <p role="status">Verificando la sesión de la sucursal…</p>
         : metrics && ownerTag ? <Metrics key={`metricas-${ownerTag}`} branch={identity.location.name} />
         : metrics ? <p role="status">Verificando la sesión de la sucursal…</p>
+        : warranty && warehouse && adminOwner && metadata ? <WarehouseWarrantyCases
+          key={`garantias-almacen-${adminOwner}`} csrf={csrf} locations={metadata.locations} />
         : warranty && ownerTag && metadata ? <WarrantyCases key={`garantias-${ownerTag}`} csrf={csrf}
           branch={identity.location.name} locations={metadata.locations} />
-        : warranty ? <p role="status">Verificando la sesión de la sucursal…</p>
+        : warranty ? <p role="status">{warehouse
+          ? 'Verificando la sesión del Almacén…' : 'Verificando la sesión de la sucursal…'}</p>
         : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
         <button type="button" disabled={!creationAvailable} onClick={openCreation}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>

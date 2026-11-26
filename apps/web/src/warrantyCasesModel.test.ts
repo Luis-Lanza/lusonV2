@@ -3,10 +3,10 @@ import {
   canonicalAdvanceBody, canonicalClaimBody, canonicalClaimSerial, canonicalDeclaration, canonicalDefectBody,
   canonicalDeliveryBody, canonicalLoanBody, canonicalLoanFateBody, canonicalLoanModel, canonicalLoanSerial,
   canonicalNoticeBody, warrantyLoanFatePath,
-  parseWarrantyCase, parseWarrantyLoan, parseWarrantyTray, warrantyCustodyUnits, warrantyDaysSince,
+  parseWarrantyCase, parseWarrantyLoan, parseWarrantyPending, parseWarrantyTray, warrantyCustodyUnits, warrantyDaysSince,
   warrantyDeliveryAvailable, warrantyDispatchAvailable, warrantyCloseAvailable, warrantyNotice,
   warrantyNoticeAvailable, warrantyNoticeDays, warrantyReceiptAvailable, warrantyReceiptFileName,
-  warrantyReceiptPath, warrantyReleased, warrantyTrayPath, warrantyLoanRegistered,
+  warrantyReceiptPath, warrantyReleased, warrantyTrayPath, warrantyLoanRegistered, warrantyPendingPath,
 } from './warrantyCasesModel';
 
 // The tray row is the header of a case and nothing else; the case adds its resolution, its sale, its
@@ -227,5 +227,20 @@ describe('the paths and the bodies of the writes', () => {
       phase: 'in_transit', factory_case_number: '', note: 'Sale al Almacén',
     });
     expect(() => canonicalAdvanceBody('closed', '   ')).toThrow();
+  });
+});
+
+describe('the notification count of the section', () => {
+  it('reads the one decimal string the contract publishes, including an exact zero', () => {
+    expect(parseWarrantyPending('{"action_count":"0"}')).toBe(0n);
+    expect(parseWarrantyPending('{"action_count":"3"}')).toBe(3n);
+    expect(warrantyPendingPath).toBe('/api/warranty-cases/counts');
+  });
+  it.each([
+    '{}', '{"action_count":0}', '{"action_count":-1}', '{"action_count":"01"}',
+    '{"action_count":" 1"}', '{"action_count":"3","pending_total":"3"}', '{"action_count":""}',
+    '{"action_count":"9223372036854775808"}', '[]', 'null',
+  ])('refuses a count this contract could not have published: %s', raw => {
+    expect(() => parseWarrantyPending(raw)).toThrow();
   });
 });

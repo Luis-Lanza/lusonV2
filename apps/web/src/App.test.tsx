@@ -40,6 +40,7 @@ function setup(current: unknown = anonymous, override?: (url: string, init: Requ
     const url = String(input);
     const custom = override?.(url, init);
     if (custom) return custom;
+    if (url === '/api/warranty-cases/counts') return Promise.resolve(transferResponse({ action_count: '0' }));
     if (url === '/api/transfers/counts') return Promise.resolve(countResponse('0', '0'));
     if (url === '/api/auth/validate') return Promise.resolve(response((current as typeof session).authenticated ? current : { authenticated: false }));
     if (url.endsWith('/session')) return Promise.resolve(response(current));
@@ -97,7 +98,8 @@ async function hookInventory(result: { current: ReturnType<typeof useInventory> 
 const countCalls = (mock: ReturnType<typeof setup>) => mock.mock.calls.filter(([url]) => url === '/api/transfers/counts');
 const transferResponse = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 const countResponse = (action = '9007199254740993', total = '9007199254740994') => transferResponse({ pending_total: total, action_count: action });
-const shellCount = () => within(screen.getByRole('navigation')).getByRole('status');
+// The navigation carries one status per notification badge: the shell count is the transfer one.
+const shellCount = () => screen.getByRole('navigation').querySelector('[id$="transfer-count"]') as HTMLElement;
 function passiveCounts(mock: ReturnType<typeof setup>) {
   for (const [, init] of countCalls(mock)) {
     expect(init?.method).toBe('GET'); expect(init?.body).toBeUndefined();
@@ -139,7 +141,7 @@ describe('R2 workflow action badges', () => {
     const mock = setup(session, url => url === '/api/transfers/counts' ? Promise.resolve(countResponse('1', '0')) : undefined);
     render(<App />);
     const navigation = await screen.findByRole('navigation', { name: mobile ? 'Navegación móvil' : 'Navegación principal' });
-    const status = within(navigation).getByRole('status');
+    const status = navigation.querySelector('[id$="transfer-count"]') as HTMLElement;
     await waitFor(() => expect(status).toHaveTextContent(/acciones.*1/i));
     expect(status).not.toHaveTextContent(/aprobación/i);
     expect(within(navigation).getByRole('button', { name: 'Transferencias' }).querySelector('.transfer-action-badge')).toHaveTextContent('1');
@@ -2095,6 +2097,63 @@ describe('branch metrics', () => {
   });
 });
 
+describe('the guarantee section of each side', () => {
+  const warrantyTray = () => new Response(JSON.stringify({ cases: [] }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const warrantySetup = (current: unknown = session) => setup(current,
+    url => url === '/api/warranty-cases/counts'
+      ? Promise.resolve(transferResponse({ action_count: '0' }))
+      : url.startsWith('/api/warranty-cases') ? Promise.resolve(warrantyTray()) : undefined);
+  // The notification count is not a screen read: the desk's four questions and the tray are.
+  const warrantyCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/warranty-cases')
+      && String(url) !== '/api/warranty-cases/counts');
+  const branchSession = { ...session, identity: { ...identity, account_id: 20, username: 'sucursala',
+    location: metadata.locations[1] } };
+
+  it('offers the factory desk to the warehouse identity and opens it without any write', async () => {
+    const mock = warrantySetup();
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Garantías' }));
+    await screen.findByRole('heading', { name: 'Mesa de fábrica' });
+    expect(window.location.hash).toBe('#/garantias');
+    expect(screen.getByText('Luson Garantías')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Garantías' })).toHaveAttribute('aria-current', 'page');
+    // The desk asks the four questions of its own contract and never opens a case of its own.
+    const desk = await screen.findByRole('group', { name: 'Figuras de la mesa por etapa' });
+    expect(within(desk).getAllByRole('button')).toHaveLength(4);
+    expect(warrantyCalls(mock).map(([url]) => String(url)).sort()).toEqual([
+      '/api/warranty-cases?phase=at_factory', '/api/warranty-cases?phase=at_warehouse',
+      '/api/warranty-cases?phase=in_transit', '/api/warranty-cases?phase=resolved',
+    ]);
+    expect(warrantyCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+    expect(screen.queryByRole('heading', { name: 'Casos de garantía' })).not.toBeInTheDocument();
+  });
+
+  it('restores the desk from a typed #/garantias hash after a reload', async () => {
+    window.history.replaceState(null, '', '/#/garantias');
+    const mock = warrantySetup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Mesa de fábrica' });
+    expect(screen.getByRole('button', { name: 'Garantías' })).toHaveAttribute('aria-current', 'page');
+    expect(warrantyCalls(mock)).toHaveLength(4);
+    expect(warrantyCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('keeps the branch tray for the branch identity, with no desk in it (S19)', async () => {
+    const mock = warrantySetup(branchSession);
+    render(<App />); await inventory();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+      .getByRole('button', { name: 'Garantías' }));
+    await screen.findByRole('heading', { name: 'Casos de garantía' });
+    // The branch reads its own tray and never the desk's four questions.
+    expect(screen.queryByRole('group', { name: 'Figuras de la mesa por etapa' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Mesa de fábrica' })).not.toBeInTheDocument();
+    expect(warrantyCalls(mock).map(([url]) => String(url))).toEqual(['/api/warranty-cases']);
+  });
+});
+
 describe('warehouse settlement workspace', () => {
   const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
   const closingCalls = (mock: ReturnType<typeof setup>) =>
@@ -2322,5 +2381,52 @@ describe('branch settlement decision', () => {
     expect(screen.queryByRole('button', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Tu decisión' })).not.toBeInTheDocument();
     expect(closingCalls(mock)).toHaveLength(0);
+  });
+});
+
+describe('T10 warranty section notification', () => {
+  const warrantyCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => url === '/api/warranty-cases/counts');
+  const warrantyBadge = () => screen.getByRole('button', { name: 'Garantías' }).querySelector('.transfer-action-badge') as HTMLElement;
+  const warrantyStatus = (mobile = false) =>
+    document.getElementById(mobile ? 'mobile-warranty-count' : 'desktop-warranty-count');
+  it('counts the cases waiting for this side and refreshes on the warranty invalidation', async () => {
+    let reads = 0;
+    const mock = setup(session, url => url === '/api/warranty-cases/counts'
+      ? Promise.resolve(transferResponse({ action_count: ++reads === 1 ? '0' : '2' })) : undefined);
+    render(<App />); await inventory();
+    await waitFor(() => expect(warrantyBadge()).toHaveTextContent(/^0$/));
+    // The zero is exact and stated as zero, never a missing value.
+    expect(warrantyBadge()).toHaveClass('zero');
+    expect(screen.getByRole('button', { name: 'Garantías' }))
+      .toHaveAttribute('aria-describedby', 'desktop-warranty-count');
+    expect(warrantyStatus()).toHaveTextContent('Casos de garantía que esperan tu acción: 0');
+    act(() => AppSource.instances[0].emit('warranty'));
+    await waitFor(() => expect(warrantyBadge()).toHaveTextContent(/^2$/));
+    expect(warrantyBadge()).not.toHaveClass('zero');
+    expect(warrantyStatus()).toHaveTextContent('Casos de garantía que esperan tu acción: 2');
+    expect(warrantyCalls(mock)).toHaveLength(2);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+  it('keeps the section usable with an honest unknown count', async () => {
+    setup(session, url => url === '/api/warranty-cases/counts'
+      ? Promise.resolve(transferResponse({ error: 'service_unavailable' }, 503)) : undefined);
+    render(<App />); await inventory();
+    await waitFor(() => expect(warrantyBadge()).toHaveTextContent('—'));
+    expect(warrantyBadge()).toHaveClass('unknown');
+    expect(warrantyStatus()).toHaveTextContent('Contador de casos de garantía no disponible.');
+    expect(screen.getByRole('button', { name: 'Garantías' })).toBeEnabled();
+  });
+  it.each([false, true])('distinguishes a count still being read from an exact zero (mobile=%s)', async mobile => {
+    vi.stubGlobal('matchMedia', () => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const held = deferred<Response>();
+    setup(session, url => url === '/api/warranty-cases/counts' ? held.promise : undefined);
+    render(<App />);
+    await screen.findByRole('navigation', { name: mobile ? 'Navegación móvil' : 'Navegación principal' });
+    await waitFor(() => expect(warrantyStatus(mobile)).toHaveTextContent('Consultando casos de garantía…'));
+    expect(warrantyBadge()).not.toHaveTextContent('0');
+    await act(async () => held.resolve(transferResponse({ action_count: '0' })));
+    await waitFor(() => expect(warrantyStatus(mobile)).toHaveTextContent('Casos de garantía que esperan tu acción: 0'));
+    expect(warrantyBadge()).toHaveTextContent(/^0$/);
   });
 });

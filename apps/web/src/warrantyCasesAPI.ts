@@ -1,11 +1,15 @@
 import {
-  parseWarrantyCase, parseWarrantyLoan, parseWarrantyTray,
+  parseWarrantyCase, parseWarrantyLoan, parseWarrantyPending, parseWarrantyTray,
   warrantyAdvancePath, warrantyCasePath, warrantyClaimPath, warrantyDefectPath, warrantyDeliveryPath,
-  warrantyLoanFatePath, warrantyLoansPath, warrantyNoticePath, warrantyTrayPath,
+  warrantyLoanFatePath, warrantyLoansPath, warrantyNoticePath, warrantyPendingPath, warrantyTrayPath,
   type WarrantyAdvanceInput, type WarrantyCase, type WarrantyCaseRow, type WarrantyClaimInput,
   type WarrantyDefectInput, type WarrantyDeliveryInput, type WarrantyLoan, type WarrantyLoanFateStated,
   type WarrantyLoanInput, type WarrantyTrayFilter,
 } from './warrantyCasesModel';
+import {
+  warehouseReleasePath, warehouseResolutionPath,
+  type WarrantyClaimResolutionInput, type WarrantyDefectResolutionInput,
+} from './warehouseWarrantyModel';
 
 /**
  * Transport of the branch's side of the battery warranty case. Every answer is admitted only when it is
@@ -103,11 +107,13 @@ function refusal(raw: string, status: number): WarrantyCaseErrorCode {
 export type WarrantyCasesAPI = ReturnType<typeof createWarrantyCasesAPI>;
 
 export function createWarrantyCasesAPI(fetch: typeof globalThis.fetch = globalThis.fetch) {
-  async function read(path: string, signal?: AbortSignal): Promise<string> {
+  async function read(path: string, signal?: AbortSignal, passive = false): Promise<string> {
     let reply: Response;
     let raw: string;
     try {
-      reply = await fetch(path, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal });
+      reply = await fetch(path, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal,
+        // The badge of the section reads in the background: a passive read never slides the session.
+        ...(passive ? { headers: { 'X-Luson-Passive': '1' } } : {}) });
       raw = await reply.text();
     } catch (error) {
       if (error instanceof WarrantyCaseAPIError) throw error;
@@ -162,6 +168,12 @@ export function createWarrantyCasesAPI(fetch: typeof globalThis.fetch = globalTh
       try { path = warrantyTrayPath(filter); } catch { throw new WarrantyCaseAPIError('invalid_request', null); }
       const raw = await read(path, signal);
       try { return parseWarrantyTray(raw); } catch { throw new WarrantyCaseAPIError('invalid_response', null); }
+    },
+
+    /** The cases whose next act is the session's own side: one count and no record (S19). */
+    async pending(signal?: AbortSignal): Promise<bigint> {
+      const raw = await read(warrantyPendingPath, signal, true);
+      try { return parseWarrantyPending(raw); } catch { throw new WarrantyCaseAPIError('invalid_response', null); }
     },
 
     /** One case with its loans and its append-only history. */
@@ -247,7 +259,8 @@ export function createWarrantyCasesAPI(fetch: typeof globalThis.fetch = globalTh
       return loan;
     },
 
-    /** The tramo of the branch's own journey (S4, S9). */
+    /** Your case's tramo: the branch records the departure and the close, the Almacén the arrival and
+     *  the shipment that carries the factory's file number (S4, S9, S19). */
     async advance(id: number, input: WarrantyAdvanceInput, csrf: string, signal?: AbortSignal): Promise<WarrantyCase> {
       let path: string;
       try { path = warrantyAdvancePath(id); } catch { throw new WarrantyCaseAPIError('invalid_request', null); }
@@ -276,6 +289,46 @@ export function createWarrantyCasesAPI(fetch: typeof globalThis.fetch = globalTh
         throw new WarrantyCaseAPIError('invalid_response', null);
       }
       if (record.id !== id || !record.events.some(entry => entry.kind === 'notice')) {
+        throw new WarrantyCaseAPIError('invalid_response', 200);
+      }
+      return record;
+    },
+
+    /** The verdict the Almacén states, with the destinations of each door's units (S10, S11). */
+    async resolution(id: number, input: WarrantyClaimResolutionInput | WarrantyDefectResolutionInput,
+      csrf: string, signal?: AbortSignal): Promise<WarrantyCase> {
+      let path: string;
+      try { path = warehouseResolutionPath(id); } catch { throw new WarrantyCaseAPIError('invalid_request', null); }
+      const frozenInput = frozen<WarrantyClaimResolutionInput | WarrantyDefectResolutionInput>(() => input, csrf);
+      let record: WarrantyCase;
+      try { record = parseWarrantyCase(await write(path, frozenInput.body, frozenInput.csrf, 200, signal)); }
+      catch (error) {
+        if (error instanceof WarrantyCaseAPIError) throw error;
+        throw new WarrantyCaseAPIError('invalid_response', null);
+      }
+      const sent = frozenInput.sent;
+      // A reply about another verdict, or about another unit, is never evidence of this act.
+      if (record.id !== id || record.verdict !== sent.verdict
+        || record.reported_destination !== sent.reported_destination
+        || ('loan_destination' in sent && record.loan_destination !== sent.loan_destination)) {
+        throw new WarrantyCaseAPIError('invalid_response', 200);
+      }
+      return record;
+    },
+
+    /** The release the Almacén authorises once the branch told the client (S14). */
+    async release(id: number, body: () => { readonly note: string }, csrf: string,
+      signal?: AbortSignal): Promise<WarrantyCase> {
+      let path: string;
+      try { path = warehouseReleasePath(id); } catch { throw new WarrantyCaseAPIError('invalid_request', null); }
+      const frozenInput = frozen<{ readonly note: string }>(body, csrf);
+      let record: WarrantyCase;
+      try { record = parseWarrantyCase(await write(path, frozenInput.body, frozenInput.csrf, 200, signal)); }
+      catch (error) {
+        if (error instanceof WarrantyCaseAPIError) throw error;
+        throw new WarrantyCaseAPIError('invalid_response', null);
+      }
+      if (record.id !== id || !record.events.some(entry => entry.kind === 'release')) {
         throw new WarrantyCaseAPIError('invalid_response', 200);
       }
       return record;
