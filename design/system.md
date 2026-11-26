@@ -1,6 +1,8 @@
 # Luson visual system
 
-Synced on 2026-11-22 from **all 17 stylesheets** under `apps/web/src` (3 293 lines), re-measuring the file set the 2026-11-20 sync covered. Read-only: no project source was modified. This is not a proposed starter: every value below exists in the sources.
+Synced on 2026-11-23 from **all 17 stylesheets** under `apps/web/src` (3 313 lines), re-measuring the file set the 2026-11-22 sync covered. Read-only: no project source was modified. This is not a proposed starter: every value below exists in the sources.
+
+The 2026-11-23 re-sync ran because `style.css` had grown after the metrics work (`c5cf787`, `4458805`, `064c21d`). Result: **the token layer did not change again.** The 6 custom properties, the 69 color representations, the 16 type sizes, the 10 radii and the 10 shadows are the same sets. `system.html` needed no change for the same reason.
 
 The 2026-11-22 re-sync ran because `style.css` had grown after the Caja work. Result: **the token layer did not change.** The six custom properties, the 16 type sizes plus `inherit`, the 10 radii and the 10 shadows are the same set, and no color was added or removed — 67 hex values plus 2 `rgb()` forms, the same 69 representations as before. Occurrence counts moved, the `.cash-*` block appeared and is documented under Component rules, and every delta is recorded in *Delta since the 2026-11-20 sync* below.
 
@@ -10,7 +12,7 @@ What this sync added over the previous file: the 15 section stylesheets that gre
 
 | File | Lines | What it carries |
 |---|---|---|
-| `apps/web/src/style.css` | 1 290 | `:root` tokens, base controls, shell (sidebar, top bar, main padding), tables, pager, kind/supplier steps, metrics band, the `.cash-*` cash workspace and ledger, modals and backdrops, mobile shell |
+| `apps/web/src/style.css` | 1 310 | `:root` tokens, base controls, shell (sidebar, top bar, main padding), tables, pager, kind/supplier steps, metrics band and the sold-by-kind block, the `.cash-*` cash workspace and ledger, modals and backdrops, mobile shell |
 | `apps/web/src/stock-entry.css` | 186 | the Ingresos screen: panels, supplier choices, kind step, bounded grouped catalogue, stock table, totals bar, history, reversal and detail dialogs, three breakpoints |
 | `apps/web/src/catalog-prices.css` | 116 | catálogo de precios: panel, kind tabs, filters, expandable table row, price form, chips |
 | `apps/web/src/point-of-sale.css` | 160 | sale workspace: `1fr + 380px` layout, sticky cart, line controls, payments |
@@ -28,6 +30,21 @@ What this sync added over the previous file: the 15 section stylesheets that gre
 | `apps/web/src/transfer-transit.css` | 146 | transit detail and in-transit pill |
 
 No Tailwind `@theme` block, no `tailwind.config.*`, no token file and no component-library folder exist: `style.css` only does `@import "tailwindcss"` and then writes plain CSS. The six custom properties below are the whole token layer.
+
+## Delta since the 2026-11-22 sync
+
+Measured on 2026-11-23 with the same extraction as the previous delta: every `#hex`, every `rgb()`, every `font-size`, every `border-radius` and every `box-shadow` from `apps/web/src/*.css`.
+
+| Group | 2026-11-22 | 2026-11-23 | Token set |
+| --- | --- | --- | --- |
+| Sources | 17 files, 3 293 lines | 17 files, 3 313 lines | unchanged |
+| Colors | 69 representations | 69 representations | **unchanged** |
+| Type sizes | 16 sizes + `inherit` | the same 16 sizes + `inherit` | **unchanged** |
+| Radii | `0`, `2`, `3`, `4`, `6`, `8`, `12`, `20`, `999px`, `50%` | the same 10 values | **unchanged** |
+| Shadows | 10 values | the same 10 values | **unchanged** |
+| Custom properties | 6 | the same 6 | **unchanged** |
+
+The only file that moved is `style.css` (+19/−2): the metrics screen's sold-by-kind block — `.metrics-today-line`, `.metrics-today-note`, `.metrics-bottom-left`, `.metrics-sold`, `.metrics-sold-total`, plus one narrow-screen override. Every length and colour in it is built from values already tabulated below (`18px`, `11px`, `26px`, `22px`, `10px`, `6px`, `2px`, `var(--muted)`, `var(--border)`), which is why no token had to be added. No `.sold-*` or `.sales-*` selector exists: the block is named `metrics-*`.
 
 ## Delta since the 2026-11-20 sync
 

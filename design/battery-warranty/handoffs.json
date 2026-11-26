@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "02-bandeja-de-casos.html",
+  "handoffs": {
+    "02-bandeja-de-casos.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-11-23T21:16:20.850Z",
+      "startedAt": "2026-11-23T21:16:58.144Z",
+      "implementedAt": null,
+      "feature": "odd/tasks/battery-warranty.md",
+      "note": "Arrancando por la base: migración 065 con el caso, los préstamos y los eventos append-only. La pantalla se implementa sobre ese contrato."
+    }
+  }
+}
