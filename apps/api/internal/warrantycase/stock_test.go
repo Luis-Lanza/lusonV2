@@ -137,9 +137,12 @@ func TestUsedStockDerivesTheTermsOfEachLocation(t *testing.T) {
 	}
 
 	// The counter lends two of the four batteries, typing the model the way a person would: the
-	// stock adds it to the same key the purchase wrote (S26).
-	if _, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
-		Model: " ns60zl ", Quantity: 2, SourceLocationID: 2}); err != nil {
+	// stock adds it to the same key the purchase wrote (S26). The loan is the one this test states, so
+	// the battery the case's client already has -- handed over before the case left the branch, which is
+	// what S4 asks -- is not the one that comes back below and its ordinal is not assumed.
+	counter, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
+		Model: " ns60zl ", Quantity: 2, SourceLocationID: 2})
+	if err != nil {
 		t.Fatalf("the loan of the branch's own stock must be admitted: %v", err)
 	}
 	lent := stockRow(t, f.usedStock(t, 2), 2, "NS60ZL")
@@ -147,7 +150,7 @@ func TestUsedStockDerivesTheTermsOfEachLocation(t *testing.T) {
 		t.Fatalf("a loan is subtracted from its origin, got %s", stockText(lent))
 	}
 	// One of the two comes back: the battery is in the branch that lent it again.
-	if _, err := f.store.DecideLoan(f.ctx, f.actor(2), claim.ID, 1,
+	if _, err := f.store.DecideLoan(f.ctx, f.actor(2), claim.ID, counter.Ordinal,
 		warrantycase.LoanReturned); err != nil {
 		t.Fatalf("the returned loan must be admitted: %v", err)
 	}

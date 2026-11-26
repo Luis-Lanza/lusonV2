@@ -296,6 +296,9 @@ type warrantyHTTPFixture struct {
 	// variant is the battery of the fixture's catalogue that the branch holds in stock and the counter
 	// sells, so a sale, a claim and a finding are about one catalogued battery and never a guessed id.
 	variant int64
+	// lends numbers the purchases the fixture writes for its own loans, so every lend is one document
+	// of the purchases vertical with an operation key of its own.
+	lends int
 }
 
 func warrantyFixture(t *testing.T) *warrantyHTTPFixture {
@@ -430,6 +433,65 @@ func (f *warrantyHTTPFixture) caseWire(t *testing.T, w *httptest.ResponseRecorde
 	return record
 }
 
+// lendModel is the model of the used battery the fixture hands over. It is written the way the
+// counter writes a used battery and not the way the catalogue names one, because the pool keys its
+// stock by the canonical text of the purchase (S26).
+const lendModel = "NS60L"
+
+// lendUsed puts one used battery in the branch and hands it to the client of a case, exactly as the
+// counter does. The battery is bought through the purchases vertical, funded by the branch, because a
+// loan never coins the model it hands over (S30) and the origin has to hold the unit it lends (S25);
+// the loan itself is the API route the counter presses. The key of the purchase is the fixture's own,
+// so lending twice in one test is two documents and never one collision.
+func (f *warrantyHTTPFixture) lendUsed(t *testing.T, claim int64) warrantyLoanWire {
+	t.Helper()
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+ description,created_by_account_id) VALUES(2,'aporte',1000.00,'Fondo de compras del fixture',2)`); err != nil {
+		t.Fatalf("the fund of the branch could not be stated: %v", err)
+	}
+	f.lends++
+	buy, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatal("the purchase transaction could not start")
+	}
+	defer func() { _ = buy.Rollback(context.Background()) }()
+	var bought int64
+	if err := buy.QueryRow(f.ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,
+ paid_transfer,created_by_account_id) VALUES($1,2,10.00,10.00,0.00,2) RETURNING id`,
+		fmt.Sprintf("warranty-lend-%03d", f.lends)).Scan(&bought); err != nil {
+		t.Fatalf("the used purchase of the fixture must be admitted: %v", err)
+	}
+	if _, err := buy.Exec(f.ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,
+ unit_price) VALUES($1,$2,1,10.00)`, bought, lendModel); err != nil {
+		t.Fatalf("the used line of the fixture must be admitted: %v", err)
+	}
+	if err := buy.Commit(f.ctx); err != nil {
+		t.Fatalf("the used purchase of the fixture must commit: %v", err)
+	}
+	w := f.serve(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/loans", claim),
+		fmt.Sprintf(`{"model":%q,"quantity":1,"serial_number":"","source_location_id":2}`, lendModel)))
+	if w.Code != 201 {
+		t.Fatalf("the branch lends a used battery: %d %s", w.Code, w.Body.String())
+	}
+	var lent warrantyLoanWire
+	if err := json.Unmarshal(w.Body.Bytes(), &lent); err != nil {
+		t.Fatalf("the loan is not decodable: %s", w.Body.String())
+	}
+	return lent
+}
+
+// decideLoanOf states what became of one lent battery through the counter's own route, so a case whose
+// release would close it does not hold an undecided loan (S32).
+func (f *warrantyHTTPFixture) decideLoanOf(t *testing.T, claim int64, ordinal int, fate string) {
+	t.Helper()
+	w := f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/warranty-cases/%d/loans/%d/fate", claim, ordinal),
+		fmt.Sprintf(`{"fate":%q}`, fate)))
+	if w.Code != 200 {
+		t.Fatalf("the branch decides the fate of the loan: %d %s", w.Code, w.Body.String())
+	}
+}
+
 // balance reads one balance row of the fixture, so a stock write is proven against the database and
 // never against the answer.
 func (f *warrantyHTTPFixture) balance(t *testing.T, location, variant int64) int64 {
@@ -518,40 +580,12 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 	f.refused(t, f.request(2, "GET", "/api/warranty-cases/999999", ""), 404, "not_found")
 
 	// The loan is the branch's, it names a model and a quantity, it comes out of a stock the origin
-	// really holds (S25) and it moves no inventory (S5, S6). The branch bought one used battery of the
-	// model the counter lends.
-	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
- description,created_by_account_id) VALUES(2,'aporte',1000.00,'Fondo de compras del fixture',2)`); err != nil {
-		t.Fatalf("the fund of the branch could not be stated: %v", err)
-	}
-	buy, err := f.p.Begin(f.ctx)
-	if err != nil {
-		t.Fatal("the purchase transaction could not start")
-	}
-	defer func() { _ = buy.Rollback(context.Background()) }()
-	var bought int64
-	if err := buy.QueryRow(f.ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,
- paid_transfer,created_by_account_id) VALUES('warranty-journey-0001',2,10.00,10.00,0.00,2)
- RETURNING id`).Scan(&bought); err != nil {
-		t.Fatalf("the used purchase of the fixture must be admitted: %v", err)
-	}
-	if _, err := buy.Exec(f.ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,
- unit_price) VALUES($1,'NS60L',1,10.00)`, bought); err != nil {
-		t.Fatalf("the used line of the fixture must be admitted: %v", err)
-	}
-	if err := buy.Commit(f.ctx); err != nil {
-		t.Fatalf("the used purchase of the fixture must commit: %v", err)
-	}
-	loan := f.serve(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/loans", claim.ID),
-		`{"model":"NS60L","quantity":1,"serial_number":"","source_location_id":2}`))
-	if loan.Code != 201 {
-		t.Fatalf("the branch lends a used battery: %d %s", loan.Code, loan.Body.String())
-	}
-	var lent warrantyLoanWire
-	if err := json.Unmarshal(loan.Body.Bytes(), &lent); err != nil || lent.Ordinal != 1 ||
-		lent.Model != "NS60L" || lent.Quantity != 1 || lent.Fate != "open" ||
+	// really holds (S25) and it moves no inventory (S5, S6). The branch buys one used battery of the
+	// model the counter lends, through the purchases vertical: that is what puts it in the pool (S30).
+	lent := f.lendUsed(t, claim.ID)
+	if lent.Ordinal != 1 || lent.Model != lendModel || lent.Quantity != 1 || lent.Fate != "open" ||
 		lent.SourceLocationID != 2 || lent.SerialNumber != "" || lent.FateDecidedAt != nil {
-		t.Fatalf("the loan is the used battery handed over: %s", loan.Body.String())
+		t.Fatalf("the loan is the used battery handed over: %+v", lent)
 	}
 	if got := f.balance(t, 2, variant); got != shelf || f.balance(t, 1, variant) != warehouseShelf {
 		t.Fatalf("a loan moves no stock: %d %d", got, f.balance(t, 1, variant))
@@ -617,6 +651,11 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 		resolved.StockDestination != nil {
 		t.Fatalf("the resolution states the verdict and the destinations: %+v", resolved)
 	}
+
+	// The terminal close is the branch's answer to its client and never the warehouse's (S19): the
+	// warehouse moves the battery, records its own tramos and closes nothing.
+	f.refused(t, advance(1, `{"phase":"closed","factory_case_number":"","note":"Cerrado por el Almacén"}`),
+		403, "forbidden")
 
 	// The notice is the branch's and the release the warehouse's (S14, S19).
 	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/warranty-cases/%d/notice", claim.ID),
@@ -817,6 +856,105 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 	}
 }
 
+// TestWarrantyCaseLoanRequiredOverPostgreSQL proves the loan gate of S4 through the whole vertical: a
+// claim whose client was never given a used battery does not leave the branch, the refusal is the
+// contract's own and it writes neither a phase nor a tramo -- and a finding on the shelf, which never
+// had a client waiting on it, owes no loan.
+func TestWarrantyCaseLoanRequiredOverPostgreSQL(t *testing.T) {
+	f := warrantyFixture(t)
+	// The counter sells one battery with a twelve month term and the branch opens the case of that
+	// serial without lending anything yet (S1).
+	if w := f.serve(t, f.request(2, "POST", "/api/sales",
+		saleBody(f.variant, 1, "96000.00", 12))); w.Code != 201 {
+		t.Fatalf("the sale of the fixture must be admitted: %d %s", w.Code, w.Body.String())
+	}
+	claim := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
+		fmt.Sprintf(`{"serial_number":%q,"declared_failure":"No arranca el motor"}`,
+			f.lastSerial(t)))), 201)
+	if claim.Phase != "received" || claim.Origin != "warranty_claim" || len(claim.Events) != 0 ||
+		len(claim.Loans) != 0 {
+		t.Fatalf("a claim is born received, with no loan and no tramo: %+v", claim)
+	}
+	// The shipment of a claim without a single lent battery is a conflict with its own code, and it
+	// writes nothing at all: the case keeps its phase and gains no tramo (S4).
+	f.refused(t, f.request(2, "POST", fmt.Sprintf("/api/warranty-cases/%d/advance", claim.ID),
+		`{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`),
+		409, "loan_required")
+	kept := f.caseWire(t, f.serve(t, f.request(2, "GET",
+		fmt.Sprintf("/api/warranty-cases/%d", claim.ID), "")), 200)
+	if kept.Phase != "received" || len(kept.Events) != 0 || len(kept.Loans) != 0 {
+		t.Fatalf("the refused tramo wrote nothing: %+v", kept)
+	}
+	// A finding on the shelf owes no loan, because the branch never had a client waiting on it: the
+	// same tramo is admitted once the case came through the second door (S4, S16).
+	finding := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/stock-defects",
+		fmt.Sprintf(`{"variant_id":%d,"quantity":1,"declared_failure":"No retiene carga",`+
+			`"reason":"Probada en mostrador"}`, f.variant))), 201)
+	shipped := f.caseWire(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/warranty-cases/%d/advance", finding.ID),
+		`{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`)), 200)
+	if shipped.Phase != "in_transit" || len(shipped.Events) != 1 ||
+		shipped.Events[0].Kind != "phase" || shipped.Events[0].Phase != "in_transit" {
+		t.Fatalf("a finding leaves the branch without a loan: %+v", shipped)
+	}
+}
+
+// TestWarrantyCaseOneOpenClaimOverPostgreSQL proves S7 on the contract: a serial another open case
+// already holds is refused with its own code and writes nothing, the comparison is the canonical
+// serial and not the bytes the counter typed, and once the first case closes the serial is free again,
+// because a battery that failed twice is a new claim.
+func TestWarrantyCaseOneOpenClaimOverPostgreSQL(t *testing.T) {
+	f := warrantyFixture(t)
+	if w := f.serve(t, f.request(2, "POST", "/api/sales",
+		saleBody(f.variant, 1, "96000.00", 12))); w.Code != 201 {
+		t.Fatalf("the sale of the fixture must be admitted: %d %s", w.Code, w.Body.String())
+	}
+	serial := f.lastSerial(t)
+	claim := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
+		fmt.Sprintf(`{"serial_number":%q,"declared_failure":"No arranca el motor"}`, serial))), 201)
+	// The counter opens the same battery twice, and the second time it types the serial the way a person
+	// does: the database states one open claim per serial (S7) and the refused claim writes no case.
+	f.refused(t, f.request(2, "POST", "/api/warranty-cases/claims",
+		fmt.Sprintf(`{"serial_number":" %s ","declared_failure":"Falló de nuevo"}`, serial)),
+		409, "claim_already_open")
+
+	// The first case walks its journey and closes with the delivery, which is what frees the serial.
+	advance := func(actor int, path, body string) *http.Request {
+		return f.request(actor, "POST", fmt.Sprintf("/api/warranty-cases/%d/%s", claim.ID, path), body)
+	}
+	f.lendUsed(t, claim.ID)
+	for _, tramo := range []struct {
+		actor int
+		body  string
+	}{
+		{2, `{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`},
+		{1, `{"phase":"at_warehouse","factory_case_number":"","note":"Recibida"}`},
+		{1, `{"phase":"at_factory","factory_case_number":"LEG-77","note":"A fábrica"}`},
+	} {
+		if w := f.serve(t, advance(tramo.actor, "advance", tramo.body)); w.Code != 200 {
+			t.Fatalf("the case walks its journey: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if w := f.serve(t, advance(1, "resolution", `{"verdict":"repaired",`+
+		`"reported_destination":"customer","loan_destination":"stock",`+
+		`"note":"Reparada por fábrica"}`)); w.Code != 200 {
+		t.Fatalf("the factory answers the case: %d %s", w.Code, w.Body.String())
+	}
+	closed := f.caseWire(t, f.serve(t, advance(2, "delivery",
+		`{"loan_fate":"returned","note":"Entregada la reparada"}`)), 200)
+	if closed.Phase != "closed" {
+		t.Fatalf("the delivery closes the claim: %+v", closed)
+	}
+
+	// The closed case never blocks the next claim of its serial: a battery that failed twice is a case
+	// of its own, and the open claim that refused the second door is gone with the first close (S7).
+	second := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
+		fmt.Sprintf(`{"serial_number":%q,"declared_failure":"Falló de nuevo"}`, serial))), 201)
+	if second.ID == claim.ID || second.Phase != "received" {
+		t.Fatalf("the second claim is a case of its own: %+v", second)
+	}
+}
+
 // TestWarrantyCaseStockBoundCaseOverPostgreSQL proves S31 on the contract: a claim whose factory
 // verdict returned a usable battery and whose destination is the branch's shelf is never delivered --
 // neither with the delivery route nor with a bare closing tramo -- and it closes with the release the
@@ -830,6 +968,9 @@ func TestWarrantyCaseStockBoundCaseOverPostgreSQL(t *testing.T) {
 	serial := f.lastSerial(t)
 	claim := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
 		fmt.Sprintf(`{"serial_number":%q,"declared_failure":"No arranca el motor"}`, serial))), 201)
+	// The client never walks out without a battery: the branch lends a used one before shipping, which
+	// is the act the shipment of S4 depends on.
+	lent := f.lendUsed(t, claim.ID)
 	advance := func(actor int, path, body string) *http.Request {
 		return f.request(actor, "POST", fmt.Sprintf("/api/warranty-cases/%d/%s", claim.ID, path), body)
 	}
@@ -874,6 +1015,10 @@ func TestWarrantyCaseStockBoundCaseOverPostgreSQL(t *testing.T) {
 	if got := f.balance(t, 2, f.variant); got != shelf {
 		t.Fatalf("a notice writes no stock: %d became %d", shelf, got)
 	}
+	// The release that closes the case is refused while a loan of it is still undecided (S32): the
+	// branch decides the fate and the release only asks for it.
+	f.refused(t, advance(1, "release", `{"note":"El cliente no la retira"}`), 409, "loan_fate_open")
+	f.decideLoanOf(t, claim.ID, lent.Ordinal, "kept_by_customer")
 	released := f.caseWire(t, f.serve(t, advance(1, "release",
 		`{"note":"El cliente no la retira"}`)), 200)
 	if released.Phase != "closed" {
@@ -938,6 +1083,10 @@ func TestWarrantyCasePendingOverPostgreSQL(t *testing.T) {
 	}
 	claim := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
 		fmt.Sprintf(`{"serial_number":%q,"declared_failure":"No arranca el motor"}`, f.lastSerial(t)))), 201)
+	// The client never walks out without a battery: the branch lends a used one before shipping, with
+	// the same handover the journey of the claim registers, because the shipment of S4 is refused with
+	// no loan at all (S4).
+	f.lendUsed(t, claim.ID)
 
 	// The branch opened it and has to ship it; the warehouse cannot act on it yet and another branch
 	// never counts it (S19).
@@ -1061,5 +1210,33 @@ func TestWarrantyCaseRecordRefusesAnActItsHistoryDoesNotState(t *testing.T) {
 	claiming.ClosedBy = &delivery
 	if record, err := warrantyCaseRecord(claiming); err == nil {
 		t.Fatalf("an open case never claims the act that closed another one: %+v", record.ClosedBy)
+	}
+}
+
+// TestWarrantyFailureOfTheLoanGateAndTheSecondOpenClaim pins the two refusals this slice states: the
+// client never leaves the branch without a battery (S4) and one serial carries one open claim (S7),
+// each with its own status and its own stable code, and neither borrowing the code of a neighbour.
+func TestWarrantyFailureOfTheLoanGateAndTheSecondOpenClaim(t *testing.T) {
+	for _, refused := range []struct {
+		err    error
+		status int
+		code   string
+	}{
+		{warrantycase.ErrLoanRequired, http.StatusConflict, "loan_required"},
+		{warrantycase.ErrClaimAlreadyOpen, http.StatusConflict, "claim_already_open"},
+		// The three refusals of the claim door keep their own codes: one serial refusing a second open
+		// claim is not the serial nobody sold, and neither is the other way round.
+		{warrantycase.ErrSerialNotSold, http.StatusConflict, "serial_not_sold"},
+		{warrantycase.ErrNoWarranty, http.StatusConflict, "no_warranty"},
+		{warrantycase.ErrWarrantyExpired, http.StatusConflict, "warranty_expired"},
+	} {
+		w := httptest.NewRecorder()
+		warrantyFailure(w, refused.err)
+		var body map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil ||
+			w.Code != refused.status || body["error"] != refused.code {
+			t.Fatalf("%v must answer %d %s: %d %s", refused.err, refused.status, refused.code,
+				w.Code, w.Body.String())
+		}
 	}
 }

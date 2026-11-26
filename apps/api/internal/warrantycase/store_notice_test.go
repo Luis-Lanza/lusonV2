@@ -250,12 +250,13 @@ func TestNoticeReleaseAndDeliverySplitTheActors(t *testing.T) {
 	if _, err := f.store.AuthorizeRelease(f.ctx, f.actor(1), claim.ID, "Otra vez"); !errors.Is(err, warrantycase.ErrAlreadyReleased) {
 		t.Fatalf("a case is released once, got %v", err)
 	}
-	// A release without a recorded notice is refused, not silently ignored (S14).
-	literal, err := f.store.OpenClaim(f.ctx, f.actor(2), warrantycase.OpenClaimInput{
-		SerialNumber: "CUB-N/1", DeclaredFailure: "No arranca de nuevo"})
-	if err != nil {
-		t.Fatalf("a repaired battery that failed again is a new claim: %v", err)
-	}
+	// A release without a recorded notice is refused, not silently ignored (S14). The case is a second
+	// claim of a battery of its own, because one serial carries one open claim (S7) and the case above
+	// has not closed yet.
+	literal := f.openClaim(t, "CUB-N/2")
+	// The second claim owes its own loan as well, because the gate is the case's and never the branch's
+	// (S4): its client also leaves with a used battery.
+	f.lend(t, literal)
 	for _, phase := range []warrantycase.Phase{warrantycase.PhaseInTransit,
 		warrantycase.PhaseAtWarehouse} {
 		if _, err := f.store.Advance(f.ctx, f.actor(1), literal.ID, warrantycase.AdvanceInput{

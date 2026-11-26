@@ -92,15 +92,25 @@ func TestACaseWritePublishesAWarrantyRevision(t *testing.T) {
 	}
 	f.unchanged(t, opened, f.revisions(t), "warranty:1", "warranty:2", "warranty:3")
 
+	// The client is given the used battery before the case leaves the branch, and the loan publishes its
+	// write to the same two sides (S4); the purchase that puts the battery in the branch publishes
+	// nothing, which is why the counters of the stock and of the catalogue stay where they were.
+	f.lend(t, claim)
+	handed := f.revisions(t)
+	f.bumped(t, opened, handed, "warranty:1")
+	f.bumped(t, opened, handed, "warranty:2")
+	f.unchanged(t, opened, handed, "warranty:3", "transfers:1", "transfers:2", "transfers:3",
+		"inventory", "catalogue")
+
 	// A movement of the journey is a write of the same case and reaches the same two sides.
 	if _, err := f.store.Advance(f.ctx, f.actor(2), claim.ID, warrantycase.AdvanceInput{
 		Phase: warrantycase.PhaseInTransit, Note: "Sale al Almacén"}); err != nil {
 		t.Fatalf("the branch must be able to ship the case: %v", err)
 	}
 	moved := f.revisions(t)
-	f.bumped(t, opened, moved, "warranty:1")
-	f.bumped(t, opened, moved, "warranty:2")
-	f.unchanged(t, opened, moved, "warranty:3", "transfers:1", "transfers:2", "transfers:3",
+	f.bumped(t, handed, moved, "warranty:1")
+	f.bumped(t, handed, moved, "warranty:2")
+	f.unchanged(t, handed, moved, "warranty:3", "transfers:1", "transfers:2", "transfers:3",
 		"inventory", "catalogue")
 
 	// The loan is a write of the case as well, even though it moves no stock and no phase (S5).
@@ -146,6 +156,11 @@ func TestPendingCountsOnlyTheActsOfTheSide(t *testing.T) {
 
 	claim := f.openClaim(t, "PENDIENTE/1")
 	f.wantPending(t, "the branch must ship it", 1, 0, 0)
+
+	// The client walks out with a used battery before the case can leave the branch (S4), and the loan
+	// itself neither moves the phase nor the side that is counted (S19).
+	f.lend(t, claim)
+	f.wantPending(t, "the branch must still ship it", 1, 0, 0)
 
 	if _, err := f.store.Advance(f.ctx, f.actor(2), claim.ID, warrantycase.AdvanceInput{
 		Phase: warrantycase.PhaseInTransit}); err != nil {

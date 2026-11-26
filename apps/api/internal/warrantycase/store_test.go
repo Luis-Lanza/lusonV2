@@ -24,6 +24,9 @@ type fixture struct {
 	pool     *pgxpool.Pool
 	store    *warrantycase.Store
 	accounts map[int]int
+	// lends numbers the purchases the fixture writes for its own loans, so every lend is one
+	// document of the purchases vertical with a key of its own.
+	lends int
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -378,6 +381,64 @@ func TestLoansAreModelsAndQuantitiesFromAnywhere(t *testing.T) {
 	}
 }
 
+// lendModel is the model of the battery the fixture hands to a client. It is written the way the
+// counter writes a used battery and not the way the catalogue names one, because the pool keys its
+// stock by the canonical text of the purchase (S26): this is therefore a model of its own, and never
+// the catalogue's `NP7-12` that a factory return puts in the warehouse.
+const lendModel = "YUASA NP7-12"
+
+// lend gives the client of a case one used battery, so a test that moves a claim does not depend on
+// the loan gate of S4: the case leaves the branch with the battery its client already has.
+//
+// The battery is bought through the canonical path of the pool -- the purchases vertical, funded by the
+// branch -- because a loan never coins the model it hands over (S30) and the origin has to hold the
+// unit it lends (S25). It is bought one unit at a time and handed over in the same call, so a lend
+// leaves the available stock of every location exactly where it found it: the purchase adds the unit
+// the loan subtracts. The key of the purchase is the fixture's own, so lending twice is two documents
+// and never one collision.
+//
+// A case that already holds a loan keeps it: a test that lent on its own case states exactly one loan,
+// and a second one would make the loan list -- and the release that refuses to close while one is
+// undecided (S32) -- read a fact nobody stated. A finding on the shelf owes no loan at all (S4), so
+// lending on one is refused here instead of being written into a case that never had a client.
+func (f *fixture) lend(t *testing.T, claim warrantycase.Case) warrantycase.Loan {
+	t.Helper()
+	if claim.Origin != warrantycase.OriginWarrantyClaim {
+		return warrantycase.Loan{}
+	}
+	var existing int
+	if err := f.pool.QueryRow(f.ctx, `SELECT count(*) FROM warranty_case_loans WHERE case_id=$1`,
+		claim.ID).Scan(&existing); err != nil {
+		t.Fatalf("the loans of the case %d could not be counted: %v", claim.ID, err)
+	}
+	if existing > 0 {
+		return warrantycase.Loan{}
+	}
+	f.lends++
+	f.fund(t, 2, "1000.00")
+	f.buyUsed(t, 2, fmt.Sprintf("warranty-case-lend-%03d", f.lends), lendModel, 1, "10.00", "10.00")
+	loan, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
+		Model: lendModel, Quantity: 1, SourceLocationID: 2})
+	if err != nil {
+		t.Fatalf("the case %d must be able to lend a used battery: %v", claim.ID, err)
+	}
+	return loan
+}
+
+// openStockDefect stores the case of the other door: a shelf of the branch, which has no sale, no
+// serial and no client. It goes through the package's own admission, so the write-off of 067 happens
+// exactly as it does in production and this package needs the case only to prove what it does not owe
+// (S4).
+func (f *fixture) openStockDefect(t *testing.T, failure string) warrantycase.Case {
+	t.Helper()
+	defect, err := f.store.OpenStockDefect(f.ctx, f.actor(2), warrantycase.StockDefectInput{
+		VariantID: 1, Quantity: 1, DeclaredFailure: failure, Reason: "Probada en mostrador"})
+	if err != nil {
+		t.Fatalf("the stock defect fixture could not be stored: %v", err)
+	}
+	return defect
+}
+
 // TestAdvanceFollowsTheFrozenOrder pins S9 and S10 on the claim door: the journey moves only
 // forward through its frozen phases, a tramo outside the order writes nothing, only the
 // factory shipment carries the factory file number, the warehouse can receive and ship the
@@ -406,6 +467,9 @@ func TestAdvanceFollowsTheFrozenOrder(t *testing.T) {
 		t.Fatalf("a refused transition writes nothing, got %d events", events)
 	}
 
+	// The client is given a used battery before the case leaves the branch (S4), so this test states
+	// the journey and never the open door of a claim sent away without one.
+	f.lend(t, claim)
 	moved, err := f.store.Advance(f.ctx, f.actor(2), claim.ID, warrantycase.AdvanceInput{
 		Phase: warrantycase.PhaseInTransit, Note: " Enviada al Almacén "})
 	if err != nil {
@@ -460,10 +524,11 @@ func TestAdvanceFollowsTheFrozenOrder(t *testing.T) {
 		phase warrantycase.Phase
 		note  string
 		actor int
+		file  string
 	}{
-		{warrantycase.PhaseInTransit, "Enviada al Almacén", f.accounts[2]},
-		{warrantycase.PhaseAtWarehouse, "Recibida y revisada", f.accounts[1]},
-		{warrantycase.PhaseAtFactory, "Enviada a fábrica", f.accounts[1]},
+		{warrantycase.PhaseInTransit, "Enviada al Almacén", f.accounts[2], ""},
+		{warrantycase.PhaseAtWarehouse, "Recibida y revisada", f.accounts[1], ""},
+		{warrantycase.PhaseAtFactory, "Enviada a fábrica", f.accounts[1], "LEGAJO-77"},
 	} {
 		event := read.Events[index]
 		if event.Ordinal != index+1 || event.Phase != expected.phase ||
@@ -471,11 +536,139 @@ func TestAdvanceFollowsTheFrozenOrder(t *testing.T) {
 			event.RecordedAt.IsZero() {
 			t.Fatalf("tramo %d states its phase, actor, instant and note: %+v", index+1, event)
 		}
-		if want := ""; index == 2 {
-			want = "LEGAJO-77"
-		} else if event.FactoryCaseNumber != want {
-			t.Fatalf("only the factory tramo carries the file number, got %+v", event)
+		// Every tramo states its own file number: the factory shipment was written " LEGAJO-77 " and
+		// stored "LEGAJO-77", and the two tramos before it carry none (S9, S10).
+		if event.FactoryCaseNumber != expected.file {
+			t.Fatalf("tramo %d carries the file number %q, got %+v", index+1, expected.file, event)
 		}
+	}
+}
+
+// TestAClaimDoesNotLeaveTheBranchWithoutALoan pins S4 on both doors: a claim refuses the
+// `received -> in_transit` tramo while no used battery has been lent on it, the refusal writes neither
+// a tramo nor a loan, one loan is enough to let the case go and stays in its history, and a finding on
+// the shelf -- which never had a client waiting -- owes no loan at all.
+func TestAClaimDoesNotLeaveTheBranchWithoutALoan(t *testing.T) {
+	f := newFixture(t)
+	claim := f.openClaim(t, "SIN-PRESTAMO/1")
+
+	if _, err := f.store.Advance(f.ctx, f.actor(2), claim.ID, warrantycase.AdvanceInput{
+		Phase: warrantycase.PhaseInTransit, Note: "Enviada al Almacén"}); !errors.Is(err, warrantycase.ErrLoanRequired) {
+		t.Fatalf("a claim without a loan cannot leave the branch, got %v", err)
+	}
+	refused := f.read(t, claim.ID)
+	if refused.Phase != warrantycase.PhaseReceived || len(refused.Events) != 0 || len(refused.Loans) != 0 {
+		t.Fatalf("the refusal writes no tramo and no loan: %+v", refused)
+	}
+	// The gate is the case's and not the actor's: no session sends a claim away before its client has
+	// a battery in hand.
+	if _, err := f.store.Advance(f.ctx, f.actor(1), claim.ID, warrantycase.AdvanceInput{
+		Phase: warrantycase.PhaseInTransit}); !errors.Is(err, warrantycase.ErrLoanRequired) {
+		t.Fatalf("the warehouse cannot send an unlent claim either, got %v", err)
+	}
+
+	loan := f.lend(t, claim)
+	moved, err := f.store.Advance(f.ctx, f.actor(2), claim.ID, warrantycase.AdvanceInput{
+		Phase: warrantycase.PhaseInTransit, Note: "Enviada al Almacén"})
+	if err != nil {
+		t.Fatalf("the claim must go once the client has a battery: %v", err)
+	}
+	if moved.Phase != warrantycase.PhaseInTransit {
+		t.Fatalf("the case is in transit, got %s", moved.Phase)
+	}
+	read := f.read(t, claim.ID)
+	if len(read.Events) != 1 || len(read.Loans) != 1 ||
+		read.Loans[0].Ordinal != loan.Ordinal || read.Loans[0].Model != loan.Model {
+		t.Fatalf("the loan stays in the case history beside the one tramo: %+v", read)
+	}
+
+	// A finding on the shelf has no client and therefore owes no loan.
+	defect := f.openStockDefect(t, "No retiene carga")
+	if _, err := f.store.Advance(f.ctx, f.actor(2), defect.ID, warrantycase.AdvanceInput{
+		Phase: warrantycase.PhaseInTransit, Note: "Enviada al Almacén"}); err != nil {
+		t.Fatalf("a stock defect owes no loan: %v", err)
+	}
+	if travelled := f.read(t, defect.ID); travelled.Phase != warrantycase.PhaseInTransit ||
+		len(travelled.Loans) != 0 {
+		t.Fatalf("the stock defect travels without a loan: %+v", travelled)
+	}
+}
+
+// TestTheWarehouseMovesTheCaseAndTheBranchClosesIt pins S19 on the terminal tramo: the warehouse
+// executes the tramos it executes -- receiving, refusing before the factory, shipping -- and is refused
+// the close, which is the branch's answer to its own client. The branch keeps every capability it has,
+// closing included.
+func TestTheWarehouseMovesTheCaseAndTheBranchClosesIt(t *testing.T) {
+	f := newFixture(t)
+	claim := f.openClaim(t, "CIERRE/1")
+	f.atWarehouse(t, claim)
+	if _, err := f.store.Resolve(f.ctx, f.actor(1), claim.ID, warrantycase.ResolutionInput{
+		Verdict:             warrantycase.VerdictRefusedAtWarehouse,
+		ReportedDestination: warrantycase.DestinationCustomer,
+		LoanDestination:     warrantycase.DestinationStock,
+		Note:                "No cubre la garantía"}); err != nil {
+		t.Fatalf("the warehouse must be able to refuse the claim: %v", err)
+	}
+
+	if _, err := f.store.Advance(f.ctx, f.actor(1), claim.ID, warrantycase.AdvanceInput{
+		Phase: warrantycase.PhaseClosed, Note: "Cerrado por el Almacén"}); !errors.Is(err, warrantycase.ErrForbidden) {
+		t.Fatalf("the warehouse cannot close the case, got %v", err)
+	}
+	refused := f.read(t, claim.ID)
+	if refused.Phase != warrantycase.PhaseResolved {
+		t.Fatalf("the refused close leaves the case resolved, got %s", refused.Phase)
+	}
+	if last := refused.Events[len(refused.Events)-1]; last.Phase != warrantycase.PhaseResolved {
+		t.Fatalf("the refused close writes no tramo, got %+v", last)
+	}
+
+	closed, err := f.store.Advance(f.ctx, f.actor(2), claim.ID, warrantycase.AdvanceInput{
+		Phase: warrantycase.PhaseClosed, Note: "Devuelta al cliente"})
+	if err != nil || closed.Phase != warrantycase.PhaseClosed {
+		t.Fatalf("the branch closes its own case: %+v %v", closed, err)
+	}
+}
+
+// TestOneSerialCarriesOneOpenClaim pins S7 on the door of the claim: a serial another open case of
+// the branch already holds is refused by the database and writes nothing, the comparison is the
+// canonical serial of the vertical and not the bytes the counter typed, and a closed case frees the
+// serial for the next claim of the same battery.
+func TestOneSerialCarriesOneOpenClaim(t *testing.T) {
+	f := newFixture(t)
+	first := f.openClaim(t, "UNICO/1")
+	cases := f.count(t, "warranty_cases")
+
+	for _, serial := range []string{"UNICO/1", " unico/1 "} {
+		_, err := f.store.OpenClaim(f.ctx, f.actor(2), warrantycase.OpenClaimInput{
+			SerialNumber: serial, DeclaredFailure: "No arranca otra vez"})
+		if !errors.Is(err, warrantycase.ErrClaimAlreadyOpen) {
+			t.Fatalf("the serial %q already carries an open claim, got %v", serial, err)
+		}
+	}
+	if got := f.count(t, "warranty_cases"); got != cases {
+		t.Fatalf("a refused claim writes no case: %d became %d", cases, got)
+	}
+
+	// The case closes and the serial is free again: a battery that failed twice is a new claim, and a
+	// closed case never blocks it (S7).
+	f.lend(t, first)
+	f.atFactory(t, first)
+	if _, err := f.store.Resolve(f.ctx, f.actor(1), first.ID, warrantycase.ResolutionInput{
+		Verdict: warrantycase.VerdictRepaired, ReportedDestination: warrantycase.DestinationCustomer,
+		LoanDestination: warrantycase.DestinationStock, Note: "Reparada por fábrica"}); err != nil {
+		t.Fatalf("the factory verdict must be admitted: %v", err)
+	}
+	if _, err := f.store.DeliverExchange(f.ctx, f.actor(2), first.ID, warrantycase.DeliveryInput{
+		LoanFate: warrantycase.LoanReturned, Note: "Entregada la reparada"}); err != nil {
+		t.Fatalf("the branch delivers the repaired unit: %v", err)
+	}
+	second, err := f.store.OpenClaim(f.ctx, f.actor(2), warrantycase.OpenClaimInput{
+		SerialNumber: "UNICO/1", DeclaredFailure: "Falló de nuevo"})
+	if err != nil {
+		t.Fatalf("a closed case never blocks the next claim of its serial: %v", err)
+	}
+	if second.ID == first.ID || second.Phase != warrantycase.PhaseReceived {
+		t.Fatalf("the second claim is a case of its own: %+v", second)
 	}
 }
 
@@ -483,6 +676,9 @@ func TestAdvanceFollowsTheFrozenOrder(t *testing.T) {
 // phase it resolves from.
 func (f *fixture) atWarehouse(t *testing.T, claim warrantycase.Case) {
 	t.Helper()
+	// The client is given a used battery before the case leaves the branch (S4). A finding on the
+	// shelf owes none, and lend states that itself.
+	f.lend(t, claim)
 	for _, step := range []struct {
 		actor auth.Identity
 		phase warrantycase.Phase

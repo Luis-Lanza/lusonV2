@@ -64,7 +64,8 @@ func provisioned(actor auth.Identity) bool {
 }
 
 // mayActOn says a branch acts on its own cases and the warehouse acts on every case it
-// moves. The branch owes the client the answer; the warehouse only moves the battery (S19).
+// moves. The branch owes the client the answer; the warehouse only moves the battery (S19),
+// so the terminal close is the branch's own and never the warehouse's.
 func mayActOn(actor auth.Identity, branch int) bool {
 	return provisioned(actor) && (actor.Location.ID == warehouseLocationID || actor.Location.ID == branch)
 }
@@ -72,7 +73,9 @@ func mayActOn(actor auth.Identity, branch int) bool {
 // OpenClaim opens the case of a sold battery the client brought back under warranty. The
 // database resolves the sale and the variant from the serial and refuses a serial nobody
 // sold, a unit sold without a term and a term that has run out; this store maps each of the
-// three refusals to its own error and writes nothing when one of them lands.
+// three refusals to its own error and writes nothing when one of them lands. One serial carries one
+// open claim (S7): the unique partial index of 076 refuses a second one, so two counters cannot open
+// two cases for one battery and a closed case never blocks the next claim of the same serial.
 func (s *Store) OpenClaim(ctx context.Context, actor auth.Identity, input OpenClaimInput) (Case, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Case{}, ErrUnavailable
@@ -444,7 +447,9 @@ func (s *Store) DecideLoan(ctx context.Context, actor auth.Identity, caseID int6
 // received, in transit, at the warehouse, at the factory, resolved and closed. `resolved`
 // is reached through the resolution and never through a bare transition, the factory
 // shipment carries its file number and no other tramo does, and a refused transition
-// writes nothing.
+// writes nothing. A claim does not leave the branch before at least one used battery has been lent
+// on it (S4), and the terminal close belongs to the branch that owes the client the answer and never
+// to the warehouse that only moves the battery (S19).
 func (s *Store) Advance(ctx context.Context, actor auth.Identity, caseID int64,
 	input AdvanceInput) (Case, error) {
 	if ctx == nil || s == nil || s.pool == nil {
@@ -498,6 +503,25 @@ func (s *Store) Advance(ctx context.Context, actor auth.Identity, caseID int64,
 	if next == PhaseResolved {
 		return Case{}, ErrResolutionRequired
 	}
+	// The terminal tramo is the answer the branch owes its client, so the warehouse, which executes
+	// the tramos of the battery, is refused it and the branch keeps every other capability it has
+	// (S19).
+	if next == PhaseClosed && actor.Location.ID == warehouseLocationID {
+		return Case{}, ErrForbidden
+	}
+	// The client never leaves the branch without a battery (S4): a claim does not enter the journey
+	// until at least one used battery has been lent on it, and the loan that let the case go stays in
+	// its history. A finding on the shelf owes no loan, because the branch never had a client waiting
+	// on it.
+	if next == PhaseInTransit && header.Origin == OriginWarrantyClaim {
+		loans, err := countLoans(ctx, tx, caseID)
+		if err != nil {
+			return Case{}, err
+		}
+		if loans == 0 {
+			return Case{}, ErrLoanRequired
+		}
+	}
 	if _, err := insertEvent(ctx, tx, caseID, KindPhase, input.Phase, factoryCaseNumber,
 		int64(actor.AccountID), note); err != nil {
 		return Case{}, err
@@ -528,6 +552,17 @@ func nextPhase(from Phase) (Phase, bool) {
 		return PhaseClosed, true
 	}
 	return "", false
+}
+
+// countLoans counts the used batteries lent on one case, which is the gate of the branch's own exit
+// for a claim (S4).
+func countLoans(ctx context.Context, q querier, caseID int64) (int, error) {
+	var loans int
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM warranty_case_loans WHERE case_id=$1`,
+		caseID).Scan(&loans); err != nil {
+		return 0, fail(ctx)
+	}
+	return loans, nil
 }
 
 // insertEvent appends one tramo and lets the database number it, date it and write the
@@ -1133,6 +1168,12 @@ func mapFailure(ctx context.Context, err error) error {
 	var pg *pgconn.PgError
 	if !errors.As(err, &pg) {
 		return ErrUnavailable
+	}
+	// 23505 against the one open claim index is the database's statement of S7: the serial already
+	// carries an open case, so the second one was never stored. Any other uniqueness the schema
+	// refuses restates an invariant this store already enforces, so it fails closed below.
+	if pg.Code == "23505" && pg.ConstraintName == oneOpenClaimIndex {
+		return ErrClaimAlreadyOpen
 	}
 	switch pg.Code {
 	// LW001: the case belongs to an active branch and is opened by that branch's account.
