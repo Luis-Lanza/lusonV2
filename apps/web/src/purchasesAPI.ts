@@ -7,7 +7,7 @@ import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import { moneyCents } from './pointOfSaleModel';
 import {
   canonicalPurchaseInput, canonicalPurchaseModelCode, canonicalPurchaseReversalInput,
-  kgMilliFromWire, purchaseHistoryMaxPage, purchaseMaxID, purchaseMaxLines,
+  kgMilliFromWire, purchaseHistoryMaxPage, purchaseMaxBalanceRows, purchaseMaxID, purchaseMaxLines,
   purchaseMaxMoneyCents, purchaseMaxNote, purchaseMaxQuantity, purchaseMaxReason,
   purchaseReversible, purchaseHistoryPageSizes, scrapLineAmountCents,
   type PurchaseHistoryRow, type PurchaseInput, type PurchaseReversalInput,
@@ -512,7 +512,13 @@ function balanceScrap(report: unknown): PurchaseBalanceScrap {
 function balanceValue(value: unknown): PurchaseBalance {
   const record = fields(value, ['used', 'scrap']);
   if (!Array.isArray(record.used) || !Array.isArray(record.scrap)) return invalidResponse();
-  if (record.used.length > purchaseMaxLines || record.scrap.length > purchaseMaxLines) return invalidResponse();
+  // Two different bounds. `purchaseMaxLines` guards what an operator writes: the lines of a document.
+  // The balance is not written by anyone: it publishes one row per model of the catalogue and one per
+  // material, so its row count grows with the catalogue and is guarded by `purchaseMaxBalanceRows`.
+  // Holding the balance to a document's line limit refuses the whole listing as soon as the catalogue
+  // outgrows 190 models, which is a fact about the branch, not a lying answer.
+  if (record.used.length > purchaseMaxBalanceRows
+    || record.scrap.length > purchaseMaxBalanceRows) return invalidResponse();
   const used = record.used.map(balanceUsed);
   ascending(used, row => row.model);
   const scrap = record.scrap.map(balanceScrap);
