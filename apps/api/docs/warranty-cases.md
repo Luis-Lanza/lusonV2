@@ -3,12 +3,14 @@
 One document per battery that leaves service: the client brought it back under the warranty of a sale
 (`warranty_claim`) or the branch found it failed on its own shelf (`stock_defect`). The case follows
 the battery to the warehouse, to the factory and back, lends the client a used battery in the
-meantime, registers the verdict the factory reaches, notifies the client and delivers the exchange.
+meantime and hands him the one-page receipt of that loan, registers the verdict the factory reaches,
+notifies the client and delivers the exchange.
 
 The branch **owns** the case and the relationship with the client; the warehouse moves the battery.
 Nothing of this contract charges money, writes a cash row, or creates a transfer: the finding on the
-shelf is the one write of stock the branch side makes, and the release is the one the warehouse side
-makes.
+shelf is the one write of stock the branch side makes at the admission, the resolution of a finding is
+what returns those units to that same shelf, and the release is the one a claim makes when the
+warehouse authorises it.
 
 ## Routes
 
@@ -25,8 +27,9 @@ makes.
 | `/api/warranty-cases/{id}/notice` | POST | 200 with the case and the notice in its history |
 | `/api/warranty-cases/{id}/release` | POST | 200 with the case and the release in its history |
 | `/api/warranty-cases/{id}/delivery` | POST | 200 with the closed case and the settled loan |
+| `/api/warranty-cases/{id}/receipt.pdf` | GET | 200 with the loan receipt of the case, as a PDF download |
 
-No other method and no other path is served (`405 method_not_allowed` with `Allow: GET` on the two
+No other method and no other path is served (`405 method_not_allowed` with `Allow: GET` on the three
 reads and `Allow: POST` on every mutation). Every mutation requires the same-origin session cookie,
 `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`, and refuses a query string; every read requires the
 session only. Any other path below `/api/warranty-cases/` is `404 not_found` as JSON, and an
@@ -47,11 +50,15 @@ API directly is refused exactly like a screen that shows the wrong button.
 | Record `in_transit` and `closed` | yes | `403 forbidden` |
 | Record `at_warehouse` and `at_factory` | `403 forbidden` | yes |
 | Record the verdict (resolution) | `403 forbidden` | yes |
-| Register the notice | yes | `403 forbidden` |
-| Authorise the release | `403 forbidden` | yes |
+| Register the notice | yes, on a claim only | `403 forbidden` |
+| Authorise the release | `403 forbidden` | yes, on a claim only |
 | Deliver the exchange | yes | `403 forbidden` |
+| Download the loan receipt | its own cases | every case it moves |
 
-A case of another branch is `403 forbidden` for a branch session and readable by the warehouse.
+A case of another branch is `403 forbidden` for a branch session and readable by the warehouse. The
+notice and the release are a claim's two facts: a finding has no client to call and no unit in custody,
+so on the side that may ask — the branch for the notice, the warehouse for the release — both are
+`409 claim_only` on it.
 
 ## The case
 
@@ -71,8 +78,9 @@ A case of another branch is `403 forbidden` for a branch session and readable by
 | `origin` | `warranty_claim` or `stock_defect` |
 | `phase` | `received`, `in_transit`, `at_warehouse`, `at_factory`, `resolved` or `closed`. It is always the phase of the last `phase` tramo of the history |
 | `verdict` | `null` until the case is resolved, then `repaired`, `replaced`, `unrepairable`, `not_covered`, `lost` or `refused_at_warehouse` |
-| `reported_destination`, `loan_destination` | Where the reported battery and the lent one end: `customer`, `stock`, `scrap` or `retained_by_factory`; `null` until the verdict |
-| `stock_destination` | Where the shelf of a finding ends. `null` on every claim and on every unresolved case: a claim never had branch stock in play |
+| `reported_destination` | Where the reported battery ends: `customer`, `stock`, `scrap` or `retained_by_factory`; `null` until the verdict |
+| `loan_destination` | Where the lent battery ends, in the same vocabulary; `null` until the verdict on a claim and always `null` on a finding, which lends none |
+| `stock_destination` | Where the shelf of a finding ends: `stock` when the verdict returns its units to the branch, `null` on every claim and whenever the write-off stands |
 | `sale_id`, `warranty_number` | The claimed sale and its printed warranty number (S8); both `null` on a finding, which was never sold |
 | `variant_id` | The battery: the unit's on a claim, the shelf's on a finding |
 | `serial_number` | The serial the client brought. Stated on a claim, `null` on a finding |
@@ -199,6 +207,34 @@ The instant of the decision is the database's own. A fate once decided is final
 (`409 loan_fate_final`), and a `failed` battery is replaced by another loan of the same case, never by
 rewriting the one that failed.
 
+## The loan receipt
+
+The paper the client leaves with when the branch hands the used battery over (S8). It is one A4 page
+rendered from the persisted case and never from a fresh calculation: the case number, the serial of
+the battery that stayed, the warranty number of the sale it came from, the model, the quantity and
+the source of every loan, the declared failure, the date, the branch and the client are the stored
+values, drawn unchanged.
+
+```
+GET /api/warranty-cases/1/receipt.pdf
+```
+
+* The download is named after the number the database wrote: `comprobante-C-2-000001.pdf`. The
+document prints that same persisted number (S20) and never the letter form of a mockup.
+* The date of the paper is the instant the database stamped on the handover, not the instant of the
+print. A case that lent more than one used battery prints one row per loan with its own date, in the
+order the counter handed them over (S7).
+* The conditions of the exchange are frozen product copy and state what this contract decides: the
+claimed battery stays in the branch for its review, the used one is a free loan, the exchange
+happens when the battery comes back from the factory, a client who does not come when told keeps the
+loan and the replacement is released, a factory that does not cover the damage leaves the loan with
+the client, and the original term neither extends nor restarts (S3).
+* A case with no loan to print is `409 no_loan`, and a finding on the shelf is `409 claim_only`: it
+names the client of a sale and a handover a finding never had.
+* The authority is the case read's own: the branch that owns the case and the warehouse that moves it.
+A case of another branch is `403 forbidden`. A query string is `400 invalid_request`, and the download
+is either the whole document or `503 service_unavailable`.
+
 ## The journey
 
 ```
@@ -220,6 +256,11 @@ POST /api/warranty-cases/1/advance
 
 ## The verdict
 
+The same route resolves both doors, and each door states the units it has: a claim states the reported
+battery and the lent one, a finding states the units of its own shelf.
+
+A claim:
+
 ```
 POST /api/warranty-cases/1/resolution
 {"verdict":"repaired","reported_destination":"customer","loan_destination":"stock",
@@ -237,9 +278,39 @@ POST /api/warranty-cases/1/resolution
 * A resolution is stated once and is final (`409 resolution_final`). The stock destination of a claim
   is never stated here: a client that sends `stock_destination` is `400 invalid_request`, and the case
   keeps the field `null`.
+* `loan_destination` is required on a claim: a body without it is `400 invalid_request`.
 * Only the warehouse records the verdict.
 
+A finding on the shelf (S11):
+
+```
+POST /api/warranty-cases/2/resolution
+{"verdict":"repaired","reported_destination":"stock","note":"Reparadas por fábrica"}
+```
+
+* The same two gates and the same frozen vocabulary, and one rule of its own: a finding lends no
+  battery, so it states no `loan_destination`, and a body that sends one is `400 invalid_request`.
+* `repaired` and `replaced` return the case's units to the branch's own sellable stock: the repaired
+  ones, or the replacement that enters in their place. They are the branch's own, so
+  `reported_destination` is `stock` and any other value is `409 resolution_matrix`. The resolution
+  states `stock_destination` as `stock` and the balance gains the case's `quantity`, once, in the same
+  transaction.
+* `not_covered` keeps the write-off of the admission: the factory refused the warranty, the damaged
+  units stay in the used pool or leave as scrap (`reported_destination` is `stock` or `scrap`, anything
+  else is `409 resolution_matrix`), the balance does not move and `stock_destination` stays `null`.
+  `unrepairable`, `lost` and `refused_at_warehouse` return no sellable unit either, so neither moves a
+  balance and both keep `stock_destination` `null`.
+* `stock_destination` is the verdict's own reading and is never the caller's: sending it is
+  `400 invalid_request`.
+* Only the warehouse records the verdict, on both doors. The case is closed by its branch, through the
+  `closed` tramo.
+
 ## The notice, the release and the delivery
+
+The notice and the release belong to a claim. A finding on the shelf has no client to call and no unit
+in custody, so on the side that may ask — the branch for the notice, the warehouse for the release —
+both are `409 claim_only` on it, and it is closed with the `closed` tramo of its journey by its own
+branch.
 
 ```
 POST /api/warranty-cases/1/notice
@@ -255,17 +326,17 @@ POST /api/warranty-cases/1/release
 {"note":"El cliente no volvió"}
 ```
 
-The release is the warehouse's decision that the unit waiting in custody becomes sellable stock of the
-case's branch, and it is the mirror of the write-off of a finding:
+The release is the warehouse's decision that the unit a claim holds in custody becomes sellable stock
+of the case's branch, and it is the mirror of the write-off of a finding:
 
 * `note` is mandatory: a blank motive is `400 reason_required`.
 * The release requires a recorded notice (`409 notice_required`), it happens once
   (`409 already_released`) and it exists only once the factory has answered
   (`409 resolution_pending`).
-* The units that return are the ones the case holds: the quantity a finding wrote off its own shelf,
-  or the single repaired unit a claim got back for its client. A claim whose battery never came back —
-  kept by the factory, scrapped or sent to the used pool — is `409 nothing_to_release`, and a branch
-  that tries to authorise a release is `403 forbidden`.
+* The unit that returns is the single repaired unit a claim got back for its client. A claim whose
+  battery never came back — kept by the factory, scrapped or sent to the used pool — is
+  `409 nothing_to_release`, a branch that tries to authorise a release is `403 forbidden`, and a finding
+  is `409 claim_only`, because its units are the branch's own and came back at its resolution.
 
 ```
 POST /api/warranty-cases/1/delivery
@@ -297,7 +368,7 @@ The delivery hands the battery to the client and closes the case, in one act:
 | 409 | `warranty_expired` | The term of the claimed unit has run out |
 | 409 | `no_stock` | The branch does not have that many batteries to write off |
 | 409 | `reserved_stock` | The write-off would take stock the branch already promised |
-| 409 | `claim_only` | A finding on the shelf is not resolved by this contract |
+| 409 | `claim_only` | A finding on the shelf states no notice, no release and no loan receipt: it has no client to call, no unit in custody and no used battery handed over |
 | 409 | `transition_not_allowed` | The phase is not the next edge of the journey; the body names `from` and `to` |
 | 409 | `resolution_required` | A case reaches `resolved` through its resolution |
 | 409 | `resolution_final` | The resolution of a case is already stated |
@@ -308,18 +379,21 @@ The delivery hands the battery to the client and closes the case, in one act:
 | 409 | `already_released` | The notice or the release of this case was already recorded |
 | 409 | `nothing_to_release` | The case holds no unit: its battery never came back |
 | 409 | `loan_fate_final` | A decided loan fate is final |
+| 409 | `no_loan` | The case has not handed a used battery over, so it has no loan receipt to print |
 | 503 | `service_unavailable` | The store or the database could not answer |
 
 A refusal names nothing it did not do: every one of them writes no case, no loan, no tramo and no
 balance.
 
-## The two stock writes of the vertical
+## The three stock writes of the vertical
 
 The finding on the shelf takes its units off the branch that found them, in the transaction that
-admits the case. The release puts the units the case holds back on that same branch, in the
-transaction that records the authorisation. Both write `existing` and never `reserved`, both name the
-case's own branch and the case's own variant, and nothing else of this contract touches
-`inventory_balances`, `stock_entries`, `stock_adjustments`, any transfer or any cash row.
+admits the case. The resolution of that finding puts them back on that same branch when the verdict
+returns them `repaired` or `replaced`, in the transaction of the tramo that resolves the case. The
+release of a claim puts back the single unit the claim held in custody, in the transaction that records
+the warehouse's authorisation. The three write `existing` and never `reserved`, all name the case's own
+branch and the case's own variant, and nothing else of this contract touches `inventory_balances`,
+`stock_entries`, `stock_adjustments`, any transfer or any cash row.
 
 The settlement of the branch publishes those units on the count line as `held_in_case_quantity`: the
 units of the variant a case holds instead of the branch having them in stock, derived on read and

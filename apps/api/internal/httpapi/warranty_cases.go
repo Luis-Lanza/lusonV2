@@ -148,6 +148,9 @@ func (a *API) warrantyCaseRoutes(store *warrantycase.Store) http.Handler {
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}/notice", a.warrantyCaseNotice(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}/release", a.warrantyCaseRelease(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}/delivery", a.warrantyCaseDelivery(store))
+	// The loan receipt is the printable paper of the handover (S8): a literal suffix of the case,
+	// exactly like the warranty of a sale, so the case id stays one segment.
+	mux.HandleFunc(warrantyCaseCollectionPath+"/{id}"+warrantyReceiptPath, a.warrantyCaseReceipt(store))
 	mux.HandleFunc(warrantyCaseCollectionPath+"/", func(w http.ResponseWriter, r *http.Request) {
 		failure(w, 404, "not_found")
 	})
@@ -185,6 +188,10 @@ func warrantyFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "reserved_stock")
 	case errors.Is(err, warrantycase.ErrClaimOnly):
 		failure(w, 409, "claim_only")
+	// The loan receipt of a claim that has not handed a used battery over has nothing to print
+	// (S8).
+	case errors.Is(err, warrantycase.ErrNoLoan):
+		failure(w, 409, "no_loan")
 	// The journey, its gates and its resolution (S9, S10, S11).
 	case errors.Is(err, warrantycase.ErrTransition):
 		failure(w, 409, "transition_not_allowed")
@@ -734,9 +741,16 @@ func warrantyDecoder(r *http.Request) (*json.Decoder, error) {
 	return decoder, nil
 }
 
-// warrantyObject walks one flat object with a closed set of keys, refusing a duplicate, an unknown key
-// and a trailing statement, and hands each field to its own reader.
+// warrantyObject walks one flat object whose keys are all required, refusing a duplicate, an unknown
+// key and a trailing statement, and hands each field to its own reader.
 func warrantyObject(r *http.Request, fields map[string]func(*json.Decoder) error) error {
+	return warrantyFields(r, fields, nil)
+}
+
+// warrantyFields walks one flat object with two closed key sets -- the fields every body of that route
+// states and the ones only one door states -- refusing a duplicate, an unknown key and a trailing
+// statement, and hands each field to its own reader.
+func warrantyFields(r *http.Request, stated, optional map[string]func(*json.Decoder) error) error {
 	decoder, err := warrantyDecoder(r)
 	if err != nil {
 		return err
@@ -744,7 +758,7 @@ func warrantyObject(r *http.Request, fields map[string]func(*json.Decoder) error
 	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
 		return warrantycase.ErrInvalid
 	}
-	seen := make(map[string]bool, len(fields))
+	seen := make(map[string]bool, len(stated)+len(optional))
 	for decoder.More() {
 		token, err := decoder.Token()
 		if err != nil {
@@ -754,7 +768,10 @@ func warrantyObject(r *http.Request, fields map[string]func(*json.Decoder) error
 		if !ok || seen[key] {
 			return warrantycase.ErrInvalid
 		}
-		read, known := fields[key]
+		read, known := stated[key]
+		if !known {
+			read, known = optional[key]
+		}
 		if !known {
 			return warrantycase.ErrInvalid
 		}
@@ -769,8 +786,10 @@ func warrantyObject(r *http.Request, fields map[string]func(*json.Decoder) error
 	if _, err := decoder.Token(); err != io.EOF {
 		return warrantycase.ErrInvalid
 	}
-	if len(seen) != len(fields) {
-		return warrantycase.ErrInvalid
+	for key := range stated {
+		if !seen[key] {
+			return warrantycase.ErrInvalid
+		}
 	}
 	return nil
 }
@@ -922,41 +941,46 @@ func decodeWarrantyAdvance(r *http.Request) (warrantycase.AdvanceInput, error) {
 	return input, err
 }
 
-// decodeWarrantyResolution reads the verdict and the destination of the two units of the case. The
-// frozen vocabulary is judged here and again in the store and the database (S23).
+// decodeWarrantyResolution reads the verdict and the destination of the units the case has. The frozen
+// vocabulary is judged here and again in the store and the database (S23). `loan_destination` is the
+// lent battery of a claim and the finding on the shelf lends none, so that key is the door's own and
+// the store decides which door states it (S11); the shelf destination is nobody's to state.
 func decodeWarrantyResolution(r *http.Request) (warrantycase.ResolutionInput, error) {
 	input := warrantycase.ResolutionInput{}
-	err := warrantyObject(r, map[string]func(*json.Decoder) error{
-		"verdict": func(d *json.Decoder) error {
-			value, err := warrantyText(d, warrantyCaseMaxSearch)
-			input.Verdict = warrantycase.Verdict(value)
-			if err == nil && !input.Verdict.Valid() {
-				return warrantycase.ErrInvalid
-			}
-			return err
-		},
-		"reported_destination": func(d *json.Decoder) error {
-			value, err := warrantyText(d, warrantyCaseMaxSearch)
-			input.ReportedDestination = warrantycase.Destination(value)
-			if err == nil && !input.ReportedDestination.Valid() {
-				return warrantycase.ErrInvalid
-			}
-			return err
-		},
-		"loan_destination": func(d *json.Decoder) error {
-			value, err := warrantyText(d, warrantyCaseMaxSearch)
-			input.LoanDestination = warrantycase.Destination(value)
-			if err == nil && !input.LoanDestination.Valid() {
-				return warrantycase.ErrInvalid
-			}
-			return err
-		},
-		"note": func(d *json.Decoder) error {
-			value, err := warrantyText(d, warrantyCaseMaxNote)
-			input.Note = value
-			return err
-		},
-	})
+	verdict := func(d *json.Decoder) error {
+		value, err := warrantyText(d, warrantyCaseMaxSearch)
+		input.Verdict = warrantycase.Verdict(value)
+		if err == nil && !input.Verdict.Valid() {
+			return warrantycase.ErrInvalid
+		}
+		return err
+	}
+	reported := func(d *json.Decoder) error {
+		value, err := warrantyText(d, warrantyCaseMaxSearch)
+		input.ReportedDestination = warrantycase.Destination(value)
+		if err == nil && !input.ReportedDestination.Valid() {
+			return warrantycase.ErrInvalid
+		}
+		return err
+	}
+	note := func(d *json.Decoder) error {
+		value, err := warrantyText(d, warrantyCaseMaxNote)
+		input.Note = value
+		return err
+	}
+	err := warrantyFields(r,
+		map[string]func(*json.Decoder) error{
+			"verdict": verdict, "reported_destination": reported, "note": note},
+		map[string]func(*json.Decoder) error{
+			"loan_destination": func(d *json.Decoder) error {
+				value, err := warrantyText(d, warrantyCaseMaxSearch)
+				input.LoanDestination = warrantycase.Destination(value)
+				if err == nil && !input.LoanDestination.Valid() {
+					return warrantycase.ErrInvalid
+				}
+				return err
+			},
+		})
 	return input, err
 }
 
@@ -1111,25 +1135,36 @@ func warrantyCaseRecord(document warrantycase.Case) (warrantyCaseDTO, error) {
 		Loans:              make([]warrantyLoanDTO, 0, len(document.Loans)),
 		Events:             make([]warrantyEventDTO, 0, len(document.Events)),
 	}
-	// The verdict and the destinations are the resolution of the case, and they are all stated at once:
-	// a resolved case has no null among them and an open one states none (S11).
+	// The verdict and the destinations are the resolution of the case, and they are stated at once: a
+	// resolved case states its verdict and where its reported units end, and an open one states none
+	// (S11). Each door then states the units it has: a claim the reported battery and the lent one and
+	// never the shelf of a finding, a finding its own shelf -- which is the verdict's reading -- and never
+	// a lent battery, because it lends none.
 	verdict, reported := document.Verdict, document.ReportedDestination
 	loan, stock := document.LoanDestination, document.StockDestination
 	switch {
 	case verdict == nil && reported == nil && loan == nil && stock == nil:
-	case verdict == nil || reported == nil || loan == nil:
+	case verdict == nil || reported == nil || !verdict.Valid() || !reported.Valid():
 		return unavailable()
-	case !verdict.Valid() || !reported.Valid() || !loan.Valid():
-		return unavailable()
-	case stock != nil && (!stock.Valid() || document.Origin != warrantycase.OriginStockDefect):
+	case document.Origin == warrantycase.OriginWarrantyClaim:
+		if loan == nil || !loan.Valid() || stock != nil {
+			return unavailable()
+		}
+	case document.Origin == warrantycase.OriginStockDefect:
+		if loan != nil || !stockStatedByVerdict(*verdict, stock) {
+			return unavailable()
+		}
+	default:
 		return unavailable()
 	}
 	if verdict != nil {
 		stated := string(*verdict)
 		statedReported := string(*reported)
-		statedLoan := string(*loan)
-		record.Verdict, record.ReportedDestination, record.LoanDestination = &stated,
-			&statedReported, &statedLoan
+		record.Verdict, record.ReportedDestination = &stated, &statedReported
+		if loan != nil {
+			statedLoan := string(*loan)
+			record.LoanDestination = &statedLoan
+		}
 		if stock != nil {
 			statedStock := string(*stock)
 			record.StockDestination = &statedStock
@@ -1163,6 +1198,17 @@ func warrantyCaseRecord(document warrantycase.Case) (warrantyCaseDTO, error) {
 		return unavailable()
 	}
 	return record, nil
+}
+
+// stockStatedByVerdict restates the shelf outcome of a finding's resolution: its units are back in the
+// branch's stock exactly when the verdict returns them repaired or replaced, and the write-off stands
+// otherwise, so the field is stated exactly then and never on a claim (S11).
+func stockStatedByVerdict(verdict warrantycase.Verdict, stock *warrantycase.Destination) bool {
+	returns := verdict == warrantycase.VerdictRepaired || verdict == warrantycase.VerdictReplaced
+	if !returns {
+		return stock == nil
+	}
+	return stock != nil && *stock == warrantycase.DestinationStock
 }
 
 // warrantyCaseRowRecord revalidates the header of one case: the number of the branch, the frozen

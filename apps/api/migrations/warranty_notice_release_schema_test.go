@@ -133,6 +133,13 @@ func TestNoticeReleaseShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("embedded migration %s is unreadable", entry.Name())
 		}
+		// A later version narrows this guard forward by restating it whole, exactly as this file restated
+		// 065's, so it states these same codes again on purpose. What is never reused is a number by a
+		// version that adds a fact of its own.
+		if strings.Contains(string(version),
+			"CREATE OR REPLACE FUNCTION admit_warranty_case_event()") {
+			continue
+		}
 		for code := range used {
 			// 065 states LW006, LW007 and LW008 itself: narrowing its guard restates them, and the
 			// other versions of this vertical never reuse the numbers this file adds.
@@ -260,47 +267,6 @@ func TestNoticeAndReleaseOnALiveDatabase(t *testing.T) {
 		t.Fatalf("a refused release writes no stock, got %s", got)
 	}
 	t.Logf("068: notice of the branch, release of the warehouse, once each")
-}
-
-// TestReleaseRestoresTheUnitsAStockDefectWroteOff proves the mirror of 067: the units the branch
-// wrote off when it found the battery failed on its shelf come back to that same shelf when the
-// warehouse authorises the release, in one statement of the event's own transaction.
-func TestReleaseRestoresTheUnitsAStockDefectWroteOff(t *testing.T) {
-	ctx, p := noticeReleaseFixture(t)
-	if before := writeOffBalances(t, ctx, p); before != "2:1=10/0,3:1=10/0" {
-		t.Fatalf("the fixture states its own stock, got %s", before)
-	}
-	var defect int64
-	if err := p.QueryRow(ctx, writeOffCaseSQL, 2, 1, 3, "Probada en mostrador: no arranca", 2).
-		Scan(&defect); err != nil {
-		t.Fatalf("the finding on the shelf must be admitted: %v", err)
-	}
-	if got := writeOffBalances(t, ctx, p); got != "2:1=7/0,3:1=10/0" {
-		t.Fatalf("067 takes the three units off the shelf, got %s", got)
-	}
-	// The factory answered the case and the repaired units wait at the branch.
-	reachedResolved(t, ctx, p, defect)
-	if _, err := p.Exec(ctx, noticeSQL, defect, "resolved", 2, "Avisada la sucursal"); err != nil {
-		t.Fatalf("the branch registers the notice of the finding: %v", err)
-	}
-	if _, err := p.Exec(ctx, releaseSQL, defect, "resolved", 1, "Vuelven a la góndola"); err != nil {
-		t.Fatalf("the warehouse authorises the release of the finding: %v", err)
-	}
-	// Exactly the units the case wrote off come back, and no other location moves.
-	if got := writeOffBalances(t, ctx, p); got != "2:1=10/0,3:1=10/0" {
-		t.Fatalf("the release is the mirror of the write-off, got %s", got)
-	}
-	// The write-off and the release are the two only stock writes of this vertical, and neither of
-	// them writes the reserve.
-	var reserved int64
-	if err := p.QueryRow(ctx, `SELECT reserved FROM inventory_balances
- WHERE location_id=2 AND variant_id=1`).Scan(&reserved); err != nil {
-		t.Fatalf("the reserve of the branch could not be read: %v", err)
-	}
-	if reserved != 0 {
-		t.Fatalf("neither boundary write touches reserved, got %d", reserved)
-	}
-	t.Logf("068: 10 - 3 written off, + 3 released = 10")
 }
 
 // noticeReleaseFixture is the whole prefix of this vertical plus the stock, the accounts and one
