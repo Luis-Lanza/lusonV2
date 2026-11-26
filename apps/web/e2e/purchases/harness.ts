@@ -450,28 +450,66 @@ export async function showDocuments(page: Page): Promise<Locator> {
   return panel;
 }
 
+/** La fila de un documento, por el id que la propia fila declara. */
 export function documentRow(panel: Locator, id: number): Locator {
   return panel.locator(`tr[data-purchase-id="${id}"]`);
+}
+
+/** El total de la bandeja, tal como la propia cabecera de documentos lo publica («277 compras»). */
+async function documentsTotal(panel: Locator): Promise<number> {
+  const tag = panel.locator('.stock-panel-head .stock-tag');
+  await expect(tag).toHaveText(/\d+ compras?/);
+  const match = /(\d+)/.exec((await tag.textContent()) ?? '');
+  if (match === null) throw new Error('la lista de documentos no publicó su total de compras');
+  return Number(match[1]);
+}
+
+/** El id de la primera fila de la página en pantalla, o el infinito mientras la tabla está vacía. */
+async function firstDocumentId(rows: Locator): Promise<number> {
+  const ids = await rows.evaluateAll(list => list.map(row => Number(row.getAttribute('data-purchase-id'))));
+  return ids[0] ?? Number.POSITIVE_INFINITY;
 }
 
 /**
  * La fila de un documento en la lista. La pantalla no tiene búsqueda, así que la única forma de llegar a
  * un documento es la que el operador tiene: elegir la página más ancha y recorrer las páginas hasta la
- * fila. La espera es la del pager, que publica la página ya leída, nunca un tiempo fijo.
+ * fila. Las demás suites registran compras al mismo tiempo (S4), así que la fila de la corrida puede no
+ * estar en la primera página.
+ *
+ * Cada paso espera a que la página pedida esté completa —el total de la cabecera dice cuántas filas
+ * admite— y a que sus filas sean otras que las de la página anterior: durante la recarga la tabla se
+ * vacía y volver a mostrar la página de antes, así que avanzar sin esas dos esperas se saltearía la
+ * página donde está el documento. La lista va de la más nueva a la más vieja, por eso la primera fila de
+ * la página siguiente siempre tiene un id menor.
  */
 export async function showDocumentRow(page: Page, id: number): Promise<Locator> {
   const panel = await showDocuments(page);
-  await panel.getByLabel('Compras por página').selectOption('50');
   const row = documentRow(panel, id);
+  const size = 50;
+  const sizeField = panel.getByLabel('Compras por página');
+  // El cambio de tamaño vuelve siempre a la primera página; alternar dos tamaños lo garantiza aunque el
+  // control ya estuviera en 50 y la bandeja hubiera quedado en otra página.
+  await sizeField.selectOption('10');
+  await sizeField.selectOption(String(size));
   const current = panel.locator('[aria-current="page"]');
   await expect(current).toHaveText('Página 1');
-  for (let number = 1; number <= 20; number += 1) {
-    await expect(panel).toHaveAttribute('aria-busy', 'false');
+  const total = await documentsTotal(panel);
+  const rows = panel.locator('tbody tr[data-purchase-id]');
+  const rowsOn = (number: number) => Math.max(0, Math.min(size, total - (number - 1) * size));
+  let number = 1;
+  let previousFirst = Number.POSITIVE_INFINITY;
+  for (;;) {
+    if (number > 1) {
+      await expect.poll(() => firstDocumentId(rows)).toBeLessThan(previousFirst);
+    }
+    await expect(rows).toHaveCount(rowsOn(number));
+    previousFirst = await firstDocumentId(rows);
     if (await row.count() > 0) return row;
     const next = panel.getByRole('button', { name: 'Siguiente página' });
     if (await next.isDisabled()) break;
     await next.click();
-    await expect(current).toHaveText(`Página ${number + 1}`);
+    number += 1;
+    await expect(current).toHaveText(`Página ${number}`);
   }
   await expect(row).toHaveCount(1);
   return row;
