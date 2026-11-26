@@ -157,7 +157,7 @@ func (s *Service) ListAccounts(ctx context.Context, token string) ([]Account, er
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	result := []Account{}
-	rows, err := tx.Query(ctx, `SELECT id::text,username,display_name,location_id,enabled,must_change_password FROM auth_accounts WHERE deleted_at IS NULL ORDER BY id`)
+	rows, err := tx.Query(ctx, `SELECT a.id::text,a.username,a.display_name,a.location_id,a.enabled,a.must_change_password FROM auth_accounts a WHERE a.deleted_at IS NULL ORDER BY a.id`)
 	if err != nil {
 		return nil, err
 	}
