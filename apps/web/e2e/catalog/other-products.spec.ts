@@ -1,5 +1,5 @@
 import {
-  createOtherProduct, expect, openCatalogOtherProducts, otherProductByName, test, uniqueTag,
+  createOtherProduct, expect, findOtherProduct, openCatalogOtherProducts, otherProductByName, test, uniqueTag,
   warehouseRole, warehouseSessionState,
 } from './harness';
 
@@ -7,12 +7,13 @@ import {
  * S2 · los otros productos del catálogo, recorridos en el navegador.
  *
  * Un producto no es una batería: se identifica por un nombre libre y lleva los campos que el Almacén le
- * asigne —un número con su unidad, o un texto—. El alta escribe el nombre y el conjunto de campos, y la
- * edición reemplaza ese conjunto: los campos que se quitan no se conservan, y la pantalla lo dice antes
- * del acto junto al aviso de que el identificador lo asigna el servidor.
+ * asigne —un número con su unidad, o un texto—. El alta escribe el nombre y el conjunto de campos, la
+ * edición reemplaza ese conjunto y el retiro lo saca del catálogo para siempre, porque retirar reemplaza
+ * a eliminar. La pantalla dice las tres cosas antes de cada acto.
  *
  * Cada prueba nombra su producto con el sello del run y contrasta lo guardado con la lista activa del
- * contrato público (`other-products.md`), que es la lectura que la pantalla hace (S3).
+ * contrato público (`other-products.md`), que es la lectura que la pantalla hace y la que deja de
+ * publicar un producto retirado (S3).
  */
 
 test.use({ storageState: warehouseSessionState });
@@ -120,4 +121,39 @@ test('el Almacén edita un producto y la edición reemplaza sus campos', async (
   const persisted = await otherProductByName(warehouse, renamed);
   expect(persisted.id).toBe(product.id);
   expect(persisted.fields).toEqual([{ name: 'volumen en L', kind: 'number', number: '7.5', unit: 'L' }]);
+});
+
+test('el Almacén retira un producto y el catálogo deja de publicarlo', async ({ page, api }) => {
+  const warehouse = await api.as(warehouseRole);
+  const tag = uniqueTag();
+  const name = `Agua de prueba ${tag}`;
+  // El producto que se retira ya está en el catálogo: crearlo es otro acto y tiene su propia prueba.
+  const product = await createOtherProduct(warehouse, {
+    name,
+    fields: [{ name: 'volumen en L', kind: 'number', number: '5', unit: 'L' }],
+  });
+
+  await openCatalogOtherProducts(page);
+  await page.getByLabel('Buscar producto').fill(name);
+  const row = page.locator(`tr[data-product-id="${product.id}"]`);
+  await expect(row.locator('td[data-label="Producto"] strong')).toHaveText(name);
+
+  await row.getByRole('button', { name: `Retirar ${name}` }).click();
+
+  // La confirmación es la que la pantalla publica: el retiro es de una sola vía y tiene su condición.
+  const confirmation = page.getByRole('group', { name: `Retirar ${name}` });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText('lo saca del catálogo para siempre: no se puede volver a activar');
+  await expect(confirmation).toContainText('Sus existencias deben estar en cero y no puede tener transferencias pendientes.');
+  await confirmation.getByRole('button', { name: 'Confirmar retiro' }).click();
+
+  // El acto nombra el producto retirado y la fila sale de la lista editable en el acto.
+  const notice = page.getByRole('status').filter({ hasText: 'retirado' });
+  await expect(notice).toHaveText(
+    `Producto #${product.id} retirado. No se puede volver a activar y deja de aparecer en el catálogo.`);
+  await expect(row).toHaveCount(0);
+  await expect(page.getByText('Sin productos para esta consulta.')).toBeVisible();
+
+  // Y lo persistido: el producto ya no está en la lista activa del contrato.
+  expect(await findOtherProduct(warehouse, name)).toBeNull();
 });

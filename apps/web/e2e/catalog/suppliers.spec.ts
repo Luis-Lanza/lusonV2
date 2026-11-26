@@ -1,15 +1,18 @@
 import {
   createBattery, createOtherProduct, createSupplier, expect, openCatalogSuppliers, showSupplierRow,
-  supplierCatalog, supplierDetail, test, uniqueTag, warehouseRole, warehouseSessionState,
+  supplierCatalog, supplierCatalogReply, supplierDetail, test, uniqueTag, warehouseRole,
+  warehouseSessionState,
 } from './harness';
 
 /**
  * S2 · los proveedores del almacén, recorridos en el navegador.
  *
- * El Almacén registra a quién le compra, corrige su nombre y su contacto, y le asigna los productos del
- * catálogo que ese proveedor ofrece. Una oferta es una entrada del catálogo —una batería por su marca y
- * modelo, un producto por su nombre—, y es lo que Ingresos lee para elegir qué se está recibiendo: una
- * batería ofrecida se publica con sus dos polaridades y un producto con la suya.
+ * El Almacén registra a quién le compra, corrige su nombre y su contacto, le asigna los productos del
+ * catálogo que ese proveedor ofrece y lo retira cuando deja de traer mercadería. Una oferta es una
+ * entrada del catálogo —una batería por su marca y modelo, un producto por su nombre—, y es lo que
+ * Ingresos lee para elegir qué se está recibiendo: una batería ofrecida se publica con sus dos
+ * polaridades y un producto con la suya. El retiro es de una sola vía: el proveedor deja de estar
+ * disponible para elegir en Ingresos y sus documentos ya registrados lo siguen nombrando.
  *
  * Cada prueba registra su propio proveedor y su propia entrada con el sello del run, y contrasta lo que
  * quedó guardado con el detalle y el catálogo del proveedor que publica `suppliers.md` (S3). La lista no
@@ -185,4 +188,49 @@ test('el Almacén asigna un producto del catálogo y el catálogo del proveedor 
   const offered = await supplierCatalog(warehouse, supplier.id);
   expect(offered.map(item => [item.catalog_entry_id, item.kind, item.name]))
     .toEqual([[product.id, 'other', product.name]]);
+});
+
+test('el Almacén retira un proveedor y deja de estar disponible', async ({ page, api }) => {
+  const warehouse = await api.as(warehouseRole);
+  const tag = uniqueTag();
+  // El proveedor que se retira ya está registrado: registrarlo es otro acto y tiene su propia prueba.
+  const supplier = await createSupplier(warehouse, { name: `Proveedor ${tag}`, contact: `Contacto ${tag}` });
+
+  await openCatalogSuppliers(page);
+  const row = await showSupplierRow(page, supplier.id);
+
+  await row.getByRole('button', { name: `Retirar ${supplier.name}` }).click();
+
+  // La confirmación es la que la pantalla publica: el retiro es de una sola vía y no toca lo ya registrado.
+  const confirmation = page.getByRole('group', { name: `Retirar ${supplier.name}` });
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toContainText('es de una sola vía');
+  await expect(confirmation).toContainText('deja de estar disponible para elegir en Ingresos');
+  await confirmation.getByRole('button', { name: 'Confirmar retiro' }).click();
+
+  // El acto nombra el proveedor retirado. Y no lo borra de la lista: la pantalla vuelve a leer los
+  // proveedores y lo publica al final, marcado como retirado, porque sus documentos pasados lo nombran.
+  const notice = page.getByRole('status').filter({ hasText: 'retirado' });
+  await expect(notice).toHaveText(`Proveedor #${supplier.id} retirado. Deja de estar disponible en Ingresos`
+    + ' y sus documentos ya registrados se siguen leyendo.');
+  await expect(row.getByRole('button', { name: `Editar ${supplier.name}` })).toHaveCount(0);
+
+  // Recargada la pantalla, el proveedor se publica retirado y de sólo lectura, sin ninguna acción.
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Proveedores del almacén' })).toBeVisible();
+  const retired = await showSupplierRow(page, supplier.id);
+  await expect(retired).toHaveAttribute('data-retired', 'true');
+  await expect(retired.locator('td[data-label="Proveedor"] strong')).toHaveText(supplier.name);
+  await expect(retired.locator('td[data-label="Proveedor"] .catalog-chip')).toHaveText('Retirado');
+  await expect(retired.locator('td[data-label="Acciones"]')).toHaveText('Solo lectura');
+  await expect(retired.getByRole('button', { name: `Editar ${supplier.name}` })).toHaveCount(0);
+  await expect(retired.getByRole('button', { name: `Asignar productos a ${supplier.name}` })).toHaveCount(0);
+
+  // Lo persistido: el proveedor queda retirado y ya no llena ninguna elección de Ingresos.
+  const persisted = await supplierDetail(warehouse, supplier.id);
+  expect(persisted.retired).toBe(true);
+  expect(persisted.name).toBe(supplier.name);
+  expect(persisted.contact).toBe(supplier.contact);
+  const refused = await supplierCatalogReply(warehouse, supplier.id);
+  expect(refused).toEqual({ status: 409, error: 'conflict' });
 });

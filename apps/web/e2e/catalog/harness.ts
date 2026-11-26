@@ -101,12 +101,21 @@ export async function priceMatrix(session: Session, kind: 'battery' | 'other' | 
   return read<PriceMatrix>(session, `/api/catalog/prices?${params.toString()}`);
 }
 
-/** La fila de una entrada concreta, buscada por su identidad: la matriz o el motivo de no estar. */
+/**
+ * La fila de una entrada concreta, buscada por su identidad, o `null` cuando el catálogo activo ya no la
+ * publica: es la única forma de afirmar que una entrada retirada dejó de ofrecerse.
+ */
+export async function findPriceRow(session: Session, kind: 'battery' | 'other', search: string,
+  entryId: number): Promise<MatrixRow | null> {
+  const matrix = await priceMatrix(session, kind, search);
+  return matrix.rows.find(candidate => candidate.catalog_entry_id === entryId) ?? null;
+}
+
+/** La fila de una entrada concreta: la matriz, o el motivo por el que no está. */
 export async function priceRow(session: Session, kind: 'battery' | 'other', search: string,
   entryId: number): Promise<MatrixRow> {
-  const matrix = await priceMatrix(session, kind, search);
-  const row = matrix.rows.find(candidate => candidate.catalog_entry_id === entryId);
-  if (row === undefined) {
+  const row = await findPriceRow(session, kind, search, entryId);
+  if (row === null) {
     throw new Error(`la entrada ${entryId} no aparece en la matriz de precios de ${kind} con la búsqueda «${search}»`);
   }
   return row;
@@ -160,12 +169,20 @@ export async function createOtherProduct(session: Session,
   return write<OtherProductRecord>(session, 'post', '/api/catalog/other-products', draft, 201);
 }
 
-/** El producto por su nombre, leído de la lista activa: la lectura que la pantalla hace. */
-export async function otherProductByName(session: Session, name: string): Promise<OtherProductRecord> {
+/**
+ * El producto por su nombre en la lista activa, o `null` cuando ya no está: un producto retirado deja de
+ * publicarse en la misma lista.
+ */
+export async function findOtherProduct(session: Session, name: string): Promise<OtherProductRecord | null> {
   const params = new URLSearchParams({ search: name, page: '1', page_size: '10' });
   const page = await read<OtherProductPage>(session, `/api/catalog/other-products?${params.toString()}`);
-  const record = page.products.find(candidate => candidate.name === name);
-  if (record === undefined) throw new Error(`el producto «${name}» no aparece en el catálogo activo`);
+  return page.products.find(candidate => candidate.name === name) ?? null;
+}
+
+/** El producto por su nombre, leído de la lista activa: la lectura que la pantalla hace. */
+export async function otherProductByName(session: Session, name: string): Promise<OtherProductRecord> {
+  const record = await findOtherProduct(session, name);
+  if (record === null) throw new Error(`el producto «${name}» no aparece en el catálogo activo`);
   return record;
 }
 
@@ -226,6 +243,17 @@ export async function supplierCatalog(session: Session, id: number,
   const page = await read<{ items: readonly SupplierCatalogItem[]; page_size: number }>(
     session, `/api/suppliers/${id}/catalog${query === '' ? '' : `?${query}`}`);
   return page.items;
+}
+
+/**
+ * El catálogo del proveedor, respondido crudo: un proveedor retirado no llena ninguna elección de
+ * Ingresos, así que su lectura se niega y el acto de retirarlo se puede afirmar por el contrato.
+ */
+export async function supplierCatalogReply(session: Session,
+  id: number): Promise<{ readonly status: number; readonly error: string }> {
+  const reply = await session.request.get(`/api/suppliers/${id}/catalog`);
+  const body = (await reply.json()) as { error?: string };
+  return { status: reply.status(), error: body.error ?? '' };
 }
 
 // ---------------------------------------------------------------------------------
