@@ -12,12 +12,14 @@ import {
 import {
   canonicalAdvanceBody, canonicalClaimBody, canonicalDefectBody, canonicalDeliveryBody,
   canonicalLoanBody, canonicalLoanFateBody, canonicalNoticeBody, warrantyCustodyUnits,
-  warrantyDeliveryFates, warrantyDestinationLabels, warrantyDispatchAvailable, warrantyEventKindLabels,
+  warrantyDeliveryFates, warrantyDestinationLabels, warrantyDispatchAvailable, warrantyEventLabel,
   warrantyCloseAvailable, warrantyDaysSince, warrantyDeliveryAvailable, warrantyLendAvailable,
   warrantyLoanFateLabels, warrantyLoanRegistered, warrantyNoticeAvailable,
-  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseLabels, warrantyPhaseShortLabels,
-  warrantyPhaseTone, warrantyPhases, warrantyReleased, warrantyReceiptAvailable, warrantyReceiptFileName,
-  warrantyReceiptPath, warrantyVerdictLabels,
+  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseShortLabel,
+  warrantyPhaseShortLabels, warrantyPhaseTone, warrantyPhases, warrantyReleased, warrantyReceiptAvailable,
+  warrantyReceiptFileName, warrantyReceiptPath, warrantyRowPhaseLabel, warrantyUnitBoundForStock,
+  warrantyUnitsWrittenOff,
+  warrantyVerdictLabels,
   type WarrantyCase, type WarrantyCaseRow, type WarrantyDeliveryFate, type WarrantyLoan,
   type WarrantyLoanFateStated,
   type WarrantyOriginFilter, type WarrantyPhaseFilter,
@@ -101,13 +103,6 @@ const locationName = (locations: readonly Location[], id: number): string =>
   locations.find(entry => entry.id === id)?.name ?? `Ubicación ${id}`;
 const units = (quantity: number): string => `${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}`;
 const days = (value: number): string => value === 1 ? '1 día' : `${value} días`;
-/**
- * Whether the case's unit goes to sellable stock instead of leaving with the client (S31). Such a unit
- * is never delivered: it enters the branch's stock through the release the Almacén authorises, and the
- * server refuses the delivery of it (`409 unit_belongs_to_stock`), so the screen never offers the try.
- */
-const unitBelongsToStock = (value: WarrantyCase): boolean =>
-  value.origin === 'warranty_claim' && value.reported_destination === 'stock';
 /**
  * The four facts a lent battery can have become, in the words the counter says them and with the fate
  * each one records (S33). The fate is never chosen from a list: it is the fact that happened.
@@ -300,7 +295,7 @@ export default function WarrantyCases({ csrf, branch, locations, fetcher = globa
                   <small className="warranty-sub">{row.serial_number === null ? `${units(row.quantity ?? 0)} de la góndola` : 'Serial de la unidad reclamada'}</small>
                 </td>
                 <td data-label="Origen"><span className={`warranty-pill ${row.origin === 'stock_defect' ? 'warn' : 'quiet'}`}>{warrantyOriginLabels[row.origin]}</span></td>
-                <td data-label="Etapa"><span className={`warranty-pill ${tone}`}>{warrantyPhaseShortLabels[row.phase]}</span></td>
+                <td data-label="Etapa"><span className={`warranty-pill ${tone}`}>{warrantyRowPhaseLabel(row)}</span></td>
                 <td data-label="Días" className="num warranty-days">{warrantyDaysSince(row.created_at, today)}</td>
               </tr>;
             })}</tbody>
@@ -323,7 +318,7 @@ export default function WarrantyCases({ csrf, branch, locations, fetcher = globa
     {exchange && <ExchangeDialog api={api} sales={sales} csrf={csrf} branch={branch} locations={locations}
       onClose={() => setExchange(false)} onCase={record => { accept(record, `Caso ${record.case_number} abierto en la sucursal.`); }} />}
     {defect && <DefectDialog api={api} sales={sales} csrf={csrf} branch={branch}
-      onClose={() => setDefect(false)} onCase={record => { accept(record, `Hallazgo ${record.case_number} registrado: ${units(record.quantity ?? 0)} dadas de baja de la góndola.`); }} />}
+      onClose={() => setDefect(false)} onCase={record => { accept(record, `Hallazgo ${record.case_number} registrado: ${warrantyUnitsWrittenOff(record.quantity ?? 0)} de la góndola.`); }} />}
   </section>;
 }
 
@@ -419,7 +414,7 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
   return <>
     <div className="warranty-detail-top">
       <span className="warranty-doc">{record.case_number}</span>
-      <span className={`warranty-pill ${tone}`}>{warrantyPhaseShortLabels[record.phase]}</span>
+      <span className={`warranty-pill ${tone}`}>{warrantyPhaseShortLabel(record)}</span>
       <button type="button" className="warranty-close" onClick={onClose} aria-label="Cerrar el detalle del caso">Cerrar</button>
     </div>
     <h2>{record.origin === 'warranty_claim'
@@ -459,17 +454,24 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
 
     {custody > 0 && <div className="warranty-custody">
       <strong>{`En custodia por garantía: ${units(custody)}`}</strong>
-      <p>La unidad reparada no es stock vendible mientras espera al cliente: el punto de venta no puede venderla y la rendición la publica en una línea aparte. Sale de custodia cuando el Almacén la libera o cuando se entrega el canje.</p>
+      {/* The custody block states the destination the case already published (S31): a unit bound for the
+          branch's shelf leaves custody by the release that sells it and closes the case, and no client
+          ever collects it, so the delivery is never the way out it is for the repaired unit. */}
+      <p>{warrantyUnitBoundForStock(record)
+        ? 'La unidad que volvió de fábrica está en custodia del caso y su destino es el stock vendible de la sucursal: mientras espera no es stock vendible, el punto de venta no puede venderla y la rendición la publica en una línea aparte. Entra al stock con la liberación que autoriza el Almacén, y el caso cierra con ese acto: a ningún cliente se le entrega.'
+        : 'La unidad reparada no es stock vendible mientras espera al cliente: el punto de venta no puede venderla y la rendición la publica en una línea aparte. Sale de custodia cuando el Almacén la libera o cuando se entrega el canje.'}</p>
     </div>}
     {record.origin === 'warranty_claim' && warrantyReleased(record) && <p className="warranty-note">
-      El Almacén liberó la unidad a stock vendible: ya no está en custodia y el caso sigue esperando al cliente.
+      {warrantyUnitBoundForStock(record)
+        ? 'El Almacén liberó la unidad al stock vendible de la sucursal: ya no está en custodia y el caso cerró con ese acto.'
+        : 'El Almacén liberó la unidad a stock vendible: ya no está en custodia y el caso sigue esperando al cliente.'}
     </p>}
 
     <h3 className="warranty-section-title">Historial del caso</h3>
     <ol className="warranty-timeline">
       {record.events.map(entry => <li key={entry.ordinal} data-kind={entry.kind}>
         <div className="warranty-timeline-head">
-          <strong>{entry.kind === 'phase' ? warrantyPhaseLabels[entry.phase] : warrantyEventKindLabels[entry.kind]}</strong>
+          <strong>{warrantyEventLabel(record, entry)}</strong>
           <time dateTime={entry.recorded_at}>{new Intl.DateTimeFormat('es-BO', { timeZone: 'America/La_Paz', day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(entry.recorded_at))}</time>
         </div>
         {entry.note !== '' && <p>{entry.note}</p>}
@@ -563,7 +565,10 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
         {notice.problem !== '' && <p className="warranty-problem" role="alert">{notice.problem}</p>}
       </form>}
 
-      {warrantyDeliveryAvailable(record) && !unitBelongsToStock(record) && <form className="warranty-action" onSubmit={submitDelivery}>
+      {/* The unit bound for the branch's shelf leaves by the release and never with a client (S31): the rule is
+          the pair of the destination and the verdict, read from the case model where the whole app reads it, so an
+          uncovered unit with that same destination — the used pool's (LW025) — keeps its delivery. */}
+      {warrantyDeliveryAvailable(record) && !warrantyUnitBoundForStock(record) && <form className="warranty-action" onSubmit={submitDelivery}>
         <h4>Entregar el canje</h4>
         <p className="warranty-note">Se entrega la batería que volvió de fábrica y el caso queda cerrado, con la usada resuelta en el mismo acto.</p>
         <label htmlFor={`delivery-fate-${record.id}`}>Qué pasó con la usada</label>
@@ -592,7 +597,7 @@ function CaseDetail({ record, sale, saleProblem, api, csrf, locations, today, on
         {delivery.problem !== '' && <p className="warranty-problem" role="alert">{delivery.problem}</p>}
       </form>}
 
-      {unitBelongsToStock(record) && record.phase !== 'closed' && <div className="warranty-action">
+      {warrantyUnitBoundForStock(record) && record.phase !== 'closed' && <div className="warranty-action">
         <h4>El caso cierra con la liberación</h4>
         <p className="warranty-note">La unidad de este caso va al stock vendible de la sucursal: no se entrega a ningún cliente. El caso queda cerrado con el aviso al cliente y la liberación que autoriza el Almacén, no con la entrega.</p>
       </div>}

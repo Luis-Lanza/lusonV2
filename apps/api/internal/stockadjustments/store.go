@@ -76,21 +76,22 @@ func checkVariants(ctx context.Context, q querier, lines []Line) error {
 	return nil
 }
 
-// Create applies one immutable physical-count document atomically. The warehouse
-// administrator is the only admitted actor; the canonical payload is resolved
-// first, so an identical replay returns the persisted document and a different
-// payload under the same operation key is a conflict, never a second document.
-// The client supplies counted quantities only: the database overwrites the
-// expected snapshot from its own locked balance and applies the difference.
-// Lines are inserted in ascending variant order, which is the database's
-// balance-row lock order.
+// Create applies one immutable physical-count document atomically, in the actor's own
+// location. Any operating account may record one (S36.1): the section states the session and
+// the document is written where that account counts, never where a request says. The
+// canonical payload is resolved first, so an identical replay returns the persisted document
+// and a different payload under the same operation key is a conflict, never a second
+// document. The client supplies counted quantities only: the database overwrites the expected
+// snapshot from its own locked balance and applies the difference. Lines are inserted in
+// ascending variant order, which is the database's balance-row lock order.
 func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInput) (Adjustment, bool, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Adjustment{}, false, ErrUnavailable
 	}
-	if !warehouseAdmin(actor) {
+	if !adjustingAccount(actor) {
 		return Adjustment{}, false, ErrForbidden
 	}
+	location := actor.Location.ID
 	canonical, err := Validate(input)
 	if err != nil {
 		return Adjustment{}, false, err
@@ -112,10 +113,17 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	if err := checkAssignment(ctx, tx, actor); err != nil {
 		return Adjustment{}, false, err
 	}
+	// An operation key is one intent of one location: the same key from another location
+	// states a different payload -- the location is part of it -- so it is a conflict and
+	// never a replay of another location's document.
 	var id int64
-	err = tx.QueryRow(ctx, "SELECT id FROM stock_adjustments WHERE operation_key=$1", canonical.OperationKey).Scan(&id)
+	var storedLocation int
+	err = tx.QueryRow(ctx, "SELECT id,location_id FROM stock_adjustments WHERE operation_key=$1", canonical.OperationKey).Scan(&id, &storedLocation)
 	if err == nil {
-		adjustment, err := loadAdjustment(ctx, tx, id)
+		if storedLocation != location {
+			return Adjustment{}, false, ErrRetryConflict
+		}
+		adjustment, err := loadAdjustment(ctx, tx, id, location)
 		if err != nil {
 			return Adjustment{}, false, err
 		}
@@ -136,7 +144,7 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,detail,created_by_account_id)
  VALUES($1,$2,$3,$4,$5) RETURNING id`,
-		canonical.OperationKey, warehouseLocationID, canonical.Reason, canonical.Detail, actor.AccountID).Scan(&id)
+		canonical.OperationKey, location, canonical.Reason, canonical.Detail, actor.AccountID).Scan(&id)
 	if err != nil {
 		return Adjustment{}, false, mapFailure(ctx, err)
 	}
@@ -149,7 +157,7 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 			return Adjustment{}, false, mapFailure(ctx, err)
 		}
 	}
-	adjustment, err := loadAdjustment(ctx, tx, id)
+	adjustment, err := loadAdjustment(ctx, tx, id, location)
 	if err != nil {
 		return Adjustment{}, false, err
 	}
@@ -169,12 +177,13 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 // resolves to a replay instead of a unique violation. A pure request shape is
 // rejected before the transaction; everything the database decides (reversal
 // mirror, single counter-entry, covered stock) is trusted only through its
-// SQLSTATE.
+// SQLSTATE. The counter-entry follows its original: it is written in the original's
+// location, and only the account that counts there can reverse it (S36.1).
 func (s *Store) Reverse(ctx context.Context, actor auth.Identity, targetID int64, operationKey, reason string) (Adjustment, bool, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Adjustment{}, false, ErrUnavailable
 	}
-	if !warehouseAdmin(actor) {
+	if !adjustingAccount(actor) {
 		return Adjustment{}, false, ErrForbidden
 	}
 	if targetID < 1 {
@@ -206,13 +215,18 @@ func (s *Store) Reverse(ctx context.Context, actor auth.Identity, targetID int64
 	}
 	// An existing operation key is resolved before the target is touched: the same
 	// key with the same target and reason is a replay, anything else is a conflict
-	// and never a second counter-entry.
+	// and never a second counter-entry. The key is one intent of one location, so a
+	// key another location already spent is a conflict too.
 	var existingID int64
+	var existingLocation int
 	var existingTarget *int64
 	var existingReason string
-	err = tx.QueryRow(ctx, "SELECT id,reverses_adjustment_id,reason FROM stock_adjustments WHERE operation_key=$1", operationKey).Scan(&existingID, &existingTarget, &existingReason)
+	err = tx.QueryRow(ctx, "SELECT id,location_id,reverses_adjustment_id,reason FROM stock_adjustments WHERE operation_key=$1", operationKey).Scan(&existingID, &existingLocation, &existingTarget, &existingReason)
 	if err == nil {
-		adjustment, loadErr := loadAdjustment(ctx, tx, existingID)
+		if existingLocation != actor.Location.ID {
+			return Adjustment{}, false, ErrRetryConflict
+		}
+		adjustment, loadErr := loadAdjustment(ctx, tx, existingID, actor.Location.ID)
 		if loadErr != nil {
 			return Adjustment{}, false, loadErr
 		}
@@ -241,8 +255,11 @@ func (s *Store) Reverse(ctx context.Context, actor auth.Identity, targetID int64
 	if err != nil {
 		return Adjustment{}, false, fail(ctx)
 	}
-	// A document of another location is not part of this warehouse's ledger.
-	if location != warehouseLocationID {
+	// A document of another location is not part of this actor's ledger: it does not exist
+	// here. Answering "unavailable" would claim an outage over a document that simply is not
+	// yours, so the reversal of another location's document is not found, exactly like an
+	// unknown id.
+	if location != actor.Location.ID {
 		return Adjustment{}, false, ErrNotFound
 	}
 	if targetReverses != nil || alreadyReversed {
@@ -252,11 +269,12 @@ func (s *Store) Reverse(ctx context.Context, actor auth.Identity, targetID int64
 	if err != nil {
 		return Adjustment{}, false, err
 	}
-	// A counter-entry states its own motive in the mandatory reason column.
+	// A counter-entry states its own motive in the mandatory reason column, and it is written
+	// in the original's own location.
 	var id int64
 	err = tx.QueryRow(ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,reverses_adjustment_id,created_by_account_id)
  VALUES($1,$2,$3,$4,$5) RETURNING id`,
-		operationKey, warehouseLocationID, canonicalReason, targetID, actor.AccountID).Scan(&id)
+		operationKey, location, canonicalReason, targetID, actor.AccountID).Scan(&id)
 	if err != nil {
 		return Adjustment{}, false, mapFailure(ctx, err)
 	}
@@ -267,7 +285,7 @@ func (s *Store) Reverse(ctx context.Context, actor auth.Identity, targetID int64
 			return Adjustment{}, false, mapFailure(ctx, err)
 		}
 	}
-	adjustment, err := loadAdjustment(ctx, tx, id)
+	adjustment, err := loadAdjustment(ctx, tx, id, location)
 	if err != nil {
 		return Adjustment{}, false, err
 	}
@@ -318,18 +336,18 @@ func derivedLines(ctx context.Context, q querier, targetID int64) ([]reversalLin
 	return lines, nil
 }
 
-// List reads one newest-first page of persisted documents for the warehouse. The
-// actor guard and the provisioned-account binding are creation's, and the page is
-// one statement plus one total: line counts, the kind derived from those lines and
-// differences are computed by the database, never by a Go loop over every line. The
-// difference total is cast to text before it becomes an int64, so an out-of-range
-// sum fails closed instead of wrapping.
+// List reads one newest-first page of the actor's own documents, in its own location
+// (S36.1): the history is each location's ledger, never the installation's. The actor guard
+// and the provisioned-account binding are creation's, and the page is one statement plus one
+// total: line counts, the kind derived from those lines and differences are computed by the
+// database, never by a Go loop over every line. The difference total is cast to text before
+// it becomes an int64, so an out-of-range sum fails closed instead of wrapping.
 func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize int) (Page, error) {
 	result := Page{Page: page, PageSize: pageSize, Adjustments: []Summary{}}
 	if ctx == nil || s == nil || s.pool == nil {
 		return Page{}, ErrUnavailable
 	}
-	if !warehouseAdmin(actor) {
+	if !adjustingAccount(actor) {
 		return Page{}, ErrForbidden
 	}
 	// Every rejected page or size stops here, before the first statement.
@@ -350,7 +368,8 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	if tx.QueryRow(ctx, "SELECT count(*) FROM stock_adjustments WHERE location_id=$1", warehouseLocationID).Scan(&result.TotalAdjustments) != nil {
+	location := actor.Location.ID
+	if tx.QueryRow(ctx, "SELECT count(*) FROM stock_adjustments WHERE location_id=$1", location).Scan(&result.TotalAdjustments) != nil {
 		return Page{}, fail(ctx)
 	}
 	rows, err := tx.Query(ctx, `SELECT a.id,a.reason,a.detail,a.created_at,a.reverses_adjustment_id,
@@ -366,7 +385,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
  WHERE a.location_id=$1
  GROUP BY a.id
  ORDER BY a.id DESC
- LIMIT $2 OFFSET $3`, warehouseLocationID, int64(pageSize), int64(page-1)*int64(pageSize))
+ LIMIT $2 OFFSET $3`, location, int64(pageSize), int64(page-1)*int64(pageSize))
 	if err != nil {
 		return Page{}, fail(ctx)
 	}
@@ -410,18 +429,18 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 	return result, nil
 }
 
-// Read reads one persisted document with its lines joined to the catalogue: the
-// actor guard and the provisioned-account binding are creation's, the snapshot is
-// the history read's (RepeatableRead, read-only), and the document is resolved by
-// one header statement plus one variant-ordered line statement, so the catalogue
-// identity of a line is never an N+1 lookup. Capacity is rendered by the same
-// `::text` + catalog.ParseDecimal pair the inventory read uses. A document of
-// another location is not part of this warehouse's ledger: it is not found.
+// Read reads one persisted document of the actor's own location with its lines joined to the
+// catalogue: the actor guard and the provisioned-account binding are creation's, the snapshot
+// is the history read's (RepeatableRead, read-only), and the document is resolved by one header
+// statement plus one variant-ordered line statement, so the catalogue identity of a line is
+// never an N+1 lookup. Capacity is rendered by the same `::text` + catalog.ParseDecimal pair
+// the inventory read uses. A document of another location is not part of this actor's ledger:
+// it is not found.
 func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Detail{}, ErrUnavailable
 	}
-	if !warehouseAdmin(actor) {
+	if !adjustingAccount(actor) {
 		return Detail{}, ErrForbidden
 	}
 	// Only a positive document id reaches the database; an aliased or impossible one
@@ -451,7 +470,7 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
   a.created_at,a.reverses_adjustment_id,
   (SELECT counter.id FROM stock_adjustments counter WHERE counter.reverses_adjustment_id=a.id),
   coalesce((SELECT counter.reason FROM stock_adjustments counter WHERE counter.reverses_adjustment_id=a.id),'')
- FROM stock_adjustments a WHERE a.id=$1 AND a.location_id=$2`, id, warehouseLocationID).Scan(
+ FROM stock_adjustments a WHERE a.id=$1 AND a.location_id=$2`, id, actor.Location.ID).Scan(
 		&detail.ID, &detail.LocationID, &detail.Reason, &detail.Detail,
 		&detail.CreatedByAccountID, &detail.CreatedAt, &detail.ReversesAdjustmentID, &detail.ReversedBy,
 		&detail.ReversedByReason)
@@ -520,7 +539,7 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	if len(stored) == 0 {
 		return Detail{}, ErrUnavailable
 	}
-	// The variant identity of every line is the one the whole warehouse reads: a
+	// The variant identity of every line is the one the whole installation reads: a
 	// battery keeps its battery attributes and a product its typed fields.
 	fields, err := catalog.ReadFields(ctx, tx, entryIDs)
 	if err != nil {
@@ -537,7 +556,7 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 			Difference: line.counted - line.expected})
 	}
 	// Every document states a mandatory motive; a counter-entry mirrors a strictly
-	// earlier document of this warehouse.
+	// earlier document of this location.
 	reason, validReason := CanonicalReason(detail.Reason)
 	if !validReason || reason != detail.Reason {
 		return Detail{}, ErrUnavailable
@@ -549,7 +568,7 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	if !validDetail(detail.Detail) {
 		return Detail{}, ErrUnavailable
 	}
-	// A document can only be reversed by a later document of this warehouse.
+	// A document can only be reversed by a later document of this location.
 	if detail.ReversedBy != nil && (*detail.ReversedBy < 1 || *detail.ReversedBy <= detail.ID) {
 		return Detail{}, ErrUnavailable
 	}
@@ -575,18 +594,18 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	return detail, nil
 }
 
-// Catalog reads the blind capture catalogue of this warehouse: the identity of
-// every variant the warehouse holds a balance row for, and nothing else. No
+// Catalog reads the blind capture catalogue of the actor's own location: the identity of
+// every variant that location holds a balance row for, and nothing else. No
 // quantity column is selected and no quantity field exists on the result, so the
 // expected stock, the difference and every other stock number stay out of the
 // capture screen. The balance join only proves the variant belongs to this
-// warehouse's ledger; it read no stock value.
+// location's ledger; it read no stock value.
 func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery) (CatalogPage, error) {
 	result := CatalogPage{Page: q.Page, PageSize: q.PageSize, Items: []CatalogItem{}}
 	if ctx == nil || s == nil || s.pool == nil {
 		return CatalogPage{}, ErrUnavailable
 	}
-	if !warehouseAdmin(actor) {
+	if !adjustingAccount(actor) {
 		return CatalogPage{}, ErrForbidden
 	}
 	if !ValidPage(q.Page, q.PageSize) || (q.Polarity != "" && q.Polarity != "L" && q.Polarity != "R") ||
@@ -607,7 +626,7 @@ func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	args := []any{warehouseLocationID, literalPattern(q.Search), q.Brand, q.Polarity, string(q.Kind.Filter())}
+	args := []any{actor.Location.ID, literalPattern(q.Search), q.Brand, q.Polarity, string(q.Kind.Filter())}
 	if err := tx.QueryRow(ctx, "SELECT count(*)"+catalogFilter, args...).Scan(&result.TotalVariants); err != nil {
 		return CatalogPage{}, fail(ctx)
 	}
@@ -665,9 +684,9 @@ func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery
 	return result, nil
 }
 
-// catalogFilter is shared by the count and the page, so both answer the same
-// question. It selects no stock quantity at all, a retired entry is never a valid
-// target for an adjustment, and the kind selection is the stock read's own: an
+// catalogFilter is shared by the count and the page, so both answer the same question for
+// the actor's own location ($1). It selects no stock quantity at all, a retired entry is
+// never a valid target for an adjustment, and the kind selection is the stock read's own: an
 // absent kind is the battery-only catalogue every caller already had.
 const catalogFilter = ` FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
@@ -691,18 +710,19 @@ func validText(text string) bool {
 	return len(text) <= maxSearch && validDetail(text)
 }
 
-// loadAdjustment reads the durable document: lines ordered by variant id with the
-// expected snapshot and the counted quantity, and the difference derived from
-// them. The bounds are re-checked, so a document this domain did not write is a
-// store failure rather than a described one.
-func loadAdjustment(ctx context.Context, q querier, id int64) (Adjustment, error) {
+// loadAdjustment reads the durable document of one location: lines ordered by variant id with
+// the expected snapshot and the counted quantity, and the difference derived from them. The
+// bounds are re-checked, so a document this domain did not write is a store failure rather than
+// a described one, while a document of another location is simply not found: it is not this
+// ledger's, and a 503 would claim the system is broken over a document that is not yours.
+func loadAdjustment(ctx context.Context, q querier, id int64, location int) (Adjustment, error) {
 	var adjustment Adjustment
 	err := q.QueryRow(ctx, `SELECT id,location_id,reason,detail,created_by_account_id,created_at,reverses_adjustment_id
- FROM stock_adjustments WHERE id=$1 AND location_id=$2`, id, warehouseLocationID).Scan(
+ FROM stock_adjustments WHERE id=$1 AND location_id=$2`, id, location).Scan(
 		&adjustment.ID, &adjustment.LocationID, &adjustment.Reason, &adjustment.Detail,
 		&adjustment.CreatedByAccountID, &adjustment.CreatedAt, &adjustment.ReversesAdjustmentID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Adjustment{}, ErrUnavailable
+		return Adjustment{}, ErrNotFound
 	}
 	if err != nil {
 		return Adjustment{}, fail(ctx)
@@ -764,6 +784,11 @@ func mapFailure(ctx context.Context, err error) error {
 			return ErrInsufficientStock
 		case "LS002", "LS003", "LS005", "LS006", "LS007", "LS008":
 			return ErrInvalid
+		// The branch is held by a live settlement (LC001, the freeze of 035 wired to this
+		// document by 075): the branch closes or waits out its settlement, so this is a fact
+		// the operator acts on and never an outage.
+		case "LC001":
+			return ErrBranchFrozen
 		}
 	}
 	return ErrUnavailable

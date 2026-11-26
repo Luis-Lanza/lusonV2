@@ -699,3 +699,106 @@ func TestReleaseRefusesACaseWithAnUndecidedLoan(t *testing.T) {
 		t.Fatalf("the released unit is sellable stock: %d became %d", shelf, got)
 	}
 }
+
+// TestClosedByNamesTheActThatEndedTheCase pins S34 on the store: the act travels on the row the tray reads,
+// because a row carries the header and no history. A claim the counter delivered states `delivery`, a claim
+// the release closed states `release` with the unit it sold, and a case that is not closed states none --
+// not even after the release of a unit destined to the client, which moves no phase.
+func TestClosedByNamesTheActThatEndedTheCase(t *testing.T) {
+	f := newFixture(t)
+	f.fund(t, 2, "1000.00")
+	f.buyUsed(t, 2, "closed-by-delivery-0001", "NS60L", 1, "10.00", "10.00")
+	f.buyUsed(t, 2, "closed-by-release-0002", "NS60L", 1, "10.00", "10.00")
+	lend := func(claim warrantycase.Case) {
+		t.Helper()
+		if _, err := f.store.AddLoan(f.ctx, f.actor(2), claim.ID, warrantycase.LoanInput{
+			Model: "NS60L", Quantity: 1, SourceLocationID: 2}); err != nil {
+			t.Fatalf("the branch lends the used battery of the case: %v", err)
+		}
+	}
+
+	// The claim the counter hands over: the delivery is the act that closes it.
+	delivered := f.openClaim(t, "CIERRE/ENTREGA")
+	if delivered.Phase != warrantycase.PhaseReceived || delivered.ClosedBy != nil {
+		t.Fatalf("an open case states no act: %+v", delivered)
+	}
+	lend(delivered)
+	f.atFactory(t, delivered)
+	if _, err := f.store.Resolve(f.ctx, f.actor(1), delivered.ID, warrantycase.ResolutionInput{
+		Verdict: warrantycase.VerdictRepaired, ReportedDestination: warrantycase.DestinationCustomer,
+		LoanDestination: warrantycase.DestinationStock, Note: "Reparada por fábrica"}); err != nil {
+		t.Fatalf("the factory returns the repaired unit for the client: %v", err)
+	}
+	if _, err := f.store.RegisterNotice(f.ctx, f.actor(2), delivered.ID,
+		"Avisado el cliente"); err != nil {
+		t.Fatalf("the branch notifies the client: %v", err)
+	}
+	// The release of a unit destined to the client moves no phase: the case is still not closed, so no act
+	// closed it and the row states none.
+	releasedToClient, err := f.store.AuthorizeRelease(f.ctx, f.actor(1), delivered.ID,
+		"El cliente viene por la unidad")
+	if err != nil || releasedToClient.Phase != warrantycase.PhaseResolved ||
+		releasedToClient.ClosedBy != nil {
+		t.Fatalf("a release that closes nothing states no act: %+v %v", releasedToClient, err)
+	}
+	closed, err := f.store.DeliverExchange(f.ctx, f.actor(2), delivered.ID, warrantycase.DeliveryInput{
+		LoanFate: warrantycase.LoanReturned, Note: "Entregada la reparada"})
+	if err != nil {
+		t.Fatalf("the counter delivers the repaired unit: %v", err)
+	}
+	if closed.Phase != warrantycase.PhaseClosed || closed.ClosedBy == nil ||
+		*closed.ClosedBy != warrantycase.ClosedByDelivery {
+		t.Fatalf("the delivery is the act that closed the case: %+v", closed)
+	}
+
+	// The claim whose usable unit the release sells: that release is the act that closes it (S31).
+	stockBound := f.openClaim(t, "CIERRE/LIBERACION")
+	lend(stockBound)
+	f.atFactory(t, stockBound)
+	if _, err := f.store.Resolve(f.ctx, f.actor(1), stockBound.ID, warrantycase.ResolutionInput{
+		Verdict: warrantycase.VerdictRepaired, ReportedDestination: warrantycase.DestinationStock,
+		LoanDestination: warrantycase.DestinationCustomer, Note: "Reparada: nadie la retira"}); err != nil {
+		t.Fatalf("the factory returns the usable unit to the branch's shelf: %v", err)
+	}
+	if _, err := f.store.RegisterNotice(f.ctx, f.actor(2), stockBound.ID,
+		"Avisado el cliente"); err != nil {
+		t.Fatalf("the branch notifies the client of the case bound for stock: %v", err)
+	}
+	if _, err := f.store.DecideLoan(f.ctx, f.actor(2), stockBound.ID, 1,
+		warrantycase.LoanKeptByCustomer); err != nil {
+		t.Fatalf("the branch decides the fate of the loan: %v", err)
+	}
+	sold, err := f.store.AuthorizeRelease(f.ctx, f.actor(1), stockBound.ID, "El cliente no la retira")
+	if err != nil {
+		t.Fatalf("the warehouse releases the unit bound for stock: %v", err)
+	}
+	if sold.Phase != warrantycase.PhaseClosed || sold.ClosedBy == nil ||
+		*sold.ClosedBy != warrantycase.ClosedByRelease {
+		t.Fatalf("the release is the act that closed the case: %+v", sold)
+	}
+
+	// The tray publishes the same act: the projection reads it from the last tramo, so a queue never loads a
+	// history to name the close (S34).
+	rows, err := f.store.List(f.ctx, f.actor(2), warrantycase.ListFilter{})
+	if err != nil {
+		t.Fatalf("the branch reads its tray: %v", err)
+	}
+	acts := map[int64]*warrantycase.ClosedBy{}
+	for _, row := range rows {
+		acts[row.ID] = row.ClosedBy
+	}
+	if act := acts[delivered.ID]; act == nil || *act != warrantycase.ClosedByDelivery {
+		t.Fatalf("the tray row of the delivered case states the delivery: %+v", acts)
+	}
+	if act := acts[stockBound.ID]; act == nil || *act != warrantycase.ClosedByRelease {
+		t.Fatalf("the tray row of the released case states the release: %+v", acts)
+	}
+	// Every row of the tray agrees with the case it publishes, act by act.
+	for _, row := range rows {
+		read := f.read(t, row.ID)
+		if (row.ClosedBy == nil) != (read.ClosedBy == nil) ||
+			(row.ClosedBy != nil && *row.ClosedBy != *read.ClosedBy) {
+			t.Fatalf("the tray and the case name the same close: %+v %+v", row.ClosedBy, read.ClosedBy)
+		}
+	}
+}

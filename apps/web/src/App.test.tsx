@@ -1766,6 +1766,45 @@ describe('warehouse adjustment section', () => {
     passiveCounts(mock);
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
+  // S36 · el ajuste es de cada local: la sucursal corrige su propio stock con el mismo
+  // documento, y por esto no se abre ninguna otra sección del Almacén.
+  it('opens the adjustments to a branch identity for its own stock and widens nothing else', async () => {
+    const emptyHistory = () => Promise.resolve(new Response(JSON.stringify({
+      page: 1, page_size: 25, total_adjustments: 0, adjustments: [] }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    const mock = setup({ ...session, identity: { ...identity, account_id: 2, location: metadata.locations[1] } },
+      url => url.startsWith('/api/stock-adjustments?') ? emptyHistory() : undefined);
+    render(<App />);
+    await inventory();
+    const navigation = await screen.findByRole('navigation', { name: 'Navegación principal' });
+    // El Almacén conserva sus secciones y la sucursal no las gana por este cambio.
+    expect(within(navigation).queryByRole('button', { name: 'Ingresos' })).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole('button', { name: 'Catálogo' })).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole('button', { name: 'Rendiciones' })).not.toBeInTheDocument();
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Ajustes' }));
+    expect(window.location.hash).toBe('#/ajustes');
+    const history = await screen.findByRole('region', { name: 'Documentos' });
+    expect(await within(history).findByText('Todavía no hay ajustes registrados.')).toBeInTheDocument();
+    // El acto dice de qué local es: el de la sesión, y no un documento anónimo.
+    expect(screen.getByText(/El ajuste mueve el stock vendible de/))
+      .toHaveTextContent('El ajuste mueve el stock vendible de Sucursal A.');
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('restores a typed #/ajustes hash for a branch identity without any write', async () => {
+    window.history.replaceState(null, '', '/#/ajustes');
+    const mock = setup({ ...session, identity: { ...identity, account_id: 2, location: metadata.locations[1] } },
+      url => url.startsWith('/api/stock-adjustments?')
+        ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, total_adjustments: 0, adjustments: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        : undefined);
+    render(<App />);
+    await screen.findByRole('region', { name: 'Documentos' });
+    expect(screen.getByRole('button', { name: 'Ajustes' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Inventario' })).not.toHaveAttribute('aria-current');
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
 });
 
 describe('warehouse catalogue section', () => {

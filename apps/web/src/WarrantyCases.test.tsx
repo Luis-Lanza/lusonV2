@@ -15,7 +15,7 @@ const failure = (code: string, status: number) => new Response(JSON.stringify({ 
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1, case_number: 'C-2-000001', branch_location_id: 2, origin: 'warranty_claim', phase: 'received',
   variant_id: 1, serial_number: 'ABC123', quantity: null, declared_failure: 'No arranca el motor',
-  reason: null, created_at: '2026-03-01T12:00:00Z', ...over,
+  reason: null, created_at: '2026-03-01T12:00:00Z', closed_by: null, ...over,
 });
 const loan = (over: Record<string, unknown> = {}) => ({
   ordinal: 1, model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1,
@@ -45,6 +45,35 @@ const resolvedCase = ({ noticed = true, loans = true }: { noticed?: boolean; loa
     event({ ordinal: 6, kind: 'notice', phase: 'resolved', recorded_at: '2026-03-16T12:00:00Z', note: 'Avisado por teléfono' })]
     : phasesToResolved(),
 });
+const noticeEvent = () => event({ ordinal: 6, kind: 'notice', phase: 'resolved',
+  recorded_at: '2026-03-16T12:00:00Z', note: 'Avisado por teléfono' });
+const releaseEvent = (phase: 'resolved' | 'closed') => event({ ordinal: 7, kind: 'release', phase,
+  recorded_at: '2026-03-19T12:00:00Z', note: 'Liberada a stock vendible' });
+// A claim whose unit the factory returned for the branch's own shelf (S31): it waits in custody, and the
+// release is the act that enters it into the branch's stock and closes the case.
+const stockBoundCase = (over: Record<string, unknown> = {}) => ({
+  ...row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' }),
+  verdict: 'repaired', reported_destination: 'stock', loan_destination: 'customer', stock_destination: null,
+  sale_id: 12, warranty_number: '2-000126', created_by_account_id: 2,
+  loans: [loan({ fate: 'returned', fate_decided_at: '2026-03-18T12:00:00Z' })],
+  events: [...phasesToResolved(), noticeEvent()],
+  ...over,
+});
+// The same case once the Almacén released it: the release is its last event and it holds `closed`.
+const releasedStockCase = () => stockBoundCase({ phase: 'closed', closed_by: 'release',
+  events: [...phasesToResolved(), noticeEvent(), releaseEvent('closed')] });
+// A claim the factory did not cover: the damaged unit goes to the used pool with that same destination and the
+// lent battery stays with the client (LW025, S11). The server accepts this delivery and refuses its release, so
+// the destination column alone never says which act closes the case.
+const uncoveredStockCase = (over: Record<string, unknown> = {}) => ({
+  ...resolvedCase({ noticed: false }),
+  verdict: 'not_covered', reported_destination: 'stock', loan_destination: 'customer', ...over,
+});
+// The same uncovered case once the counter delivered the exchange: that act closed it.
+const deliveredUncovered = () => uncoveredStockCase({ phase: 'closed', closed_by: 'delivery',
+  loans: [loan({ fate: 'kept_by_customer', fate_decided_at: '2026-03-20T13:00:00Z' })],
+  events: [...phasesToResolved(),
+    event({ ordinal: 6, phase: 'closed', recorded_at: '2026-03-20T13:00:00Z', note: 'Canje entregado' })] });
 // The sale the claim was judged against: the client, the sale date and the unit's own term.
 const saleBody = {
   id: 12, branch_sequence: 126, warranty_number: '2-000126', payment_method: 'cash',
@@ -135,6 +164,9 @@ describe('the branch guarantee tray', () => {
     expect(screen.getByText('12 meses')).toBeInTheDocument();
     // The unit that waits for the client is not sellable stock.
     expect(screen.getByText('En custodia por garantía: 1 unidad')).toBeInTheDocument();
+    // The unit of a claim destined to the client still leaves custody by the release or the delivery.
+    expect(screen.getByText(/Sale de custodia cuando el Almacén la libera o cuando se entrega el canje/))
+      .toBeInTheDocument();
     // The history is the append-only one, including the factory file number and the notice age.
     expect(screen.getByText('Reparada por fábrica')).toBeInTheDocument();
     expect(screen.getByText(/Legajo de fábrica F-2214/)).toBeInTheDocument();
@@ -277,7 +309,12 @@ describe('the branch guarantee tray', () => {
     const closed = { phase: 'closed', loans: [loan({ fate: 'kept_by_customer', fate_decided_at: '2026-03-20T13:00:00Z' })],
       events: [...phasesToResolved(), event({ ordinal: 6, phase: 'closed', recorded_at: '2026-03-20T13:00:00Z' })] };
     const h = harness((url, init) => {
-      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      // The tray is the header of the case and never its history: the row of a closed case carries the act
+      // that closed it, so the pill of the bandeja names the delivery without reading the case (S34).
+      if (url === '/api/warranty-cases') {
+        return tray([row({ id: 2, case_number: 'C-2-000002', phase: delivered ? 'closed' : 'resolved',
+          closed_by: delivered ? 'delivery' : null })]);
+      }
       if (url === '/api/warranty-cases/2') {
         if (delivered) return json({ ...resolvedCase(), ...closed });
         return json(withLoan ? resolvedCase() : resolvedCase({ loans: false }));
@@ -308,8 +345,13 @@ describe('the branch guarantee tray', () => {
     const post = h.posts().at(-1)!;
     expect(post.url).toBe('/api/warranty-cases/2/delivery');
     expect(JSON.parse(String(post.init.body))).toEqual({ loan_fate: 'kept_by_customer', note: 'Se la quedó el cliente' });
-    // The closed case is stated in the pane and in its own tray row.
-    await waitFor(() => expect(screen.getAllByText('Entregada').length).toBeGreaterThan(0));
+    // The closed case is named by the act that closed it, in the pane and in its own tray row.
+    const trayRow = screen.getByRole('button', { name: 'Ver el caso C-2-000002' }).closest('tr')!;
+    await waitFor(() => expect(within(trayRow).getByText('Entregada al cliente')).toBeInTheDocument());
+    // The delivery is still the act that closed this case, and the pill of the detail keeps saying so.
+    const pane = screen.getByRole('complementary', { name: 'Detalle del caso' });
+    const top = pane.querySelector('.warranty-detail-top') as HTMLElement;
+    expect(within(top).getByText('Entregada al cliente')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Entregar canje' })).not.toBeInTheDocument();
   });
 });
@@ -381,6 +423,134 @@ describe('the destination of the unit decides the act that closes the case (S31)
     // The branch's own act before that close is still offered: the notice it has not registered yet.
     expect(screen.getByLabelText('Qué se le dijo al cliente')).toBeInTheDocument();
     expect(h.posts()).toHaveLength(0);
+  });
+
+  it('offers the delivery of an uncovered unit bound for stock and never names the release (S31)', async () => {
+    let delivered = false;
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(delivered ? deliveredUncovered() : uncoveredStockCase());
+      if (url === '/api/sales/12') return json(saleBody);
+      if (url === '/api/warranty-cases/2/delivery' && init.method === 'POST') {
+        delivered = true;
+        return json(deliveredUncovered());
+      }
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    // The damaged unit is the used pool's and never the branch's shelf, so this case is not one the release
+    // closes: the act the server accepts is the delivery, and it is offered exactly as it is for the client's.
+    expect(screen.getByRole('heading', { name: 'Entregar el canje' })).toBeInTheDocument();
+    const fate = screen.getByLabelText('Qué pasó con la usada');
+    expect(fate).toHaveValue('');
+    // The screen never announces a close the server does not perform for this case.
+    expect(screen.queryByRole('heading', { name: 'El caso cierra con la liberación' })).toBeNull();
+    expect(screen.queryByText(/con el aviso al cliente y la liberación que autoriza el Almacén/)).toBeNull();
+    // The act is the client's repaired one: it writes the fate the counter states and nothing else.
+    fireEvent.change(fate, { target: { value: 'kept_by_customer' } });
+    fireEvent.change(screen.getByLabelText('Palabras del mostrador'), { target: { value: 'Se la quedó el cliente' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Entregar canje' }));
+    await screen.findByText(/Canje entregado en C-2-000002/);
+    expect(h.posts()).toHaveLength(1);
+    expect(h.posts()[0].url).toBe('/api/warranty-cases/2/delivery');
+    expect(JSON.parse(String(h.posts()[0].init.body)))
+      .toEqual({ loan_fate: 'kept_by_customer', note: 'Se la quedó el cliente' });
+  });
+
+  it('keeps a replaced unit bound for stock out of the delivery and closed by the release (S31)', async () => {
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(stockBoundCase({ verdict: 'replaced' }));
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    // The pair is what decides the act: the same destination with a returning verdict hands the unit to the shelf.
+    expect(screen.queryByRole('heading', { name: 'Entregar el canje' })).toBeNull();
+    expect(screen.queryByLabelText('Qué pasó con la usada')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'El caso cierra con la liberación' })).toBeInTheDocument();
+    expect(screen.getByText(/a ningún cliente se le entrega/)).toBeInTheDocument();
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it('names a case closed by the release by that act, never as delivered (S31)', async () => {
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') {
+        return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'closed', closed_by: 'release' })]);
+      }
+      if (url === '/api/warranty-cases/2') return json(releasedStockCase());
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    const pane = screen.getByRole('complementary', { name: 'Detalle del caso' });
+    const top = pane.querySelector('.warranty-detail-top') as HTMLElement;
+    // The unit entered the branch's sellable stock: the release is the act that closed the case, and
+    // the pill of the detail names it instead of claiming a delivery that never happened.
+    expect(within(top).getByText('Cerrada por liberación')).toBeInTheDocument();
+    expect(within(top).queryByText('Entregada al cliente')).not.toBeInTheDocument();
+    // The tray row names the same act out of the act the row publishes, and it never needed the history.
+    const trayRow = screen.getByRole('button', { name: 'Ver el caso C-2-000002' }).closest('tr')!;
+    expect(within(trayRow).getByText('Cerrada por liberación')).toBeInTheDocument();
+    expect(within(trayRow).queryByText('Entregada al cliente')).not.toBeInTheDocument();
+    // The closed case admits no further act of the branch.
+    expect(screen.getByText('El caso está cerrado: no admite más acciones de la sucursal.')).toBeInTheDocument();
+  });
+
+  it('tells the truth about the custody of a unit bound for stock, before and after the release (S31)', async () => {
+    let released = false;
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') {
+        return tray([row({ id: 2, case_number: 'C-2-000002', phase: released ? 'closed' : 'resolved' })]);
+      }
+      if (url === '/api/warranty-cases/2') return json(released ? releasedStockCase() : stockBoundCase());
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    // While it waits, the unit is in custody and its destination is already stated: the shelf.
+    expect(screen.getByText('En custodia por garantía: 1 unidad')).toBeInTheDocument();
+    expect(screen.getByText(/su destino es el stock vendible de la sucursal/)).toBeInTheDocument();
+    expect(screen.getByText(/Entra al stock con la liberación que autoriza el Almacén, y el caso cierra con ese acto/))
+      .toBeInTheDocument();
+    // No client ever receives it, so the block never promises a delivery as the way out of custody.
+    expect(screen.queryByText(/cuando se entrega el canje/)).toBeNull();
+
+    // The release sold the unit: it left custody and the case closed with that act, not open to a client.
+    released = true;
+    act(() => notifyWarrantyInvalidation());
+    expect(await screen.findByText(
+      'El Almacén liberó la unidad al stock vendible de la sucursal: ya no está en custodia y el caso cerró con ese acto.'))
+      .toBeInTheDocument();
+    expect(screen.queryByText('En custodia por garantía: 1 unidad')).toBeNull();
+    expect(screen.queryByText(/sigue esperando al cliente/)).toBeNull();
+  });
+
+  it('keeps the release of a unit destined for the client stated as it was (S13, S14)', async () => {
+    // A release that does not close the case: this unit leaves custody for the counter, not for the shelf.
+    const releasedToClient = { ...resolvedCase(),
+      events: [...phasesToResolved(), noticeEvent(), releaseEvent('resolved')] };
+    const h = harness(url => {
+      if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
+      if (url === '/api/warranty-cases/2') return json(releasedToClient);
+      if (url === '/api/sales/12') return json(saleBody);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000002' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    expect(screen.queryByText('En custodia por garantía: 1 unidad')).toBeNull();
+    expect(screen.getByText(
+      'El Almacén liberó la unidad a stock vendible: ya no está en custodia y el caso sigue esperando al cliente.'))
+      .toBeInTheDocument();
   });
 
   it('states the refusal of a delivery whose unit belongs to stock in the contract words (S31)', async () => {
@@ -699,7 +869,51 @@ describe('the accessible shape of the screen', () => {
   });
 });
 
+/** Registers one finding of `quantity` units on the shelf and hands back the screen's harness (S34). */
+async function registerFinding(quantity: string) {
+  const writtenOff = Number(quantity);
+  const findingRow = row({ id: 5, case_number: 'C-2-000005', origin: 'stock_defect', variant_id: 4,
+    serial_number: null, quantity: writtenOff, reason: 'Probada en mostrador', declared_failure: 'No retiene carga' });
+  const finding = { ...findingRow, verdict: null, reported_destination: null, loan_destination: null,
+    stock_destination: null, sale_id: null, warranty_number: null, created_by_account_id: 2, loans: [], events: [] };
+  const h = harness((url, init) => {
+    if (url === '/api/warranty-cases') return tray([findingRow]);
+    if (url === '/api/warranty-cases/5') return json(finding);
+    if (url.startsWith('/api/sales/sellable?')) {
+      return json({ page: 1, page_size: 50, total_variants: 1, items: [{
+        variant_id: 4, catalog_entry_id: 4, brand: 'Moura', model: '12N5L', capacity_ah: '5', polarity: 'L',
+        sellable: true, suggested_price: '45000.00', min_price: '40000.00',
+        existing: 6, reserved: 0, available: 6,
+      }] });
+    }
+    if (url === '/api/warranty-cases/stock-defects' && init.method === 'POST') return json(finding, 201);
+    return undefined;
+  });
+  renderScreen(h);
+  fireEvent.click(await screen.findByRole('button', { name: 'Hallazgo en góndola' }));
+  const select = await screen.findByLabelText('Batería que falló');
+  await waitFor(() => expect(within(select).getByRole('option', { name: /Moura/ })).toBeInTheDocument());
+  fireEvent.change(select, { target: { value: '4' } });
+  fireEvent.change(screen.getByLabelText('Cantidad de unidades'), { target: { value: quantity } });
+  fireEvent.change(screen.getByLabelText('Qué falló'), { target: { value: 'No retiene carga' } });
+  fireEvent.change(screen.getByLabelText('Motivo de la baja de stock'), { target: { value: 'Probada en mostrador' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Registrar el hallazgo' }));
+  return h;
+}
+
 describe('the battery the branch found failed on its own shelf', () => {
+  it('says one unit was written off when the finding is a single battery (S34)', async () => {
+    await registerFinding('1');
+    expect(await screen.findByText('Hallazgo C-2-000005 registrado: 1 unidad dada de baja de la góndola.'))
+      .toBeInTheDocument();
+  });
+
+  it('says several units were written off when the finding takes more than one battery (S34)', async () => {
+    await registerFinding('2');
+    expect(await screen.findByText('Hallazgo C-2-000005 registrado: 2 unidades dadas de baja de la góndola.'))
+      .toBeInTheDocument();
+  });
+
   it('registers the finding with its motive and deselects nothing of the tray (S16)', async () => {
     const findingRow = row({ id: 5, case_number: 'C-2-000005', origin: 'stock_defect', variant_id: 4,
       serial_number: null, quantity: 2, reason: 'Probada en mostrador', declared_failure: 'No retiene carga' });

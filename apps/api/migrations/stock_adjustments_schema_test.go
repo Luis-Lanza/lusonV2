@@ -90,7 +90,9 @@ func TestStockAdjustmentsBlindSnapshotIsDatabaseAuthority(t *testing.T) {
 }
 
 // The database is the authority for every rejection: each guard has one exact
-// SQLSTATE that the Go store maps to a public error code.
+// SQLSTATE that the Go store maps to a public error code. 022 is applied and checksummed,
+// so what it states is read here as the version 075 replaces, and 075's own text is judged
+// by TestStockAdjustmentActorLocationSchema.
 func TestStockAdjustmentsSchemaGuards(t *testing.T) {
 	b, err := migrations.Files.ReadFile("022_stock_adjustments.sql")
 	if err != nil {
@@ -102,13 +104,19 @@ func TestStockAdjustmentsSchemaGuards(t *testing.T) {
 			t.Errorf("missing SQLSTATE %s", code)
 		}
 	}
-	// Only location 1 adjusts; reversal targets stay in that location and can
-	// never be a counter-entry themselves.
-	if !strings.Contains(sql, "IF NEW.location_id <> 1 THEN") {
-		t.Error("warehouse-only location guard missing")
+	// The reversal rules the trigger keeps: a target stays in its own location and can never
+	// be a counter-entry itself.
+	if !strings.Contains(sql, "target.location_id IS DISTINCT FROM NEW.location_id") {
+		t.Error("same-location reversal guard missing")
 	}
 	if !strings.Contains(sql, "target.reverses_adjustment_id IS NOT NULL THEN") {
 		t.Error("reversal-of-reversal guard missing")
+	}
+	// The warehouse-only admission 022 wrote is the rule 075 restates forward (S36.1): it is
+	// named here so the replaced premise is stated by the test that pins it, and it must not
+	// be the rule the newest version states.
+	if !strings.Contains(sql, "IF NEW.location_id <> 1 THEN") {
+		t.Error("022 is the version that fixed the warehouse; the migration history must keep it")
 	}
 	if !strings.Contains(sql, "IF total < balance.reserved THEN") {
 		t.Error("covered existing stock guard missing")
@@ -116,6 +124,90 @@ func TestStockAdjustmentsSchemaGuards(t *testing.T) {
 	// The mirror check must run at commit, after every line was inserted.
 	if !strings.Contains(sql, "NOT EXISTS (\n            SELECT 1 FROM stock_adjustment_lines counter") {
 		t.Error("reversal completeness guard missing")
+	}
+}
+
+// 075 is the version that generalizes the document (S36, S36.1, S36.2). It restates the one
+// admission function whole -- the location stops being the warehouse and becomes integrity,
+// the same-location reversal stays -- and it wires the frozen-branch guard 035 deliberately
+// omitted, against the comment that said a guard there could never fire.
+const actorLocationMigration = "075_stock_adjustment_actor_location.sql"
+
+// TestStockAdjustmentActorLocationSchema reads the embedded version exactly as PostgreSQL
+// receives it and judges the statements, never the prose: one function restated forward, one
+// guard installed, and the balance application of 022 untouched.
+func TestStockAdjustmentActorLocationSchema(t *testing.T) {
+	b, err := migrations.Files.ReadFile(actorLocationMigration)
+	if err != nil {
+		t.Fatal("the actor-location migration must be embedded", err)
+	}
+	sql := statements(string(b))
+	for _, required := range []string{
+		// The admission of 022, restated whole: nothing is edited in place.
+		"CREATE OR REPLACE FUNCTION admit_stock_adjustment() RETURNS trigger LANGUAGE plpgsql AS $$",
+		// The location stops being the warehouse and becomes integrity: the location must be
+		// one this installation has, and LS005 keeps its number with that meaning.
+		"IF NOT EXISTS (SELECT 1 FROM locations WHERE id=NEW.location_id) THEN",
+		"ERRCODE='LS005'",
+		// The reversal stays inside one location.
+		"target.location_id IS DISTINCT FROM NEW.location_id",
+		"ERRCODE='LS006'",
+		// The guard 035 omitted (S36.2): a branch with a live settlement does not move its own
+		// stock, wired exactly the way 035 wires a sale or a purchase.
+		"CREATE FUNCTION admit_stock_adjustment_when_branch_operating() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"PERFORM assert_branch_not_frozen(NEW.location_id);",
+		"CREATE TRIGGER admit_frozen_branch_stock_adjustment BEFORE INSERT ON stock_adjustments",
+		"FOR EACH ROW EXECUTE FUNCTION admit_stock_adjustment_when_branch_operating();",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("missing %s", required)
+		}
+	}
+	// The warehouse is no longer the admission rule, and no statement may restore it.
+	if strings.Contains(sql, "NEW.location_id <> 1") || strings.Contains(sql, "NEW.location_id <> 1 THEN") {
+		t.Error("the generalized admission must not keep the warehouse-only refusal")
+	}
+	// The blind-count half of 022 is not restated: the balance application keeps exactly one
+	// owner, and no table, column or row is rewritten.
+	for _, forbidden := range []string{
+		"CREATE TABLE", "ALTER TABLE", "DROP ", "TRUNCATE ", "DELETE FROM",
+		"UPDATE stock_adjustments", "UPDATE inventory_balances",
+		"apply_stock_adjustment_line", "validate_stock_adjustment_reversal",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("the migration restates only the admission it must generalize: %s", forbidden)
+		}
+	}
+	// PostgreSQL fires the BEFORE ROW triggers of one table in name order: the freeze must be
+	// judged before the admission of the document it refuses.
+	if !("admit_frozen_branch_stock_adjustment" < "admit_stock_adjustment_header") {
+		t.Error("the freeze trigger must sort before the admission trigger to fire first")
+	}
+}
+
+// The prose of 075 carries the comment 035 could not keep: 035 is applied and checksummed, so
+// the rewrite of its premise -- "a guard here could never fire" -- lives in the version that
+// makes it false, and it has to say what it now guards.
+func TestStockAdjustmentActorLocationDocumentsTheRewrittenRule(t *testing.T) {
+	b, err := migrations.Files.ReadFile(actorLocationMigration)
+	if err != nil {
+		t.Fatal("the actor-location migration must be embedded", err)
+	}
+	sql := string(b)
+	for _, documented := range []string{
+		"035", "stock_entries", "could never fire", "LC001", "assert_branch_not_frozen",
+		"S36", "S36.1", "S36.2", "checksummed", "admit_stock_adjustment_header",
+	} {
+		if !strings.Contains(sql, documented) {
+			t.Errorf("the migration must document its own decision: %s", documented)
+		}
+	}
+	// It says why the guard belongs there now: a frozen branch would move its own stock
+	// outside the cut the settlement already counted.
+	for _, sentence := range []string{"rendición", "count"} {
+		if !strings.Contains(sql, sentence) {
+			t.Errorf("the rewritten premise must name what it protects: %s", sentence)
+		}
 	}
 }
 

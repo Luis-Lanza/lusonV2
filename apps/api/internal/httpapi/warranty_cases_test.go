@@ -224,6 +224,7 @@ type warrantyCaseWire struct {
 	BranchLocationID    int64               `json:"branch_location_id"`
 	Origin              string              `json:"origin"`
 	Phase               string              `json:"phase"`
+	ClosedBy            *string             `json:"closed_by"`
 	Verdict             *string             `json:"verdict"`
 	ReportedDestination *string             `json:"reported_destination"`
 	LoanDestination     *string             `json:"loan_destination"`
@@ -272,6 +273,7 @@ type warrantyCaseRowWire struct {
 	BranchLocationID int64   `json:"branch_location_id"`
 	Origin           string  `json:"origin"`
 	Phase            string  `json:"phase"`
+	ClosedBy         *string `json:"closed_by"`
 	VariantID        int64   `json:"variant_id"`
 	SerialNumber     *string `json:"serial_number"`
 	Quantity         *int64  `json:"quantity"`
@@ -635,8 +637,8 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 	released := f.caseWire(t, f.serve(t, f.request(1, "POST",
 		fmt.Sprintf("/api/warranty-cases/%d/release", claim.ID),
 		`{"note":"El cliente no volvió"}`)), 200)
-	if released.Phase != "resolved" {
-		t.Fatalf("a release never moves the case: %+v", released)
+	if released.Phase != "resolved" || released.ClosedBy != nil {
+		t.Fatalf("a release never moves the case and closes nothing: %+v", released)
 	}
 	if got := f.balance(t, 2, variant); got != shelf+1 {
 		t.Fatalf("the released unit is sellable stock of the branch: %d became %d", shelf, got)
@@ -657,8 +659,25 @@ func TestWarrantyCaseJourneyOverPostgreSQL(t *testing.T) {
 		delivered.Loans[0].Fate != "returned" || delivered.Loans[0].FateDecidedAt == nil {
 		t.Fatalf("the delivery closes the case and settles the loan: %+v", delivered)
 	}
+	// The act that closed the case is published beside the phase (S34): the row of the tray carries it, so a
+	// queue of cases names the close without loading a single history.
+	if delivered.ClosedBy == nil || *delivered.ClosedBy != "delivery" {
+		t.Fatalf("the delivery is the act that closed the case: %+v", delivered.ClosedBy)
+	}
 	if got := f.balance(t, 2, variant); got != stock {
 		t.Fatalf("a delivery writes no stock: %d became %d", stock, got)
+	}
+	closedTray := f.serve(t, f.request(2, "GET",
+		fmt.Sprintf("/api/warranty-cases?phase=closed"), ""))
+	var closedPage warrantyTrayWire
+	if closedTray.Code != 200 || json.Unmarshal(closedTray.Body.Bytes(), &closedPage) != nil ||
+		len(closedPage.Cases) != 1 || closedPage.Cases[0].ID != claim.ID ||
+		closedPage.Cases[0].ClosedBy == nil || *closedPage.Cases[0].ClosedBy != "delivery" {
+		t.Fatalf("the tray row states the act that closed the case: %s", closedTray.Body.String())
+	}
+	if strings.Contains(closedTray.Body.String(), `"events"`) ||
+		strings.Contains(closedTray.Body.String(), `"loans"`) {
+		t.Fatalf("the act travels on the row and never drags the history: %s", closedTray.Body.String())
 	}
 
 	// The second door: the branch found a battery failed on its shelf and states its own motive (S1,
@@ -865,6 +884,16 @@ func TestWarrantyCaseStockBoundCaseOverPostgreSQL(t *testing.T) {
 		last.Note != "El cliente no la retira" {
 		t.Fatalf("the release is the tramo that closes the case: %+v", last)
 	}
+	if released.ClosedBy == nil || *released.ClosedBy != "release" {
+		t.Fatalf("the release is the act that closed this case: %+v", released.ClosedBy)
+	}
+	releaseTray := f.serve(t, f.request(2, "GET", "/api/warranty-cases?phase=closed", ""))
+	var releasePage warrantyTrayWire
+	if releaseTray.Code != 200 || json.Unmarshal(releaseTray.Body.Bytes(), &releasePage) != nil ||
+		len(releasePage.Cases) != 1 || releasePage.Cases[0].ClosedBy == nil ||
+		*releasePage.Cases[0].ClosedBy != "release" {
+		t.Fatalf("the tray row states the release that closed the case: %s", releaseTray.Body.String())
+	}
 	if got := f.balance(t, 2, f.variant); got != shelf+1 {
 		t.Fatalf("the released unit is sellable stock of the branch: %d became %d", shelf, got)
 	}
@@ -958,5 +987,79 @@ func TestWarrantyFailureOfAnUndecidedLoan(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil ||
 		w.Code != http.StatusBadRequest || body["error"] != "loan_fate_required" {
 		t.Fatalf("a loan born open keeps its own refusal: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestWarrantyCaseRecordRefusesAnActItsHistoryDoesNotState proves the cross-check of S34 without a database:
+// the act a document carries is the act its last tramo states, exactly as the phase already works. A closed
+// case whose header and history disagree is not published at all, an open case states no act, and a closed
+// case whose last tramo is no act publishes none instead of claiming one.
+func TestWarrantyCaseRecordRefusesAnActItsHistoryDoesNotState(t *testing.T) {
+	moment := time.Date(2026, 3, 20, 12, 0, 0, 0, time.UTC)
+	verdict, reported, loan := warrantycase.VerdictRepaired, warrantycase.DestinationCustomer,
+		warrantycase.DestinationStock
+	saleID, serial := int64(3), "ENTREGA/1"
+	delivery, release := warrantycase.ClosedByDelivery, warrantycase.ClosedByRelease
+	closing := func(act *warrantycase.ClosedBy, lastKind warrantycase.EventKind,
+		lastPhase warrantycase.Phase) warrantycase.Case {
+		return warrantycase.Case{
+			ID: 7, BranchLocationID: 2, BranchSequence: 7, CaseNumber: "C-2-000007",
+			Origin: warrantycase.OriginWarrantyClaim, Phase: lastPhase, ClosedBy: act,
+			Verdict: &verdict, ReportedDestination: &reported, LoanDestination: &loan,
+			SaleID: &saleID, SerialNumber: &serial, VariantID: 1,
+			DeclaredFailure: "No arranca el motor", CreatedByAccountID: 2, CreatedAt: moment,
+			Events: []warrantycase.Event{
+				{Ordinal: 1, Kind: warrantycase.KindPhase, Phase: warrantycase.PhaseReceived,
+					ActorAccountID: 2, RecordedAt: moment},
+				{Ordinal: 2, Kind: warrantycase.KindPhase, Phase: warrantycase.PhaseInTransit,
+					ActorAccountID: 2, RecordedAt: moment},
+				{Ordinal: 3, Kind: warrantycase.KindPhase, Phase: warrantycase.PhaseAtWarehouse,
+					ActorAccountID: 2, RecordedAt: moment},
+				{Ordinal: 4, Kind: warrantycase.KindPhase, Phase: warrantycase.PhaseAtFactory,
+					FactoryCaseNumber: "LEG-77", ActorAccountID: 2, RecordedAt: moment},
+				{Ordinal: 5, Kind: warrantycase.KindPhase, Phase: warrantycase.PhaseResolved,
+					ActorAccountID: 2, RecordedAt: moment},
+				{Ordinal: 6, Kind: lastKind, Phase: lastPhase, ActorAccountID: 2, RecordedAt: moment},
+			},
+		}
+	}
+
+	// The two agreeing shapes are published with the act they state, and no other key names it.
+	for _, agreed := range []struct {
+		document warrantycase.Case
+		want     string
+	}{
+		{closing(&delivery, warrantycase.KindPhase, warrantycase.PhaseClosed), "delivery"},
+		{closing(&release, warrantycase.KindRelease, warrantycase.PhaseClosed), "release"},
+	} {
+		record, err := warrantyCaseRecord(agreed.document)
+		if err != nil || record.ClosedBy == nil || *record.ClosedBy != agreed.want {
+			t.Fatalf("the act of the history is the act published: %+v %v", record.ClosedBy, err)
+		}
+	}
+	// A closed case whose last tramo states no act (a notice recorded after the close) publishes none.
+	quiet, err := warrantyCaseRecord(closing(nil, warrantycase.KindNotice, warrantycase.PhaseClosed))
+	if err != nil || quiet.ClosedBy != nil {
+		t.Fatalf("a close no tramo states is published as no act: %+v %v", quiet.ClosedBy, err)
+	}
+	// A document whose act and history disagree is never published, in either direction.
+	for _, refused := range []warrantycase.Case{
+		closing(&delivery, warrantycase.KindRelease, warrantycase.PhaseClosed),
+		closing(&release, warrantycase.KindPhase, warrantycase.PhaseClosed),
+		closing(nil, warrantycase.KindPhase, warrantycase.PhaseClosed),
+	} {
+		if record, err := warrantyCaseRecord(refused); err == nil {
+			t.Fatalf("an act the history does not state is never published: %+v", record.ClosedBy)
+		}
+	}
+	// An open case states no act, and stating one is the same refusal the history already gives.
+	open := closing(nil, warrantycase.KindPhase, warrantycase.PhaseResolved)
+	if record, err := warrantyCaseRecord(open); err != nil || record.ClosedBy != nil {
+		t.Fatalf("an open case states no act: %+v %v", record.ClosedBy, err)
+	}
+	claiming := open
+	claiming.ClosedBy = &delivery
+	if record, err := warrantyCaseRecord(claiming); err == nil {
+		t.Fatalf("an open case never claims the act that closed another one: %+v", record.ClosedBy)
 	}
 }

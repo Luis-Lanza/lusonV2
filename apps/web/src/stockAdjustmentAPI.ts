@@ -3,8 +3,9 @@ import {
   matchesStockAdjustmentReversal, parseStockAdjustmentApplyError, parseStockAdjustmentCatalog,
   parseStockAdjustmentCatalogError, parseStockAdjustmentDetail, parseStockAdjustmentDetailError,
   parseStockAdjustmentHistory, parseStockAdjustmentHistoryError, parseStockAdjustmentRecord, parseStockAdjustmentReversalError, parseStockAdjustmentReversalRecord,
-  stockAdjustmentCatalogPageSize, stockAdjustmentCatalogPath, stockAdjustmentDetailPath, stockAdjustmentHistoryPath, stockAdjustmentReversible,
-  stockAdjustmentReversalPath, validStockAdjustmentHistoryQuery,
+  stockAdjustmentBelongsToLocation, stockAdjustmentCatalogPageSize, stockAdjustmentCatalogPath, stockAdjustmentDetailPath,
+  stockAdjustmentHistoryPath, stockAdjustmentReversible,
+  stockAdjustmentReversalPath, validStockAdjustmentHistoryQuery, validStockAdjustmentLocation,
   type StockAdjustmentCatalogPage, type StockAdjustmentDetail, type StockAdjustmentErrorCode,
   type StockAdjustmentInput, type StockAdjustmentPage, type StockAdjustmentRecord,
   type StockAdjustmentReversalInput, type StockAdjustmentSummary,
@@ -22,7 +23,13 @@ export interface StockAdjustmentReversalResult { readonly record: StockAdjustmen
 // Every read answer is admitted only when it is JSON of exactly the contract's shape.
 const jsonHeader = /^application\/json(?:\s*;\s*charset=utf-8)?$/i;
 
-export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = globalThis.fetch) {
+/**
+ * One transport per section, of the location the session counts for (S36): the document
+ * belongs to that location and the server never publishes another one for this session, so
+ * a reply from anywhere else is not evidence. The location is never sent — the body of
+ * every write is the key, the motive and the counted lines, and nothing else.
+ */
+export function createStockAdjustmentAPI(locationID: number, fetch: typeof globalThis.fetch = globalThis.fetch) {
   return {
     async create(input: StockAdjustmentInput, csrf: string, signal?: AbortSignal): Promise<StockAdjustmentApplyResult> {
       // Capture the exact payload and the token before any await: callers cannot
@@ -31,6 +38,7 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
       let sent: StockAdjustmentInput;
       try {
         if (typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error('Missing CSRF token');
+        if (!validStockAdjustmentLocation(locationID)) throw new Error('Missing session location');
         sent = canonicalStockAdjustmentInput(input);
         body = JSON.stringify(sent);
       } catch { throw new StockAdjustmentAPIError('invalid_request', null); }
@@ -55,8 +63,8 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
       }
       let record: StockAdjustmentRecord;
       try { record = parseStockAdjustmentRecord(raw); } catch { throw malformed(); }
-      // The reply must repeat the exact counted document this client sent.
-      if (!matchesStockAdjustmentInput(sent, record)) throw malformed();
+      // The reply must repeat the exact counted document this client sent, in its location.
+      if (!matchesStockAdjustmentInput(sent, record, locationID)) throw malformed();
       return { record, replayed: reply.status === 200 };
     },
 
@@ -69,6 +77,7 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
       let path: string;
       try {
         if (typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error('Missing CSRF token');
+        if (!validStockAdjustmentLocation(locationID)) throw new Error('Missing session location');
         if (!stockAdjustmentReversible(row)) throw new Error('Not reversible');
         path = stockAdjustmentReversalPath(row.id);
         sent = canonicalStockAdjustmentReversalInput(input);
@@ -94,9 +103,9 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
       }
       let record: StockAdjustmentRecord;
       try { record = parseStockAdjustmentReversalRecord(raw); } catch { throw malformed(); }
-      // The counter-entry must mirror the listed document and repeat this motive.
+      // The counter-entry must mirror the listed document and repeat this motive, in its location.
       if (record.reason !== sent.reason) throw malformed();
-      if (!matchesStockAdjustmentReversal(row, record)) throw malformed();
+      if (!matchesStockAdjustmentReversal(row, record, locationID)) throw malformed();
       return { record, replayed: reply.status === 200 };
     },
 
@@ -131,7 +140,10 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
     async detail(id: number, signal?: AbortSignal): Promise<StockAdjustmentDetail> {
       // The path is the frozen detail contract: a non-canonical id never leaves here.
       let path: string;
-      try { path = stockAdjustmentDetailPath(id); } catch { throw new StockAdjustmentAPIError('invalid_request', null); }
+      try {
+        if (!validStockAdjustmentLocation(locationID)) throw new Error('Missing session location');
+        path = stockAdjustmentDetailPath(id);
+      } catch { throw new StockAdjustmentAPIError('invalid_request', null); }
       let reply: Response;
       let raw: string;
       try {
@@ -151,8 +163,8 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
       }
       let detail: StockAdjustmentDetail;
       try { detail = parseStockAdjustmentDetail(raw); } catch { throw malformed(); }
-      // A reply for another document is never evidence about the row that asked.
-      if (detail.id !== id) throw malformed();
+      // A reply for another document, or for another location, is never evidence about the row that asked.
+      if (detail.id !== id || !stockAdjustmentBelongsToLocation(detail, locationID)) throw malformed();
       return detail;
     },
 

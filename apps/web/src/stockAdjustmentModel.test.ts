@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalStockAdjustmentInput, canonicalStockAdjustmentReason, canonicalStockAdjustmentReversalInput,
   matchesStockAdjustmentInput, matchesStockAdjustmentReversal, newStockAdjustmentOperationKey,
+  stockAdjustmentBelongsToLocation,
   parseStockAdjustmentApplyError, parseStockAdjustmentCatalog, parseStockAdjustmentDetail, parseStockAdjustmentHistory,
   parseStockAdjustmentDetailError, parseStockAdjustmentHistoryError, parseStockAdjustmentRecord,
   parseStockAdjustmentReversalError, parseStockAdjustmentCatalogError,
@@ -10,7 +11,7 @@ import {
   stockAdjustmentKindUnknown, stockAdjustmentKinds,
   stockAdjustmentMaxCounted, stockAdjustmentMaxLines, stockAdjustmentMotives, stockAdjustmentReadMessages,
   stockAdjustmentReversalMessages, stockAdjustmentReversalPath, stockAdjustmentReversible,
-  validStockAdjustmentCounted, validStockAdjustmentHistoryQuery,
+  validStockAdjustmentCounted, validStockAdjustmentHistoryQuery, validStockAdjustmentLocation,
   type StockAdjustmentInput, type StockAdjustmentSummary,
 } from './stockAdjustmentModel';
 
@@ -162,7 +163,7 @@ describe('adjustment document parsing', () => {
     ['a difference that is not counted minus expected', recordBody({ lines: [{ variant_id: 4, expected_quantity: 18, counted_quantity: 0, difference: -17 }] })],
     ['a total that is not the sum of the lines', recordBody({ total_difference: 0 })],
     ['lines out of variant order', recordBody({ lines: [{ variant_id: 9, expected_quantity: 9, counted_quantity: 12, difference: 3 }, { variant_id: 4, expected_quantity: 18, counted_quantity: 0, difference: -18 }] })],
-    ['another warehouse', recordBody({ location_id: 2 })],
+    ['a location this installation does not have', recordBody({ location_id: 32768 })],
     ['a blank motive', recordBody({ reason: '   ' })],
     ['a duplicated key', '{"id":7,"id":8}'],
     ['a document without lines', recordBody({ lines: [] })],
@@ -266,7 +267,7 @@ describe('adjustment document parsing', () => {
     ['a product line that also carries a battery', detailBody({ lines: [productLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' } })] })],
     ['an unknown field', detailBody({ operation_key: key })],
     ['a self reference', detailBody({ reverses_adjustment_id: 6 })],
-    ['a foreign document location', detailBody({ location_id: 2 })],
+    ['a location this installation does not have', detailBody({ location_id: 0 })],
     ['an empty motive', detailBody({ reason: '' })],
     // The counter-entry motive is present exactly when the document is reversed.
     ['a reversed document without a counter-entry motive', detailBody({ reversed_by: 8 })],
@@ -326,15 +327,15 @@ describe('adjustment evidence and paths', () => {
   it('accepts only a reply that repeats the exact counted document', () => {
     const record = parseStockAdjustmentRecord(recordBody());
     expect(matchesStockAdjustmentInput({ operation_key: key, reason: motive,
-      lines: [{ variant_id: 9, counted_quantity: 12 }, { variant_id: 4, counted_quantity: 0 }] }, record)).toBe(true);
+      lines: [{ variant_id: 9, counted_quantity: 12 }, { variant_id: 4, counted_quantity: 0 }] }, record, 1)).toBe(true);
     expect(matchesStockAdjustmentInput({ operation_key: key, reason: motive,
-      lines: [{ variant_id: 9, counted_quantity: 11 }, { variant_id: 4, counted_quantity: 0 }] }, record)).toBe(false);
+      lines: [{ variant_id: 9, counted_quantity: 11 }, { variant_id: 4, counted_quantity: 0 }] }, record, 1)).toBe(false);
     expect(matchesStockAdjustmentInput({ operation_key: key, reason: 'Otro',
-      lines: [{ variant_id: 9, counted_quantity: 12 }, { variant_id: 4, counted_quantity: 0 }] }, record)).toBe(false);
+      lines: [{ variant_id: 9, counted_quantity: 12 }, { variant_id: 4, counted_quantity: 0 }] }, record, 1)).toBe(false);
     // A counter-entry is never evidence of an applied count.
     expect(matchesStockAdjustmentInput({ operation_key: key, reason: motive,
       lines: [{ variant_id: 9, counted_quantity: 12 }, { variant_id: 4, counted_quantity: 0 }] },
-    parseStockAdjustmentReversalRecord(recordBody({ id: 9, reverses_adjustment_id: 7 })))).toBe(false);
+    parseStockAdjustmentReversalRecord(recordBody({ id: 9, reverses_adjustment_id: 7 })), 1)).toBe(false);
   });
 
   it('accepts only a counter-entry that mirrors the listed document', () => {
@@ -343,9 +344,9 @@ describe('adjustment evidence and paths', () => {
       lines: [{ variant_id: 4, expected_quantity: 0, counted_quantity: 18, difference: 18 },
         { variant_id: 9, expected_quantity: 12, counted_quantity: 9, difference: -3 }],
       total_difference: 15 }));
-    expect(matchesStockAdjustmentReversal({ ...original, total_difference: -15 }, mirror)).toBe(true);
-    expect(matchesStockAdjustmentReversal(original, mirror)).toBe(false);
-    expect(matchesStockAdjustmentReversal({ ...original, lines: 3, total_difference: -15 }, mirror)).toBe(false);
+    expect(matchesStockAdjustmentReversal({ ...original, total_difference: -15 }, mirror, 1)).toBe(true);
+    expect(matchesStockAdjustmentReversal(original, mirror, 1)).toBe(false);
+    expect(matchesStockAdjustmentReversal({ ...original, lines: 3, total_difference: -15 }, mirror, 1)).toBe(false);
   });
 
   it('decides which documents may be corrected', () => {
@@ -373,15 +374,82 @@ describe('adjustment evidence and paths', () => {
   });
 });
 
+/**
+ * The location of a document is the session's own (S36.1): the screen that counts serves
+ * the warehouse and every branch, so the model fixes no location and the evidence it asks
+ * for is that the reply was published in the location this session counts — plus the
+ * document's own arithmetic, which must still add up inside a branch document.
+ */
+describe('the location of a document belongs to the session', () => {
+  const branchRecord = () => parseStockAdjustmentRecord(recordBody({ location_id: 2 }));
+
+  it('accepts a branch document and publishes the location the server answered', () => {
+    const record = branchRecord();
+    expect(record.location_id).toBe(2);
+    expect(stockAdjustmentBelongsToLocation(record, 2)).toBe(true);
+    // El mismo documento no es evidencia para otro local: cada uno corrige lo que cuenta.
+    expect(stockAdjustmentBelongsToLocation(record, 1)).toBe(false);
+    expect(stockAdjustmentBelongsToLocation(parseStockAdjustmentRecord(recordBody()), 1)).toBe(true);
+    expect(stockAdjustmentBelongsToLocation(parseStockAdjustmentRecord(recordBody()), 2)).toBe(false);
+    const detail = parseStockAdjustmentDetail(detailBody({ location_id: 2 }));
+    expect(detail.location_id).toBe(2);
+    expect(stockAdjustmentBelongsToLocation(detail, 2)).toBe(true);
+  });
+
+  it('keeps the warehouse document exactly as it was', () => {
+    expect(parseStockAdjustmentDetail(detailBody()).location_id).toBe(1);
+    expect(stockAdjustmentBelongsToLocation(parseStockAdjustmentDetail(detailBody()), 1)).toBe(true);
+  });
+
+  // The rule that survives is internal consistency, not a fixed location: the
+  // document and its lines still have to agree inside a branch document.
+  it('refuses a branch document whose lines disagree with its header', () => {
+    expect(() => parseStockAdjustmentRecord(recordBody({ location_id: 2, total_difference: 0 })))
+      .toThrow('Respuesta inválida del servidor.');
+    expect(() => parseStockAdjustmentRecord(recordBody({ location_id: 2,
+      lines: [{ variant_id: 4, expected_quantity: 18, counted_quantity: 0, difference: -17 }] })))
+      .toThrow('Respuesta inválida del servidor.');
+    expect(() => parseStockAdjustmentDetail(detailBody({ location_id: 2, total_difference: 0 })))
+      .toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('demands that the counter-entry be published in the location the session counts', () => {
+    const branchCounter = parseStockAdjustmentReversalRecord(recordBody({ id: 8, location_id: 2,
+      reverses_adjustment_id: 7 }));
+    expect(branchCounter.location_id).toBe(2);
+    const original = { ...summaryRow({ id: 7, total_difference: 15 }) } as StockAdjustmentSummary;
+    expect(matchesStockAdjustmentReversal(original, branchCounter, 2)).toBe(true);
+    // La reversa y su original viven en el mismo local: el del documento que corrige.
+    expect(matchesStockAdjustmentReversal(original, branchCounter, 1)).toBe(false);
+    const branchApplied = { operation_key: key, reason: motive,
+      lines: [{ variant_id: 9, counted_quantity: 12 }, { variant_id: 4, counted_quantity: 0 }] };
+    expect(matchesStockAdjustmentInput(branchApplied, branchRecord(), 2)).toBe(true);
+    expect(matchesStockAdjustmentInput(branchApplied, branchRecord(), 1)).toBe(false);
+  });
+
+  it('admits only a location this installation has', () => {
+    expect(validStockAdjustmentLocation(1)).toBe(true);
+    expect(validStockAdjustmentLocation(2)).toBe(true);
+    expect(validStockAdjustmentLocation(32767)).toBe(true);
+    expect(validStockAdjustmentLocation(0)).toBe(false);
+    expect(validStockAdjustmentLocation(32768)).toBe(false);
+    expect(validStockAdjustmentLocation(1.5)).toBe(false);
+    expect(validStockAdjustmentLocation(Number.NaN)).toBe(false);
+    // Un documento de un local que la instalación no tiene no es de nadie.
+    expect(stockAdjustmentBelongsToLocation(parseStockAdjustmentRecord(recordBody()), 0)).toBe(false);
+    expect(stockAdjustmentBelongsToLocation(parseStockAdjustmentRecord(recordBody()), 32768)).toBe(false);
+  });
+});
+
 describe('per-endpoint error mapping', () => {
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'],
-    [409, 'retry_conflict'], [409, 'insufficient_stock'], [503, 'service_unavailable']] as const)(
+    [409, 'retry_conflict'], [409, 'insufficient_stock'], [409, 'branch_frozen'], [503, 'service_unavailable']] as const)(
   'maps %s %s for the applied document', (status, code) => {
     expect(parseStockAdjustmentApplyError(`{"error":"${code}"}`, status)).toBe(code);
   });
 
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'],
-    [409, 'retry_conflict'], [409, 'insufficient_stock'], [503, 'service_unavailable']] as const)(
+    [409, 'retry_conflict'], [409, 'insufficient_stock'], [409, 'branch_frozen'], [503, 'service_unavailable']] as const)(
   'maps %s %s for the counter-entry', (status, code) => {
     expect(parseStockAdjustmentReversalError(`{"error":"${code}"}`, status)).toBe(code);
   });
@@ -430,14 +498,26 @@ describe('per-endpoint error mapping', () => {
     expect(stockAdjustmentReversalMessages.not_found).toMatch(/ya no existe/);
     expect(stockAdjustmentReadMessages.not_found).toMatch(/ya no existe/);
     const codes = ['invalid_request', 'unauthenticated', 'forbidden', 'not_found', 'decision_conflict',
-      'retry_conflict', 'insufficient_stock', 'service_unavailable', 'invalid_response', 'network', 'aborted'] as const;
+      'retry_conflict', 'insufficient_stock', 'branch_frozen', 'service_unavailable', 'invalid_response',
+      'network', 'aborted'] as const;
     for (const table of [stockAdjustmentApplyMessages, stockAdjustmentReversalMessages, stockAdjustmentReadMessages]) {
       const seen = codes.filter(code => code in table).map(code => table[code]);
       expect(new Set(seen).size).toBe(seen.length);
     }
   });
 
+  // A branch that is counting its settlement is a fact about the branch, not an
+  // outage: it gets its own words and it is not the generic failure of a lost service.
+  it('words the frozen branch as its own answer', () => {
+    expect(stockAdjustmentApplyMessages.branch_frozen).toMatch(/rendición/);
+    expect(stockAdjustmentApplyMessages.branch_frozen).toMatch(/no puede ajustar stock ahora/);
+    expect(stockAdjustmentApplyMessages.branch_frozen).not.toBe(stockAdjustmentApplyMessages.service_unavailable);
+    expect(stockAdjustmentReversalMessages.branch_frozen).toMatch(/rendición/);
+    expect(stockAdjustmentReversalMessages.branch_frozen).not.toBe(stockAdjustmentReversalMessages.insufficient_stock);
+  });
+
   it('knows which rejections prove that nothing was written', () => {
+    expect(stockAdjustmentFailureIsDefinite('branch_frozen')).toBe(true);
     expect(stockAdjustmentFailureIsDefinite('invalid_request')).toBe(true);
     expect(stockAdjustmentFailureIsDefinite('forbidden')).toBe(true);
     expect(stockAdjustmentFailureIsDefinite('retry_conflict')).toBe(true);

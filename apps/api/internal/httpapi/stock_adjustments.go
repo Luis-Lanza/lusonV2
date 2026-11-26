@@ -86,6 +86,12 @@ func stockAdjustmentFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "insufficient_stock")
 	case errors.Is(err, stockadjustments.ErrRetryConflict):
 		failure(w, 409, "retry_conflict")
+	case errors.Is(err, stockadjustments.ErrBranchFrozen):
+		// The branch is held by a live settlement (LC001, the freeze 075 wires to this
+		// document). The branch acts on it by closing its settlement, so it is published
+		// under the token the closing layer publishes that very same fact with -- 409
+		// branch_frozen -- and never as an outage.
+		failure(w, 409, "branch_frozen")
 	default:
 		failure(w, 503, "service_unavailable")
 	}
@@ -574,7 +580,7 @@ func stockAdjustmentDifference(total, difference int64) (int64, error) {
 	return total + difference, nil
 }
 
-// stockAdjustmentReference admits a cross-reference into this warehouse's own
+// stockAdjustmentReference admits a cross-reference into one location's own
 // ledger. A reversal always points at a strictly earlier document, while the
 // counter-entry that reverses a document is always a strictly later one.
 func stockAdjustmentReference(id *int64, documentID int64, later bool) (*int64, bool) {
@@ -588,16 +594,16 @@ func stockAdjustmentReference(id *int64, documentID int64, later bool) (*int64, 
 	return &value, true
 }
 
-// stockAdjustmentRecord admits only a complete persisted document: lines are
-// canonical and variant-ordered, the expected snapshot is the database's own
-// non-negative value, the difference is derived from expected and counted, and the
-// total is the exact signed sum. Anything else is a stored shape this domain never
-// wrote.
-func stockAdjustmentRecord(adjustment stockadjustments.Adjustment) (stockAdjustmentDTO, error) {
+// stockAdjustmentRecord admits only a complete persisted document of the actor's own
+// location: lines are canonical and variant-ordered, the expected snapshot is the
+// database's own non-negative value, the difference is derived from expected and counted,
+// and the total is the exact signed sum. Anything else is a stored shape this domain never
+// wrote, and a document of another location is one the store never answered.
+func stockAdjustmentRecord(adjustment stockadjustments.Adjustment, location int) (stockAdjustmentDTO, error) {
 	unavailable := func() (stockAdjustmentDTO, error) {
 		return stockAdjustmentDTO{}, stockadjustments.ErrUnavailable
 	}
-	if adjustment.ID < 1 || adjustment.LocationID != 1 || adjustment.CreatedByAccountID < 1 ||
+	if adjustment.ID < 1 || adjustment.LocationID != location || adjustment.CreatedByAccountID < 1 ||
 		adjustment.CreatedAt.IsZero() || len(adjustment.Lines) == 0 ||
 		len(adjustment.Lines) > stockAdjustmentMaxLines || !stockAdjustmentMotive(adjustment.Reason) ||
 		!validStockAdjustmentDetail(adjustment.Detail) {
@@ -640,14 +646,14 @@ func stockAdjustmentRecord(adjustment stockadjustments.Adjustment) (stockAdjustm
 	}, nil
 }
 
-// stockAdjustmentDetailRecord admits only a complete persisted detail: the lines
-// carry the catalogue identity of their variant and the applied arithmetic, and the
-// reversal cross-references point inside this warehouse's ledger.
-func stockAdjustmentDetailRecord(detail stockadjustments.Detail) (stockAdjustmentDetailDTO, error) {
+// stockAdjustmentDetailRecord admits only a complete persisted detail of the actor's own
+// location: the lines carry the catalogue identity of their variant and the applied
+// arithmetic, and the reversal cross-references point inside that location's ledger.
+func stockAdjustmentDetailRecord(detail stockadjustments.Detail, location int) (stockAdjustmentDetailDTO, error) {
 	unavailable := func() (stockAdjustmentDetailDTO, error) {
 		return stockAdjustmentDetailDTO{}, stockadjustments.ErrUnavailable
 	}
-	if detail.ID < 1 || detail.LocationID != 1 || detail.CreatedByAccountID < 1 || detail.CreatedAt.IsZero() ||
+	if detail.ID < 1 || detail.LocationID != location || detail.CreatedByAccountID < 1 || detail.CreatedAt.IsZero() ||
 		len(detail.Lines) == 0 || len(detail.Lines) > stockAdjustmentMaxLines ||
 		!stockAdjustmentMotive(detail.Reason) || !validStockAdjustmentDetail(detail.Detail) {
 		return unavailable()
@@ -795,12 +801,12 @@ func stockAdjustmentCatalogPage(page stockadjustments.CatalogPage) (stockAdjustm
 		TotalVariants: page.TotalVariants, Items: items}, nil
 }
 
-// registerStockAdjustments exposes the warehouse administrator's blind capture
-// catalogue, adjustment history, creation, detail and counter-entry routes. Only
-// that administrator is admitted and the store is the final authority for every one
-// of them. The literal catalogue path is registered beside the {id} pattern, which
-// is never more specific than it. Anything else below the collection is an unknown
-// route answered as JSON, never a cleaned or redirected path.
+// registerStockAdjustments exposes the blind capture catalogue, adjustment history,
+// creation, detail and counter-entry routes to any operating account, which adjusts its own
+// location and nothing else (S36.1). The store is the final authority for every one of them.
+// The literal catalogue path is registered beside the {id} pattern, which is never more
+// specific than it. Anything else below the collection is an unknown route answered as
+// JSON, never a cleaned or redirected path.
 func (a *API) registerStockAdjustments(mux *http.ServeMux, store *stockadjustments.Store) {
 	mux.HandleFunc("/api/stock-adjustments/catalog", a.stockAdjustmentCatalog(store))
 	mux.HandleFunc("/api/stock-adjustments/{id}/reverse", a.stockAdjustmentReverse(store))
@@ -864,7 +870,7 @@ func (a *API) registerStockAdjustments(mux *http.ServeMux, store *stockadjustmen
 			stockAdjustmentFailure(w, err)
 			return
 		}
-		record, err := stockAdjustmentRecord(adjustment)
+		record, err := stockAdjustmentRecord(adjustment, actor.Location.ID)
 		if err != nil {
 			stockAdjustmentFailure(w, err)
 			return
@@ -877,8 +883,8 @@ func (a *API) registerStockAdjustments(mux *http.ServeMux, store *stockadjustmen
 	})
 }
 
-// stockAdjustmentCatalog serves the blind capture catalogue: the identity of every
-// variant of this warehouse and nothing else. The guard order is the history read's:
+// stockAdjustmentCatalog serves the blind capture catalogue: the identity of every variant of
+// the actor's own location and nothing else. The guard order is the history read's:
 // method, identity, then no bare query separator, and only an admitted filter set
 // reaches the catalogue lookup.
 func (a *API) stockAdjustmentCatalog(store *stockadjustments.Store) http.HandlerFunc {
@@ -942,7 +948,7 @@ func (a *API) stockAdjustmentDetail(store *stockadjustments.Store) http.HandlerF
 			stockAdjustmentFailure(w, err)
 			return
 		}
-		record, err := stockAdjustmentDetailRecord(detail)
+		record, err := stockAdjustmentDetailRecord(detail, actor.Location.ID)
 		if err != nil {
 			stockAdjustmentFailure(w, err)
 			return
@@ -993,7 +999,7 @@ func (a *API) stockAdjustmentReverse(store *stockadjustments.Store) http.Handler
 			stockAdjustmentFailure(w, err)
 			return
 		}
-		record, err := stockAdjustmentRecord(adjustment)
+		record, err := stockAdjustmentRecord(adjustment, actor.Location.ID)
 		if err != nil {
 			stockAdjustmentFailure(w, err)
 			return

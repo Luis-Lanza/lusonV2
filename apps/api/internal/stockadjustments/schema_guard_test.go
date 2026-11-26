@@ -45,11 +45,13 @@ func commitScript(ctx context.Context, p *pgxpool.Pool, script func(pgx.Tx) erro
 }
 
 // rawDocument persists one header through the database's own admission, so the
-// probes below reach the guards instead of the store's request validation.
+// probes below reach the guards instead of the store's request validation. Every location
+// adjusts with its own account, exactly like a session: account 1 is the warehouse's and
+// account N is branch N's.
 func rawDocument(ctx context.Context, tx pgx.Tx, key string, location int, reverses *int64) (int64, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,reverses_adjustment_id,created_by_account_id)
- VALUES($1,$2,'conteo físico',$3,1) RETURNING id`, key, location, reverses).Scan(&id)
+ VALUES($1,$2,'conteo físico',$3,$4) RETURNING id`, key, location, reverses, max(location, 1)).Scan(&id)
 	return id, err
 }
 
@@ -67,46 +69,168 @@ func inventoryRevision(t *testing.T, ctx context.Context, p *pgxpool.Pool) int64
 	return scalar(t, ctx, p, "SELECT revision FROM realtime_revisions WHERE scope='inventory'")
 }
 
-// TestSchemaRefusesNonWarehouseLocation pins S2 at the database layer: only
-// location 1 adjusts, and every other location is refused by admission.
-func TestSchemaRefusesNonWarehouseLocation(t *testing.T) {
+// TestSchemaAdmitsEveryExistingLocation pins S36.1 at the database layer: admission no
+// longer names the warehouse. Every location this installation has counts its own stock --
+// the branch included -- and the integrity the trigger does keep is that the location is one
+// of this installation's. Authority is the server's (an account adjusts only its own
+// location), so the guard that decided the who is no longer written here.
+func TestSchemaAdmitsEveryExistingLocation(t *testing.T) {
 	ctx, p, _ := fixture(t)
-	before := snapshot(t, ctx, p)
-	for name, location := range map[string]int{"branch_2": 2, "branch_3": 3} {
-		err := commitScript(ctx, p, func(tx pgx.Tx) error {
-			_, err := rawDocument(ctx, tx, "schema-location-key-0001", location, nil)
-			return err
-		})
-		if code := sqlState(t, err); code != "LS005" {
-			t.Fatalf("%s must be refused with LS005, got %s", name, code)
+	for name, location := range map[string]int{"warehouse_1": 1, "branch_2": 2, "branch_3": 3} {
+		setBalanceAt(t, ctx, p, int64(location), 1, 10, 0)
+		var id int64
+		if err := commitScript(ctx, p, func(tx pgx.Tx) error {
+			var err error
+			if id, err = rawDocument(ctx, tx, "schema-location-key-"+name, location, nil); err != nil {
+				return err
+			}
+			return rawLine(ctx, tx, id, 1, 0, 12)
+		}); err != nil {
+			t.Fatalf("%s must be admitted by admission: %v", name, err)
 		}
+		var persisted int
+		if err := p.QueryRow(ctx, "SELECT location_id FROM stock_adjustments WHERE id=$1", id).Scan(&persisted); err != nil || persisted != location {
+			t.Fatalf("%s document does not keep its own location: %d %v", name, persisted, err)
+		}
+		if existing, _ := balances(t, ctx, p, location, 1); existing != 12 {
+			t.Fatalf("%s did not apply its own counted difference: %d", name, existing)
+		}
+	}
+	// The location is still integrity: one this installation has not is refused by
+	// admission, and never reaches the foreign key.
+	before := snapshot(t, ctx, p)
+	err := commitScript(ctx, p, func(tx pgx.Tx) error {
+		_, err := rawDocument(ctx, tx, "schema-unknown-location1", 99, nil)
+		return err
+	})
+	if code := sqlState(t, err); code != "LS005" {
+		t.Fatalf("an unknown location must be refused with LS005, got %s", code)
 	}
 	if snapshot(t, ctx, p) != before {
 		t.Fatal("a refused location must not persist a document")
 	}
 }
 
-// TestSchemaOverwritesCallerExpected pins the blind-count contract: the expected
-// snapshot is the locked balance, never what the caller wrote.
-func TestSchemaOverwritesCallerExpected(t *testing.T) {
+// TestSchemaRefusesReversalOfAnotherLocation pins the half of S36.1 the trigger keeps: a
+// counter-entry is a document of the location of its original, so a reversal that names
+// another location is refused whole, while the original's own location reverses it.
+func TestSchemaRefusesReversalOfAnotherLocation(t *testing.T) {
 	ctx, p, _ := fixture(t)
-	setBalance(t, ctx, p, 1, 10, 0)
-	var id int64
+	setBalanceAt(t, ctx, p, 1, 1, 10, 0)
+	setBalanceAt(t, ctx, p, 2, 1, 10, 0)
+	var original int64
 	if err := commitScript(ctx, p, func(tx pgx.Tx) error {
 		var err error
-		if id, err = rawDocument(ctx, tx, "schema-expected-key-0001", 1, nil); err != nil {
+		if original, err = rawDocument(ctx, tx, "schema-cross-location-01", 2, nil); err != nil {
 			return err
 		}
-		return rawLine(ctx, tx, id, 1, 999, 12)
+		return rawLine(ctx, tx, original, 1, 0, 13)
 	}); err != nil {
-		t.Fatalf("a covered counted line was refused: %v", err)
+		t.Fatalf("the branch document was refused: %v", err)
 	}
-	expected, counted := persistedLine(t, ctx, p, id, 1)
-	if expected != 10 || counted != 12 {
-		t.Fatalf("the locked balance must overwrite the caller's expected snapshot, got %d/%d", expected, counted)
+	before := snapshot(t, ctx, p)
+	err := commitScript(ctx, p, func(tx pgx.Tx) error {
+		id, err := rawDocument(ctx, tx, "schema-cross-location-02", 1, &original)
+		if err != nil {
+			return err
+		}
+		return rawLine(ctx, tx, id, 1, 0, 0)
+	})
+	if code := sqlState(t, err); code != "LS006" {
+		t.Fatalf("a reversal of another location's document must be refused with LS006, got %s", code)
 	}
-	if existing, reserved := balances(t, ctx, p, 1, 1); existing != 12 || reserved != 0 {
-		t.Fatalf("the counted difference was not applied or reserved moved: %d/%d", existing, reserved)
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a refused cross-location reversal must leave nothing behind")
+	}
+	if existing, _ := balances(t, ctx, p, 2, 1); existing != 13 {
+		t.Fatalf("a refused reversal must not move the original's stock, got %d", existing)
+	}
+	// The original's own location reverses it, restoring its own balance and nothing else.
+	var counter int64
+	if err := commitScript(ctx, p, func(tx pgx.Tx) error {
+		var err error
+		if counter, err = rawDocument(ctx, tx, "schema-same-location-001", 2, &original); err != nil {
+			return err
+		}
+		return rawLine(ctx, tx, counter, 1, 0, 0)
+	}); err != nil {
+		t.Fatalf("the branch could not reverse its own document: %v", err)
+	}
+	if existing, _ := balances(t, ctx, p, 2, 1); existing != 10 {
+		t.Fatalf("the branch reversal must restore its own balance, got %d", existing)
+	}
+	if existing, _ := balances(t, ctx, p, 1, 1); existing != 10 {
+		t.Fatalf("the branch reversal must not touch the warehouse, got %d", existing)
+	}
+}
+
+// TestSchemaRefusesAdjustmentOfFrozenBranch pins S36.2 at the database layer: the guard
+// that 035 omitted because "a guard here could never fire" now exists, so a branch held by a
+// live settlement cannot move its own stock outside the cut that is already counted.
+func TestSchemaRefusesAdjustmentOfFrozenBranch(t *testing.T) {
+	ctx, p, _ := fixture(t)
+	for location := 1; location <= 3; location++ {
+		setBalanceAt(t, ctx, p, int64(location), 1, 10, 0)
+	}
+	freezeBranch(t, ctx, p, 2)
+	before := snapshot(t, ctx, p)
+	revision := inventoryRevision(t, ctx, p)
+	err := commitScript(ctx, p, func(tx pgx.Tx) error {
+		id, err := rawDocument(ctx, tx, "schema-frozen-branch-001", 2, nil)
+		if err != nil {
+			return err
+		}
+		return rawLine(ctx, tx, id, 1, 0, 7)
+	})
+	if code := sqlState(t, err); code != "LC001" {
+		t.Fatalf("a frozen branch must be refused with LC001, got %s", code)
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a frozen branch must not write a document, a line or a balance")
+	}
+	if existing, _ := balances(t, ctx, p, 2, 1); existing != 10 {
+		t.Fatalf("a frozen branch must not move its own stock, got %d", existing)
+	}
+	if after := inventoryRevision(t, ctx, p); after != revision {
+		t.Fatalf("a refused adjustment must not move the inventory revision: %d → %d", revision, after)
+	}
+	// The guard is the frozen branch's own: the warehouse and the other branch keep counting.
+	for name, location := range map[string]int{"warehouse": 1, "branch_b": 3} {
+		if err := commitScript(ctx, p, func(tx pgx.Tx) error {
+			id, err := rawDocument(ctx, tx, "schema-operating-adj-"+name, location, nil)
+			if err != nil {
+				return err
+			}
+			return rawLine(ctx, tx, id, 1, 0, 11)
+		}); err != nil {
+			t.Fatalf("%s must keep adjusting its own stock: %v", name, err)
+		}
+	}
+}
+
+// TestSchemaOverwritesCallerExpected pins the blind-count contract: the expected snapshot
+// is the locked balance, never what the caller wrote, in every location that counts.
+func TestSchemaOverwritesCallerExpected(t *testing.T) {
+	ctx, p, _ := fixture(t)
+	for name, location := range map[string]int{"warehouse": 1, "branch": 2} {
+		setBalanceAt(t, ctx, p, int64(location), 1, 10, 0)
+		var id int64
+		if err := commitScript(ctx, p, func(tx pgx.Tx) error {
+			var err error
+			if id, err = rawDocument(ctx, tx, "schema-expected-"+name+"-key", location, nil); err != nil {
+				return err
+			}
+			return rawLine(ctx, tx, id, 1, 999, 12)
+		}); err != nil {
+			t.Fatalf("%s: a covered counted line was refused: %v", name, err)
+		}
+		expected, counted := persistedLine(t, ctx, p, id, 1)
+		if expected != 10 || counted != 12 {
+			t.Fatalf("%s: the locked balance must overwrite the caller's expected snapshot, got %d/%d", name, expected, counted)
+		}
+		if existing, reserved := balances(t, ctx, p, location, 1); existing != 12 || reserved != 0 {
+			t.Fatalf("%s: the counted difference was not applied or reserved moved: %d/%d", name, existing, reserved)
+		}
 	}
 }
 

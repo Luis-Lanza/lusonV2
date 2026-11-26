@@ -1,8 +1,9 @@
-// Package stockadjustments persists immutable warehouse stock adjustments by
-// physical count: a document records what was counted, the database keeps the
-// expected snapshot it had at apply time and applies the difference atomically.
-// Only the warehouse (account 1, location 1) adjusts, and a persisted document is
-// corrected only by a single counter-entry.
+// Package stockadjustments persists immutable stock adjustments by physical count: a
+// document records what was counted, the database keeps the expected snapshot it had at
+// apply time and applies the difference atomically. Each location corrects its own counted
+// stock -- the warehouse and the branches alike, in the one document (S36.1) -- and a
+// persisted document is corrected only by a single counter-entry. The document's location is
+// the session's, never the request's, and an account only ever adjusts its own.
 package stockadjustments
 
 import (
@@ -26,18 +27,20 @@ var (
 	ErrRetryConflict     = errors.New("stock adjustment retry conflict")
 	ErrInsufficientStock = errors.New("insufficient stock adjustment")
 	ErrUnavailable       = errors.New("stock adjustment store unavailable")
+	// ErrBranchFrozen is the refusal of an adjustment or a counter-entry the branch may not
+	// write because a live account settlement holds it (LC001, the freeze of 035 wired to
+	// this document by 075). It is a fact of the branch the operator acts on -- the branch
+	// closes or waits out its settlement -- and never an outage, so it is published under the
+	// same 409 branch_frozen token the rest of the house publishes that very fact with.
+	ErrBranchFrozen = errors.New("the branch has an open account settlement and cannot operate")
 )
 
 const (
-	// Only the warehouse account (id 1) assigned to location 1 registers an
-	// adjustment, exactly like the stock ingress.
-	warehouseAccountID  = 1
-	warehouseLocationID = 1
-	maxLines            = 190
-	maxCounted          = 1_000_000
-	maxReason           = 500
-	maxDetail           = 500
-	maxSearch           = 128
+	maxLines   = 190
+	maxCounted = 1_000_000
+	maxReason  = 500
+	maxDetail  = 500
+	maxSearch  = 128
 )
 
 const (
@@ -61,7 +64,7 @@ type CreateInput struct {
 }
 
 // AdjustmentLine is one persisted line of a document: the expected snapshot the
-// database took, the counted quantity the warehouse declared, and the applied
+// database took, the counted quantity the location declared, and the applied
 // difference. A counter-entry has counted and expected swapped.
 type AdjustmentLine struct {
 	VariantID  int64 `json:"variant_id"`
@@ -157,7 +160,7 @@ type CatalogQuery struct {
 	PageSize int
 }
 
-// CatalogItem is the variant identity of one item of this warehouse's catalogue,
+// CatalogItem is the variant identity of one item of this location's catalogue,
 // of its own kind. It deliberately has no stock field: the capture screen cannot
 // reveal the expected quantity, the difference or any other stock number.
 type CatalogItem struct {
@@ -198,9 +201,13 @@ func documentKind(distinct int64, sole string) (catalog.Kind, error) {
 // ValidOperationKey is the database regex, checked before any database work.
 func ValidOperationKey(key string) bool { return operationKeyPattern.MatchString(key) }
 
-// warehouseAdmin admits only the completed warehouse administrator identity.
-func warehouseAdmin(actor auth.Identity) bool {
-	return actor.AccountID == warehouseAccountID && actor.Location.ID == warehouseLocationID && !actor.MustChangePassword
+// adjustingAccount admits every provisioned account that completed its initial password
+// change, whatever its location: the section is one document for the whole installation
+// (S36.1). It decides only that the session is an operator at all; the location the session
+// claims is proved against the assignment the database holds by checkAssignment, and a
+// document is always written in that location and no other.
+func adjustingAccount(actor auth.Identity) bool {
+	return actor.AccountID > 0 && actor.Location.ID > 0 && !actor.MustChangePassword
 }
 
 // ValidPage admits only the page and page size of the frozen read contract, so

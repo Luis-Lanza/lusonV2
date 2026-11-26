@@ -50,6 +50,10 @@ func branch() auth.Identity {
 	return auth.Identity{AccountID: 2, Location: auth.Location{ID: 2}}
 }
 
+func branchB() auth.Identity {
+	return auth.Identity{AccountID: 3, Location: auth.Location{ID: 3}}
+}
+
 // input is one physical count document. The caller only ever supplies counted
 // quantities: the expected snapshot is the database's own value.
 func input(key string, lines ...stockadjustments.Line) stockadjustments.CreateInput {
@@ -115,11 +119,33 @@ func sameIdentity(t *testing.T, got, want catalog.Identity) bool {
 	return gotErr == nil && wantErr == nil && string(gotJSON) == string(wantJSON)
 }
 
-// setBalance is test-owned ledger state: the stock a counter is supposed to find.
+// setBalance is test-owned ledger state of the warehouse: the stock a counter is
+// supposed to find.
 func setBalance(t *testing.T, ctx context.Context, p *pgxpool.Pool, variant, existing, reserved int64) {
 	t.Helper()
-	if _, err := p.Exec(ctx, "UPDATE inventory_balances SET existing=$2,reserved=$3 WHERE location_id=1 AND variant_id=$1", variant, existing, reserved); err != nil {
-		t.Fatal("balance fixture setup failed")
+	setBalanceAt(t, ctx, p, 1, variant, existing, reserved)
+}
+
+// setBalanceAt is the same state for any location: every location of the installation
+// holds a row of every variant, so a branch counts what it has exactly like the warehouse.
+// The update is asserted to touch its row, so a location without stock can never make a
+// probe vacuous.
+func setBalanceAt(t *testing.T, ctx context.Context, p *pgxpool.Pool, location, variant, existing, reserved int64) {
+	t.Helper()
+	tag, err := p.Exec(ctx, "UPDATE inventory_balances SET existing=$3,reserved=$4 WHERE location_id=$1 AND variant_id=$2",
+		location, variant, existing, reserved)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("balance fixture setup failed for location %d variant %d", location, variant)
+	}
+}
+
+// freezeBranch opens the account settlement that holds a branch: one live settlement is
+// what the freeze of 035 reads, and it belongs to the branch it settles.
+func freezeBranch(t *testing.T, ctx context.Context, p *pgxpool.Pool, location int) {
+	t.Helper()
+	if _, err := p.Exec(ctx, `INSERT INTO branch_closings(branch_location_id,period_start,
+ opened_by_account_id) VALUES($1,now(),1)`, int16(location)); err != nil {
+		t.Fatalf("the settlement of location %d could not be opened: %v", location, err)
 	}
 }
 
@@ -195,15 +221,18 @@ func TestStoreGuards(t *testing.T) {
 	if snapshot(t, ctx, p) == "" {
 		t.Fatal("empty snapshot")
 	}
-	// The warehouse account is the only admitted actor, exactly like ingress.
+	// Any operating account adjusts its own location (S36.1), and the only identity that
+	// is refused is one the database does not hold: the section states a session and
+	// checkAssignment is what proves the location is that account's own, so a forged
+	// identity is not evidence of an assignment.
 	pending := warehouse()
 	pending.MustChangePassword = true
 	for name, actor := range map[string]auth.Identity{
-		"branch":          branch(),
-		"warehouse_label": {AccountID: 1, Location: auth.Location{ID: 2}},
-		"clerk":           {AccountID: 2, Location: auth.Location{ID: 1}},
-		"unassigned":      {},
-		"password_change": pending,
+		"warehouse_label":    {AccountID: 1, Location: auth.Location{ID: 2}},
+		"clerk":              {AccountID: 2, Location: auth.Location{ID: 1}},
+		"other_branch_label": {AccountID: 3, Location: auth.Location{ID: 2}},
+		"unassigned":         {},
+		"password_change":    pending,
 	} {
 		before := snapshot(t, ctx, p)
 		if _, _, err := s.Create(ctx, actor, in); !errors.Is(err, stockadjustments.ErrForbidden) {
@@ -224,6 +253,193 @@ func TestStoreGuards(t *testing.T) {
 		if snapshot(t, ctx, p) != before {
 			t.Fatalf("%s must not change any stored value", name)
 		}
+	}
+}
+
+// TestEachLocationAdjustsItsOwn proves S36.1 in the new world: the document's location is
+// the session's, each location moves only its own balance, and the read routes follow the
+// actor. A document of another location is not this ledger's, so it is not found instead of
+// being answered with an outage.
+func TestEachLocationAdjustsItsOwn(t *testing.T) {
+	ctx, p, s := fixture(t)
+	// Every location starts from its own stock, so a difference applied in one of them is
+	// visible as a movement of that one location alone.
+	for location := 1; location <= 3; location++ {
+		setBalanceAt(t, ctx, p, int64(location), 1, 10, 0)
+		setBalanceAt(t, ctx, p, int64(location), 2, 5, 0)
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_adjustments"); n != 0 {
+		t.Fatalf("the ledger must start empty, got %d documents", n)
+	}
+	actors := []struct {
+		name     string
+		actor    auth.Identity
+		location int
+		account  int64
+	}{
+		{"warehouse", warehouse(), 1, 1},
+		{"branch_a", branch(), 2, 2},
+		{"branch_b", branchB(), 3, 3},
+	}
+	ids := make(map[string]int64, len(actors))
+	for _, tc := range actors {
+		adjustment, replayed, err := s.Create(ctx, tc.actor, input("own-location-key-"+tc.name,
+			stockadjustments.Line{VariantID: 1, Counted: 12}, stockadjustments.Line{VariantID: 2, Counted: 3}))
+		if err != nil || replayed {
+			t.Fatalf("%s could not adjust its own stock: %v", tc.name, err)
+		}
+		if adjustment.LocationID != tc.location || adjustment.CreatedByAccountID != tc.account {
+			t.Fatalf("%s document does not name the session's location and author: %+v", tc.name, adjustment)
+		}
+		ids[tc.name] = adjustment.ID
+	}
+	// Each actor's document moved that location's own balance, and nothing else moved.
+	for _, tc := range actors {
+		if existing, _ := balances(t, ctx, p, tc.location, 1); existing != 12 {
+			t.Fatalf("%s did not move variant 1 of its own location: %d", tc.name, existing)
+		}
+		if existing, _ := balances(t, ctx, p, tc.location, 2); existing != 3 {
+			t.Fatalf("%s did not move variant 2 of its own location: %d", tc.name, existing)
+		}
+	}
+	// The history and the detail are the actor's own ledger of documents.
+	for _, tc := range actors {
+		page, err := s.List(ctx, tc.actor, 1, 25)
+		if err != nil || page.TotalAdjustments != 1 || len(page.Adjustments) != 1 || page.Adjustments[0].ID != ids[tc.name] {
+			t.Fatalf("%s must list its own document only: %+v %v", tc.name, page, err)
+		}
+		if detail, err := s.Read(ctx, tc.actor, ids[tc.name]); err != nil || detail.LocationID != tc.location {
+			t.Fatalf("%s must read its own document: %v", tc.name, err)
+		}
+	}
+	// No location adjusts another's: every other location finds none of those documents,
+	// which is a not-found answer and never an outage, and the refusal writes nothing.
+	before := snapshot(t, ctx, p)
+	for _, reader := range actors {
+		for _, writer := range actors {
+			if reader.location == writer.location {
+				continue
+			}
+			if _, err := s.Read(ctx, reader.actor, ids[writer.name]); !errors.Is(err, stockadjustments.ErrNotFound) {
+				t.Fatalf("%s must not read the document of %s: %v", reader.name, writer.name, err)
+			}
+			if _, _, err := s.Reverse(ctx, reader.actor, ids[writer.name], "cross-location-reverse1", "error de conteo"); !errors.Is(err, stockadjustments.ErrNotFound) {
+				t.Fatalf("%s must not reverse the document of %s: %v", reader.name, writer.name, err)
+			}
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("reading or reversing another location's document must not change stored state")
+	}
+}
+
+// TestCreateKeyBelongsToItsLocation pins the replay contract across locations: an
+// operation key identifies one intent of one location, so the same key from another
+// location is a different payload and never a replay of somebody else's document.
+func TestCreateKeyBelongsToItsLocation(t *testing.T) {
+	ctx, p, s := fixture(t)
+	setBalanceAt(t, ctx, p, 2, 1, 10, 0)
+	in := input("shared-operation-key-01", stockadjustments.Line{VariantID: 1, Counted: 12})
+	if _, _, err := s.Create(ctx, branch(), in); err != nil {
+		t.Fatalf("the branch count was not applied: %v", err)
+	}
+	before := snapshot(t, ctx, p)
+	for name, actor := range map[string]auth.Identity{"warehouse": warehouse(), "branch_b": branchB()} {
+		if _, _, err := s.Create(ctx, actor, in); !errors.Is(err, stockadjustments.ErrRetryConflict) {
+			t.Fatalf("%s reusing another location's key must be a retry conflict, got %v", name, err)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a cross-location replay must not change any stored value")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_adjustments"); n != 1 {
+		t.Fatal("a cross-location replay must not create a second document")
+	}
+}
+
+// TestReverseFollowsItsOriginalLocation proves the counter-entry of S36.1: the reversal is
+// the original's own document, so it is created in the original's location by the account
+// that counts there, and a reversal of another location's document stays not found.
+func TestReverseFollowsItsOriginalLocation(t *testing.T) {
+	ctx, p, s := fixture(t)
+	setBalanceAt(t, ctx, p, 2, 1, 10, 0)
+	setBalanceAt(t, ctx, p, 3, 1, 10, 0)
+	original, _, err := s.Create(ctx, branch(), input("branch-reversal-key-0001", stockadjustments.Line{VariantID: 1, Counted: 14}))
+	if err != nil {
+		t.Fatalf("the branch count was not applied: %v", err)
+	}
+	// Another location's document is not this ledger's: not found, and nothing written.
+	before := snapshot(t, ctx, p)
+	for name, actor := range map[string]auth.Identity{"warehouse": warehouse(), "branch_b": branchB()} {
+		if _, _, err := s.Reverse(ctx, actor, original.ID, "branch-reversal-cross-01", "error de conteo"); !errors.Is(err, stockadjustments.ErrNotFound) {
+			t.Fatalf("%s must not reverse another location's document: %v", name, err)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a cross-location reversal must not change any stored value")
+	}
+	// The branch reverses its own document, in the original's own location.
+	counter, replayed, err := s.Reverse(ctx, branch(), original.ID, "branch-reversal-own-0001", "  error de conteo  ")
+	if err != nil || replayed {
+		t.Fatalf("the branch could not reverse its own document: %v", err)
+	}
+	if counter.LocationID != 2 || counter.CreatedByAccountID != 2 || counter.Reason != "error de conteo" ||
+		counter.ReversesAdjustmentID == nil || *counter.ReversesAdjustmentID != original.ID {
+		t.Fatalf("the counter-entry must be the original's own document of its own location: %+v", counter)
+	}
+	if existing, _ := balances(t, ctx, p, 2, 1); existing != 10 {
+		t.Fatalf("the branch reversal must restore its own balance, got %d", existing)
+	}
+	if existing, _ := balances(t, ctx, p, 3, 1); existing != 10 {
+		t.Fatalf("the branch reversal must not touch another location, got %d", existing)
+	}
+	if detail, err := s.Read(ctx, branch(), counter.ID); err != nil || detail.LocationID != 2 {
+		t.Fatalf("the branch must read its own counter-entry: %v", err)
+	}
+}
+
+// TestFrozenBranchWritesNothing proves S36.2: a branch held by a live account settlement
+// does not move its own stock outside the cut that is already counted, and the refusal is a
+// fact of the branch instead of a forbidden identity or an outage.
+func TestFrozenBranchWritesNothing(t *testing.T) {
+	ctx, p, s := fixture(t)
+	setBalanceAt(t, ctx, p, 2, 1, 10, 0)
+	original, _, err := s.Create(ctx, branch(), input("freeze-branch-key-00001", stockadjustments.Line{VariantID: 1, Counted: 12}))
+	if err != nil {
+		t.Fatalf("the count before the settlement was not applied: %v", err)
+	}
+	freezeBranch(t, ctx, p, 2)
+	before := snapshot(t, ctx, p)
+	for name, call := range map[string]func() error{
+		"create": func() error {
+			_, _, err := s.Create(ctx, branch(), input("freeze-branch-count-0001", stockadjustments.Line{VariantID: 1, Counted: 9}))
+			return err
+		},
+		"reverse": func() error {
+			_, _, err := s.Reverse(ctx, branch(), original.ID, "freeze-branch-reverse01", "error de conteo")
+			return err
+		},
+	} {
+		err := call()
+		if err == nil {
+			t.Fatalf("a frozen branch must not %s its own stock", name)
+		}
+		// The refusal is the settlement's, never the forged-identity one and never an
+		// outage: the branch acts on it by closing its settlement.
+		if !errors.Is(err, stockadjustments.ErrBranchFrozen) {
+			t.Fatalf("%s of a frozen branch must be refused by the settlement, got %v", name, err)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a frozen branch must not change any stored value")
+	}
+	// Another branch's settlement holds nobody else: the warehouse and branch B keep
+	// adjusting their own stock.
+	if _, _, err := s.Create(ctx, warehouse(), input("freeze-warehouse-key-001", stockadjustments.Line{VariantID: 1, Counted: 11})); err != nil {
+		t.Fatalf("another branch's settlement must not hold the warehouse: %v", err)
+	}
+	if _, _, err := s.Create(ctx, branchB(), input("freeze-branch-b-key-0001", stockadjustments.Line{VariantID: 1, Counted: 13})); err != nil {
+		t.Fatalf("another branch's settlement must not hold branch B: %v", err)
 	}
 }
 
@@ -805,43 +1021,19 @@ func TestReadDetailCounterEntryMotive(t *testing.T) {
 	}
 }
 
-// foreignDocument persists an adjustment of another location. Only the database
-// may refuse one in normal operation, so the isolated fixture writes it with the
-// admission and application triggers disabled, then re-enables them immediately.
+// foreignDocument is the document of another location the reads of one location must never
+// answer: a branch count, written by the branch account through the store itself, since a
+// document of a branch is a document of the ledger and no longer a shape only the database
+// can refuse.
 func foreignDocument(t *testing.T, ctx context.Context, p *pgxpool.Pool) int64 {
 	t.Helper()
-	disable := func() {
-		for _, statement := range []string{
-			"ALTER TABLE stock_adjustment_lines DISABLE TRIGGER USER",
-			"ALTER TABLE stock_adjustments DISABLE TRIGGER USER",
-		} {
-			if _, err := p.Exec(ctx, statement); err != nil {
-				t.Fatal("foreign document fixture setup failed")
-			}
-		}
+	setBalanceAt(t, ctx, p, 2, 1, 10, 0)
+	store := stockadjustments.New(p)
+	adjustment, _, err := store.Create(ctx, branch(), input("foreign-detail-key-0001", stockadjustments.Line{VariantID: 1, Counted: 9}))
+	if err != nil {
+		t.Fatalf("the foreign document was not created: %v", err)
 	}
-	enable := func() {
-		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-		defer done()
-		for _, statement := range []string{
-			"ALTER TABLE stock_adjustment_lines ENABLE TRIGGER USER",
-			"ALTER TABLE stock_adjustments ENABLE TRIGGER USER",
-		} {
-			_, _ = p.Exec(cleanup, statement)
-		}
-	}
-	disable()
-	defer enable()
-	t.Cleanup(enable)
-	var id int64
-	if err := p.QueryRow(ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,created_by_account_id)
- VALUES('foreign-detail-key-0001',2,'sucursal',1) RETURNING id`).Scan(&id); err != nil {
-		t.Fatal("foreign document insert failed")
-	}
-	if _, err := p.Exec(ctx, "INSERT INTO stock_adjustment_lines(adjustment_id,variant_id,expected_quantity,counted_quantity) VALUES($1,$2,$3,$4)", id, int32(1), int64(5), int64(4)); err != nil {
-		t.Fatal("foreign document line insert failed")
-	}
-	return id
+	return adjustment.ID
 }
 
 func TestReadDetailNotFound(t *testing.T) {
@@ -863,11 +1055,15 @@ func TestReadDetailNotFound(t *testing.T) {
 		}
 	}
 	if snapshot(t, ctx, p) != before {
-		t.Fatal("a document outside this warehouse must not change any stored value")
+		t.Fatal("a document outside this location must not change any stored value")
 	}
-	// The warehouse document stays readable: only other locations are hidden.
+	// The warehouse document stays readable, and the branch reads its own: only another
+	// location's document is not found.
 	if detail := readDetail(t, ctx, s, adjustment.ID); detail.ID != adjustment.ID {
 		t.Fatal("the warehouse detail read must keep answering its own documents")
+	}
+	if detail, err := s.Read(ctx, branch(), foreign); err != nil || detail.ID != foreign || detail.LocationID != 2 {
+		t.Fatalf("the branch must read its own document: %v", err)
 	}
 }
 
@@ -1288,10 +1484,10 @@ func TestCatalogRejectsInvalidQueryAndActor(t *testing.T) {
 	ctx, p, s := fixture(t)
 	before := snapshot(t, ctx, p)
 	for name, actor := range map[string]auth.Identity{
-		"branch":          branch(),
-		"warehouse_label": {AccountID: 1, Location: auth.Location{ID: 2}},
-		"clerk":           {AccountID: 2, Location: auth.Location{ID: 1}},
-		"unassigned":      {},
+		"warehouse_label":    {AccountID: 1, Location: auth.Location{ID: 2}},
+		"clerk":              {AccountID: 2, Location: auth.Location{ID: 1}},
+		"other_branch_label": {AccountID: 3, Location: auth.Location{ID: 2}},
+		"unassigned":         {},
 	} {
 		if _, err := s.Catalog(ctx, actor, stockadjustments.CatalogQuery{Page: 1, PageSize: 25}); !errors.Is(err, stockadjustments.ErrForbidden) {
 			t.Fatalf("%s must be forbidden", name)
@@ -1322,5 +1518,55 @@ func TestCatalogRejectsInvalidQueryAndActor(t *testing.T) {
 	}
 	if _, err := closed.Catalog(ctx, warehouse(), stockadjustments.CatalogQuery{Page: 1, PageSize: 25}); !errors.Is(err, stockadjustments.ErrUnavailable) {
 		t.Fatal("an admitted catalogue query must reach the database and fail closed")
+	}
+}
+
+// TestCatalogScopesToActorLocation proves the capture catalogue is the actor's own: the
+// variants a location holds a balance row for, and no other location's ledger. One variant
+// is dropped from branch A and another from branch B, so the two answers cannot be the same
+// list by accident and neither is the warehouse's.
+func TestCatalogScopesToActorLocation(t *testing.T) {
+	ctx, p, s := fixture(t)
+	for _, drop := range []struct {
+		location int
+		variant  int64
+	}{{2, 190}, {3, 189}} {
+		if _, err := p.Exec(ctx, "DELETE FROM inventory_balances WHERE location_id=$1 AND variant_id=$2", drop.location, drop.variant); err != nil {
+			t.Fatalf("the balance of location %d could not be dropped: %v", drop.location, err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		actor    auth.Identity
+		total    int64
+		excluded int64
+	}{
+		{"warehouse", warehouse(), 190, 0},
+		{"branch_a", branch(), 189, 190},
+		{"branch_b", branchB(), 189, 189},
+	} {
+		page, err := s.Catalog(ctx, tc.actor, stockadjustments.CatalogQuery{Page: 1, PageSize: 50})
+		if err != nil || page.TotalVariants != tc.total {
+			t.Fatalf("%s must read its own catalogue: %d %v", tc.name, page.TotalVariants, err)
+		}
+		seen := make(map[int64]bool, tc.total)
+		for index := 1; (index-1)*50 < int(tc.total); index++ {
+			result, err := s.Catalog(ctx, tc.actor, stockadjustments.CatalogQuery{Page: index, PageSize: 50})
+			if err != nil {
+				t.Fatalf("%s catalogue page %d failed: %v", tc.name, index, err)
+			}
+			for _, item := range result.Items {
+				if _, repeated := seen[int64(item.VariantID)]; repeated {
+					t.Fatalf("%s catalogue repeated variant %d", tc.name, item.VariantID)
+				}
+				seen[int64(item.VariantID)] = true
+			}
+		}
+		if int64(len(seen)) != tc.total {
+			t.Fatalf("%s catalogue lost a variant: %d of %d", tc.name, len(seen), tc.total)
+		}
+		if tc.excluded > 0 && seen[tc.excluded] {
+			t.Fatalf("%s catalogue answered variant %d, which it holds no balance row for", tc.name, tc.excluded)
+		}
 	}
 }

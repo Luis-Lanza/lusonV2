@@ -7,16 +7,18 @@ import {
   warrantyTrayUnavailable,
 } from './warrantyCasesAPI';
 import {
-  warrantyDaysSince, warrantyDestinationLabels, warrantyEventKindLabels, warrantyLoanFateLabels,
-  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseLabels, warrantyPhaseShortLabels,
-  warrantyPhaseTone, warrantyVerdictLabels, type WarrantyCase, type WarrantyCaseRow,
-  type WarrantyDestination, type WarrantyVerdict,
+  warrantyDaysSince, warrantyDestinationLabels, warrantyEventLabel, warrantyLoanFateLabels,
+  warrantyNotice, warrantyNoticeDays, warrantyOriginLabels, warrantyPhaseShortLabel, warrantyPhaseTone,
+  warrantyRowPhaseLabel, warrantyUnitsWrittenOff, warrantyVerdictLabels,
+  type WarrantyCase,
+  type WarrantyCaseRow, type WarrantyDestination, type WarrantyVerdict,
 } from './warrantyCasesModel';
 import {
   canonicalClaimResolutionBody, canonicalDefectResolutionBody, canonicalFactoryShipment,
   canonicalReleaseBody, canonicalWarehouseArrival, warehouseArrivalAvailable, warehouseBuckets,
   warehouseDaysInPhase, warehouseLoanDestinations, warehousePhaseOrder, warehouseReleaseAvailable,
-  warehouseReleaseBlocked, warehouseReportedDestinations, warehouseShipmentAvailable,
+  warehouseReleaseBlocked, warehouseReleaseSubjectKind, warehouseReportedDestinations,
+  warehouseShipmentAvailable,
   warehouseStockCrossings, warehouseVerdictAvailable, warehouseVerdicts, type WarehouseCrossingState,
   type WarehousePhase,
 } from './warehouseWarrantyModel';
@@ -263,7 +265,7 @@ export default function WarehouseWarrantyCases({ csrf, locations, fetcher = glob
                 <td data-label="Origen"><span className={`warranty-pill ${row.origin === 'stock_defect' ? 'warn' : 'quiet'}`}>
                   {warrantyOriginLabels[row.origin]}</span></td>
                 <td data-label="Etapa"><span className={`warranty-pill ${warrantyPhaseTone(row.phase)}`}>
-                  {warrantyPhaseShortLabels[row.phase]}</span></td>
+                  {warrantyRowPhaseLabel(row)}</span></td>
                 <td data-label="Días" className="num warranty-days">{warrantyDaysSince(row.created_at, today)}</td>
               </tr>;
             })}</tbody>
@@ -381,13 +383,13 @@ function WarehouseCaseDetail({ record, api, csrf, locations, today, onChanged, o
   return <>
     <div className="warranty-detail-top">
       <span className="warranty-doc">{record.case_number}</span>
-      <span className={`warranty-pill ${tone}`}>{warrantyPhaseShortLabels[record.phase]}</span>
+      <span className={`warranty-pill ${tone}`}>{warrantyPhaseShortLabel(record)}</span>
       <button type="button" className="warranty-close" onClick={onClose} aria-label="Cerrar el detalle del caso">Cerrar</button>
     </div>
     <h2>{locationName(locations, record.branch_location_id)}</h2>
     <p className="warranty-client-line">{record.origin === 'warranty_claim'
       ? 'Reclamo con la garantía de una venta: el cliente y su respuesta son de la sucursal.'
-      : `Hallazgo en góndola: ${units(record.quantity ?? 0)} dadas de baja del stock de la sucursal.`}</p>
+      : `Hallazgo en góndola: ${warrantyUnitsWrittenOff(record.quantity ?? 0)} del stock de la sucursal.`}</p>
 
     <dl className="warranty-facts">
       <div><dt>{record.origin === 'warranty_claim' ? 'Serial reclamado' : 'Unidades de la góndola'}</dt>
@@ -414,14 +416,16 @@ function WarehouseCaseDetail({ record, api, csrf, locations, today, onChanged, o
 
     {custody > 0 && <div className="warranty-custody">
       <strong>{`En custodia por garantía: ${units(custody)}`}</strong>
-      <p>La unidad reparada no es stock vendible mientras espera al cliente: el punto de venta no puede venderla y la rendición la publica en una línea aparte. Sale de custodia cuando el Almacén la libera o cuando la sucursal entrega el canje.</p>
+      <p>{warehouseReleaseSubjectKind(record) === 'stock'
+        ? 'La unidad reparada no es stock vendible y no espera a ningún cliente: va al stock de la sucursal. Sale de custodia cuando el Almacén autoriza la liberación, que es el acto que cierra el caso.'
+        : 'La unidad reparada no es stock vendible mientras espera al cliente: el punto de venta no puede venderla y la rendición la publica en una línea aparte. Sale de custodia cuando el Almacén la libera o cuando la sucursal entrega el canje.'}</p>
     </div>}
 
     <h3 className="warranty-section-title">Historial del caso</h3>
     <ol className="warranty-timeline">
       {record.events.map(entry => <li key={entry.ordinal} data-kind={entry.kind}>
         <div className="warranty-timeline-head">
-          <strong>{entry.kind === 'phase' ? warrantyPhaseLabels[entry.phase] : warrantyEventKindLabels[entry.kind]}</strong>
+          <strong>{warrantyEventLabel(record, entry)}</strong>
           <time dateTime={entry.recorded_at}>{new Intl.DateTimeFormat('es-BO',
             { timeZone: 'America/La_Paz', day: '2-digit', month: '2-digit', year: 'numeric' })
             .format(new Date(entry.recorded_at))}</time>
@@ -506,7 +510,9 @@ function WarehouseCaseDetail({ record, api, csrf, locations, today, onChanged, o
       {record.origin === 'warranty_claim' && record.phase === 'resolved' && warehouseReleaseAvailable(record)
         && <form className="warranty-action" onSubmit={submitRelease}>
           <h4>Autorizar la liberación</h4>
-          <p className="warranty-note">La unidad que el caso tiene en custodia pasa al stock vendible de la sucursal, con actor y motivo, y una sola vez. El aviso al cliente ya está registrado por la sucursal.</p>
+          <p className="warranty-note">{warehouseReleaseSubjectKind(record) === 'stock'
+            ? 'La unidad vuelve al stock vendible de la sucursal y el caso cierra con este acto, con actor y motivo, y una sola vez. El aviso al cliente ya está registrado por la sucursal.'
+            : 'La unidad que el caso tiene en custodia pasa al stock vendible de la sucursal, con actor y motivo, y una sola vez. El aviso al cliente ya está registrado por la sucursal.'}</p>
           <label htmlFor={`release-note-${record.id}`}>Motivo de la liberación</label>
           <textarea id={`release-note-${record.id}`} value={release.note} maxLength={500} required rows={2}
             onChange={event => setRelease(current => ({ ...current, note: event.target.value }))} />
@@ -522,7 +528,7 @@ function WarehouseCaseDetail({ record, api, csrf, locations, today, onChanged, o
             : warehouseReleaseBlocked(record)}
         </p>}
     </div>
-    <p className="warranty-note warranty-desk-boundary">La entrega al cliente y el cierre del caso son de la sucursal: el Almacén registra los tramos que mueve la batería, el veredicto y la liberación, y nada más.</p>
+    <p className="warranty-note warranty-desk-boundary">La entrega al cliente y el cierre del caso son de la sucursal, salvo el caso cuya unidad va al stock vendible: ese cierra con la liberación del Almacén. El Almacén registra los tramos que mueve la batería, el veredicto y la liberación, y nada más.</p>
   </>;
 }
 

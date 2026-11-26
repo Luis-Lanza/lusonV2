@@ -4,7 +4,8 @@ import {
   canonicalClaimResolutionBody, canonicalDefectResolutionBody, canonicalFactoryShipment,
   canonicalReleaseBody, canonicalWarehouseArrival, warehouseBuckets, warehouseDaysInPhase,
   warehouseLoanDestinations, warehousePhaseSince, warehouseReleaseAvailable, warehouseReleaseBlocked,
-  warehouseReportedDestinations, warehouseShipmentAvailable, warehouseStockCrossings,
+  warehouseReleaseSubject, warehouseReleaseSubjectKind, warehouseReportedDestinations,
+  warehouseShipmentAvailable, warehouseStockCrossings,
   warehouseVerdicts, warehouseVerdictAvailable, warehouseArrivalAvailable, warehouseResolutionPath,
   warehouseReleasePath,
 } from './warehouseWarrantyModel';
@@ -14,7 +15,7 @@ import {
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1, case_number: 'C-2-000001', branch_location_id: 2, origin: 'warranty_claim', phase: 'received',
   variant_id: 1, serial_number: 'ABC123', quantity: null, declared_failure: 'No arranca el motor',
-  reason: null, created_at: '2026-03-01T12:00:00Z', ...over,
+  reason: null, created_at: '2026-03-01T12:00:00Z', closed_by: null, ...over,
 });
 const loan = (over: Record<string, unknown> = {}) => ({
   ordinal: 1, model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1,
@@ -75,6 +76,20 @@ const atWarehouseClaim = (over: Record<string, unknown> = {}) => parseWarrantyCa
   phase: 'at_warehouse',
   events: atFactoryEvents().slice(0, 3), ...over,
 }));
+/** A claim whose usable unit is destined to the branch's own shelf: no client comes to collect it (S31). */
+const stockBoundClaim = ({ verdict = 'repaired', notice = true, released = false }:
+{ verdict?: string; notice?: boolean; released?: boolean } = {}) => parseWarrantyCase(claimJSON({
+  // The release of this unit is the act that closes the case, and it states that `closed` itself (073).
+  phase: released ? 'closed' : 'resolved', closed_by: released ? 'release' : null, verdict,
+  reported_destination: 'stock', loan_destination: 'customer',
+  loans: [loan()],
+  events: [...atFactoryEvents(),
+    event({ ordinal: 5, phase: 'resolved', recorded_at: '2026-03-12T12:00:00Z', note: 'Reparada por fábrica' }),
+    ...(notice ? [event({ ordinal: 6, kind: 'notice', phase: 'resolved',
+      recorded_at: '2026-03-16T12:00:00Z', note: 'Avisado por teléfono' })] : []),
+    ...(released ? [event({ ordinal: 7, kind: 'release', phase: 'closed',
+      recorded_at: '2026-03-18T12:00:00Z', note: 'El cliente no vino' })] : [])],
+}));
 const resolvedFinding = (over: Record<string, unknown> = {}) => parseWarrantyCase(findingJSON({
   phase: 'resolved', verdict: 'repaired', reported_destination: 'stock', stock_destination: 'stock',
   events: [...findingEvents(),
@@ -129,6 +144,54 @@ describe('the acts the contract gives the warehouse', () => {
 });
 
 describe('the custody and the release (S13, S14, S19)', () => {
+  it('offers the release of a usable unit bound for stock, the pair the contract names (S31)', () => {
+    // The backend names this pair in warranty_case_unit_bound_for_stock(): a claim whose destination is
+    // `stock` and whose verdict is repaired or replaced is released by the Almacén, and that release is
+    // the act that closes the case. The screen reads the same pair and never the destination alone.
+    expect(warehouseReleaseSubject(stockBoundClaim())).toBe(true);
+    expect(warehouseReleaseSubjectKind(stockBoundClaim())).toBe('stock');
+    expect(warehouseReleaseSubject(stockBoundClaim({ verdict: 'replaced' }))).toBe(true);
+    expect(warehouseReleaseSubjectKind(stockBoundClaim({ verdict: 'replaced' }))).toBe('stock');
+    // The rest of the gate does not move: the notice, the resolved verdict and the single act stay (S14).
+    expect(warehouseReleaseAvailable(stockBoundClaim())).toBe(true);
+    expect(warehouseReleaseAvailable(stockBoundClaim({ notice: false }))).toBe(false);
+    // Once released the case is closed: the same act that sells the unit ends it, and it happens once.
+    expect(warehouseReleaseAvailable(stockBoundClaim({ released: true }))).toBe(false);
+    expect(warehouseReleaseAvailable(parseWarrantyCase(claimJSON({
+      phase: 'at_factory', events: atFactoryEvents(),
+    })))).toBe(false);
+    // The destination never answers it alone: an uncovered unit is the used pool's (LW025, S11), and the
+    // client's own unit is the other subject of the same act.
+    const pooled = stockBoundClaim({ verdict: 'not_covered' });
+    expect(warehouseReleaseSubject(pooled)).toBe(false);
+    expect(warehouseReleaseSubjectKind(pooled)).toBeNull();
+    expect(warehouseReleaseAvailable(pooled)).toBe(false);
+    expect(warehouseReleaseBlocked(pooled)).toMatch(/pool de usadas/);
+    expect(warehouseReleaseSubject(noticedClaim())).toBe(true);
+    expect(warehouseReleaseSubjectKind(noticedClaim())).toBe('customer');
+  });
+
+  it('publishes the release of a stock-bound unit as the act that closes the case (S31)', () => {
+    const pending = warehouseStockCrossings(stockBoundClaim());
+    // The unit waits in custody exactly like the one a client will collect, and the release says that
+    // this act is the one that closes the case, never that a battery went back to a client.
+    expect(pending[1]).toMatchObject({ key: 'custody', units: 1, state: 'held' });
+    expect(pending[2]).toMatchObject({ key: 'release', units: 1, state: 'pending' });
+    expect(pending[2].note).toMatch(/cierra el caso/);
+    expect(pending[2].note).not.toMatch(/cliente/);
+
+    const closed = warehouseStockCrossings(stockBoundClaim({ released: true }));
+    expect(closed[1].units).toBe(0);
+    expect(closed[2].state).toBe('released');
+    expect(closed[2].note).toMatch(/cerró con ese acto/);
+
+    // The uncovered unit is the pool de usadas', and the crossing says so instead of naming a client.
+    const pooled = warehouseStockCrossings(stockBoundClaim({ verdict: 'not_covered' }));
+    expect(pooled[1].state).toBe('absent');
+    expect(pooled[1].note).toMatch(/pool de usadas/);
+    expect(pooled[2].state).toBe('absent');
+  });
+
   it('offers the release only to a resolved claim whose notice is on record', () => {
     expect(warehouseReleaseAvailable(noticedClaim())).toBe(true);
     expect(warehouseReleaseAvailable(resolvedClaim())).toBe(false);
@@ -186,6 +249,25 @@ describe('the custody and the release (S13, S14, S19)', () => {
     expect(released[2].note).toMatch(/18\/03\/2026|2026-03-18/);
   });
 
+  it('decides the custody sentence by the pair of destination and verdict, never by the destination (S31)', () => {
+    // The usable unit bound for the branch's shelf is not the used pool's, and the destination alone cannot
+    // tell the two apart: this case states a repair, so no sentence may claim the factory did not cover it.
+    const boundBeforeResolution = parseWarrantyCase(claimJSON({
+      phase: 'at_factory', verdict: 'repaired', reported_destination: 'stock', loan_destination: 'customer',
+      loans: [loan()], events: atFactoryEvents(),
+    }));
+    const bound = warehouseStockCrossings(boundBeforeResolution)[1];
+    expect(bound).toMatchObject({ key: 'custody', units: 0, state: 'absent' });
+    expect(bound.note).not.toMatch(/pool de usadas/);
+    expect(bound.note).not.toMatch(/no cubrió/);
+    expect(bound.note).toMatch(/stock vendible de la sucursal/);
+    expect(bound.note).toMatch(/liberación del Almacén/);
+
+    // The uncovered unit is the pool's, and that sentence stays word for word (S11).
+    const pool = warehouseStockCrossings(stockBoundClaim({ verdict: 'not_covered' }))[1];
+    expect(pool.note).toBe('El caso no retiene ninguna unidad vendible: la batería que la fábrica no cubrió es del pool de usadas.');
+  });
+
   it('reads how long the case has been where it is from its own history (S9, S15)', () => {
     const factory = parseWarrantyCase(claimJSON({ phase: 'at_factory', events: atFactoryEvents() }));
     expect(warehousePhaseSince(factory)?.recorded_at).toBe('2026-03-10T12:00:00Z');
@@ -241,3 +323,4 @@ describe('the bodies and the paths of the warehouse writes', () => {
     });
   });
 });
+

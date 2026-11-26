@@ -1,5 +1,6 @@
 import {
   warrantyCustodyUnits, warrantyDaysSince, warrantyDestinations, warrantyNotice, warrantyReleased,
+  warrantyUnitBoundForStock,
   type WarrantyAdvanceInput, type WarrantyCase, type WarrantyDestination, type WarrantyEvent,
   type WarrantyOrigin, type WarrantyPhase, type WarrantyVerdict,
 } from './warrantyCasesModel';
@@ -98,11 +99,35 @@ export function warehouseLoanDestinations(verdict: WarrantyVerdict): readonly Wa
 }
 
 /**
- * The unit a release returns: the single repaired unit a claim got back for its client. A unit the
- * factory kept, scrapped or sent to the used pool never comes back, so it has nothing to release (S14).
+ * The two units one release returns (S13, S14, S31). The destination states where a unit went and the
+ * verdict states in what condition it came back, and the two subjects of this act are:
+ *
+ *   - `customer`: the single repaired unit a claim got back for its client, which leaves custody to the
+ *     counter that will hand it over; and
+ *   - `stock`: the usable unit a claim got back for the branch's own shelf, which enters the branch's
+ *     sellable stock and closes the case with that act, because no client ever comes to collect it.
+ */
+export type WarehouseReleaseSubject = 'customer' | 'stock';
+
+/**
+ * Which of the two units the release would return, or null when the case holds none. It names the same pair
+ * the case model names for the whole app (`warrantyUnitBoundForStock`, 073's
+ * `warranty_case_unit_bound_for_stock()`): a claim, and either a unit destined to the client or a
+ * `repaired`/`replaced` unit destined to the branch's shelf. The destination column alone never answers it,
+ * and a `not_covered` unit with that same destination is the pool de usadas (LW025, S11).
+ */
+export function warehouseReleaseSubjectKind(value: WarrantyCase): WarehouseReleaseSubject | null {
+  if (value.origin !== 'warranty_claim') return null;
+  if (value.reported_destination === 'customer') return 'customer';
+  return warrantyUnitBoundForStock(value) ? 'stock' : null;
+}
+
+/**
+ * The unit a release returns, whether it goes to the client or to the branch's shelf. A unit the factory
+ * kept, scrapped or sent to the used pool never comes back, so it has nothing to release (S14, S31).
  */
 export function warehouseReleaseSubject(value: WarrantyCase): boolean {
-  return value.origin === 'warranty_claim' && value.reported_destination === 'customer';
+  return warehouseReleaseSubjectKind(value) !== null;
 }
 
 /** A release needs the recorded notice, the resolved verdict and a unit still in custody (S14, S19). */
@@ -120,7 +145,7 @@ export function warehouseReleaseBlocked(value: WarrantyCase): string {
     return 'La liberación existe recién cuando la fábrica respondió y el caso quedó resuelto.';
   }
   if (!warehouseReleaseSubject(value)) {
-    return 'La batería reclamada no volvió para el cliente, así que el caso no tiene ninguna unidad que liberar.';
+    return 'La batería reclamada no volvió como una unidad vendible: la fábrica la retuvo, la descartó o la mandó al pool de usadas, así que el caso no tiene ninguna unidad que liberar.';
   }
   if (warrantyReleased(value)) {
     return 'La unidad ya se liberó a stock vendible: la liberación ocurre una sola vez.';
@@ -164,6 +189,9 @@ export function warehouseStockCrossings(value: WarrantyCase): readonly Warehouse
     : { key: 'write_off', title: 'Baja del hallazgo', units: 0, state: 'absent',
       note: 'El caso entró por la garantía de una venta: la sucursal no descontó stock al abrirlo.' };
 
+  const subject = warehouseReleaseSubjectKind(value);
+  // The custody of the case is the case model's own reading, and this desk reads the same figure the branch
+  // reads: the unit of a claim waits there whether a client will collect it or the release will sell it.
   const custodyUnits = warrantyCustodyUnits(value);
   const release = value.events.filter(entry => entry.kind === 'release').at(-1) ?? null;
   const custody: WarehouseCrossing = custodyUnits > 0
@@ -173,22 +201,46 @@ export function warehouseStockCrossings(value: WarrantyCase): readonly Warehouse
       note: value.origin === 'stock_defect'
         ? 'El hallazgo en góndola no retiene ninguna unidad: su stock vuelve a la sucursal con el veredicto.'
         : release !== null
-          ? 'El Almacén liberó la unidad a stock vendible: ya no está en custodia y el caso sigue esperando al cliente.'
-          : 'El caso no retiene ninguna unidad mientras la fábrica no devuelva la que volverá al cliente.' };
+          ? subject === 'stock'
+            ? 'El Almacén liberó la unidad al stock vendible de la sucursal y el caso cerró con ese acto: no queda ninguna unidad en custodia.'
+            : 'El Almacén liberó la unidad a stock vendible: ya no está en custodia y el caso sigue esperando al cliente.'
+          : custodyAbsentNote(value) };
 
   const releaseCrossing: WarehouseCrossing = value.origin !== 'warranty_claim'
     ? { key: 'release', title: 'Liberación a stock', units: 0, state: 'absent',
       note: 'El hallazgo en góndola no se libera: sus unidades son de la sucursal y vuelven con su veredicto.' }
     : release !== null
       ? { key: 'release', title: 'Liberación a stock', units: 1, state: 'released',
-        note: `El Almacén liberó 1 unidad al stock vendible de la sucursal el ${day(release.recorded_at)} con la cuenta ${release.actor_account_id}${release.note === '' ? '' : `: «${release.note}»`}. La liberación ocurre una sola vez.` }
+        note: `El Almacén liberó 1 unidad al stock vendible de la sucursal el ${day(release.recorded_at)} con la cuenta ${release.actor_account_id}${release.note === '' ? '' : `: «${release.note}»`}.${subject === 'stock' ? ' El caso cerró con ese acto.' : ''} La liberación ocurre una sola vez.` }
       : warehouseReleaseAvailable(value)
         ? { key: 'release', title: 'Liberación a stock', units: 1, state: 'pending',
-          note: 'La unidad sigue en custodia: la liberación la suma al stock vendible de la sucursal y la saca de custodia, en un solo acto y con motivo.' }
+          note: subject === 'stock'
+            ? 'La unidad sigue en custodia: la liberación la suma al stock vendible de la sucursal, la saca de custodia y cierra el caso, en un solo acto y con motivo.'
+            : 'La unidad sigue en custodia: la liberación la suma al stock vendible de la sucursal y la saca de custodia, en un solo acto y con motivo.' }
         : { key: 'release', title: 'Liberación a stock', units: 0, state: 'absent',
           note: warehouseReleaseBlocked(value) };
 
   return [writeOff, custody, releaseCrossing];
+}
+
+/**
+ * Why a claim holds no unit in custody, decided by the pair of destination and verdict and never by the
+ * destination alone (S31). The claim's `stock` destination reads two ways and only the pair tells them apart:
+ * a `repaired` or `replaced` unit is the branch's sellable stock the release sells, and only an uncovered
+ * unit is the used pool's (S11). A sentence that claims the factory did not cover a repair is never said.
+ */
+function custodyAbsentNote(value: WarrantyCase): string {
+  // The usable unit bound for the branch's own shelf: the release sells it and no client collects it (S31).
+  if (warrantyUnitBoundForStock(value)) {
+    return 'El caso no retiene ninguna unidad vendible: la unidad de este caso va al stock vendible de la sucursal y la liberación del Almacén es el acto que la suma, nunca la entrega al cliente.';
+  }
+  if (value.reported_destination === 'stock') {
+    // The uncovered unit is the pool de usadas', and that is the only case the pool sentence names.
+    return value.verdict === 'not_covered'
+      ? 'El caso no retiene ninguna unidad vendible: la batería que la fábrica no cubrió es del pool de usadas.'
+      : 'El caso no retiene ninguna unidad vendible: la batería reclamada no volvió como una unidad que la sucursal pueda vender.';
+  }
+  return 'El caso no retiene ninguna unidad mientras la fábrica no devuelva la que volverá al cliente.';
 }
 
 // ---------------------------------------------------------------------------------

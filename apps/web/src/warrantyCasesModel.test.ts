@@ -3,9 +3,12 @@ import {
   canonicalAdvanceBody, canonicalClaimBody, canonicalClaimSerial, canonicalDeclaration, canonicalDefectBody,
   canonicalDeliveryBody, canonicalLoanBody, canonicalLoanFateBody, canonicalLoanModel, canonicalLoanSerial,
   canonicalNoticeBody, warrantyLoanFatePath,
-  parseWarrantyCase, parseWarrantyLoan, parseWarrantyPending, parseWarrantyTray, warrantyCustodyUnits, warrantyDaysSince,
+  parseWarrantyCase, parseWarrantyLoan, parseWarrantyPending, parseWarrantyTray, warrantyClosedByRelease,
+  warrantyCustodyUnits, warrantyDaysSince, warrantyEventLabel,
   warrantyDeliveryAvailable, warrantyDispatchAvailable, warrantyCloseAvailable, warrantyNotice,
-  warrantyNoticeAvailable, warrantyNoticeDays, warrantyReceiptAvailable, warrantyReceiptFileName,
+  warrantyNoticeAvailable, warrantyNoticeDays, warrantyPhaseShortLabel, warrantyPhaseShortLabels,
+  warrantyRowPhaseLabel, warrantyReceiptAvailable,
+  warrantyReceiptFileName,
   warrantyReceiptPath, warrantyReleased, warrantyTrayPath, warrantyLoanRegistered, warrantyPendingPath,
 } from './warrantyCasesModel';
 
@@ -14,7 +17,7 @@ import {
 const row = (over: Record<string, unknown> = {}) => ({
   id: 1, case_number: 'C-2-000001', branch_location_id: 2, origin: 'warranty_claim', phase: 'received',
   variant_id: 1, serial_number: 'ABC123', quantity: null, declared_failure: 'No arranca el motor',
-  reason: null, created_at: '2026-03-01T12:00:00Z', ...over,
+  reason: null, created_at: '2026-03-01T12:00:00Z', closed_by: null, ...over,
 });
 const loan = (over: Record<string, unknown> = {}) => ({
   ordinal: 1, model: 'NS60L', quantity: 1, serial_number: '', source_location_id: 1,
@@ -59,6 +62,26 @@ const resolvedJSON = (over: Record<string, unknown> = {}) => caseJSON({
   loans: [loan({ fate: 'open' })], ...over,
 });
 
+// The two acts that close a case, exactly as the server publishes them: the release of the unit bound for
+// the branch's own shelf states the `closed` it writes (073), and the delivery of the client's unit states
+// it with the last tramo of the journey.
+const releasedStockJSON = (over: Record<string, unknown> = {}) => caseJSON({
+  phase: 'closed', closed_by: 'release', verdict: 'repaired', reported_destination: 'stock',
+  loan_destination: 'customer',
+  events: [...resolvedEvents(),
+    event({ ordinal: 6, kind: 'notice', phase: 'resolved', recorded_at: '2026-03-06T12:00:00Z', note: 'Avisado' }),
+    event({ ordinal: 7, kind: 'release', phase: 'closed', recorded_at: '2026-03-18T12:00:00Z', note: 'Sin retiro' })],
+  loans: [loan({ fate: 'returned', fate_decided_at: '2026-03-17T12:00:00Z' })], ...over,
+});
+const deliveredJSON = (over: Record<string, unknown> = {}) => caseJSON({
+  phase: 'closed', closed_by: 'delivery', verdict: 'repaired', reported_destination: 'customer',
+  loan_destination: 'stock',
+  events: [...resolvedEvents(),
+    event({ ordinal: 6, kind: 'notice', phase: 'resolved', recorded_at: '2026-03-06T12:00:00Z', note: 'Avisado' }),
+    event({ ordinal: 7, phase: 'closed', recorded_at: '2026-03-07T12:00:00Z', note: 'Canje entregado' })],
+  loans: [loan({ fate: 'returned', fate_decided_at: '2026-03-07T12:00:00Z' })], ...over,
+});
+
 describe('the tray of the branch', () => {
   it('reads the newest-first rows the contract publishes', () => {
     const rows = parseWarrantyTray(JSON.stringify({ cases: [row({ id: 2, case_number: 'C-2-000002' }), row()] }));
@@ -96,6 +119,21 @@ describe('one case with its loans and its history', () => {
   it('refuses a header that disagrees with the last tramo of its history (S9)', () => {
     expect(() => parseWarrantyCase(caseJSON({ phase: 'at_warehouse' }))).toThrow();
     expect(() => parseWarrantyCase(caseJSON({ events: [event({ phase: 'in_transit' })] }))).toThrow();
+  });
+  it('reads the two acts that close a case and still refuses a header that disagrees (S9, S19, S31)', () => {
+    // The release of the unit bound for the branch's own shelf is the act that closes that case: the server
+    // states `closed` in the release itself and writes no tramo of the journey for it (073).
+    const released = parseWarrantyCase(releasedStockJSON());
+    expect(released.phase).toBe('closed');
+    expect(warrantyClosedByRelease(released)).toBe(true);
+    // The delivery of the client's unit closes the case with the last tramo of the journey, as before.
+    const delivered = parseWarrantyCase(deliveredJSON());
+    expect(delivered.phase).toBe('closed');
+    expect(warrantyClosedByRelease(delivered)).toBe(false);
+    // Whichever act closed it, the header says what the history says and nothing else.
+    expect(() => parseWarrantyCase(caseJSON({ phase: 'closed', events: resolvedEvents() }))).toThrow();
+    expect(() => parseWarrantyCase(releasedStockJSON({ phase: 'resolved' }))).toThrow();
+    expect(() => parseWarrantyCase(deliveredJSON({ phase: 'resolved' }))).toThrow();
   });
   it('keeps each door to the units it has (S11)', () => {
     expect(() => parseWarrantyCase(caseJSON({ stock_destination: 'stock' }))).toThrow();
@@ -145,8 +183,89 @@ describe('what the screen derives from the persisted facts', () => {
     ] }));
     expect(warrantyReleased(released)).toBe(true);
     expect(warrantyCustodyUnits(released)).toBe(0);
+    // The usable unit bound for the branch's own shelf waits in custody exactly like the client's: it is not
+    // sellable stock until the release enters it, and this is the one figure both screens read (S13, S31).
+    const shelf = parseWarrantyCase(caseJSON({
+      phase: 'resolved', verdict: 'repaired', reported_destination: 'stock', loan_destination: 'customer',
+      events: resolvedEvents(), loans: [loan()],
+    }));
+    expect(warrantyCustodyUnits(shelf)).toBe(1);
+    expect(warrantyCustodyUnits(parseWarrantyCase(releasedStockJSON()))).toBe(0);
+    // An uncovered unit is the pool de usadas': it never waits in custody as a sellable unit (LW025, S11).
+    const pooled = parseWarrantyCase(caseJSON({
+      phase: 'resolved', verdict: 'not_covered', reported_destination: 'stock', loan_destination: 'customer',
+      events: resolvedEvents(), loans: [loan()],
+    }));
+    expect(warrantyCustodyUnits(pooled)).toBe(0);
     // A finding holds nothing: its units are the branch's own and came back at its resolution.
     expect(warrantyCustodyUnits(parseWarrantyCase(defectJSON()))).toBe(0);
+  });
+  it('names the phase of a closed case by the act that closed it, never by the phase alone (S19, S31)', () => {
+    // The release sold the unit: the case is not `Entregada al cliente`, which is the delivery's reading.
+    expect(warrantyPhaseShortLabel(parseWarrantyCase(releasedStockJSON()))).toBe('Cerrada por liberación');
+    expect(warrantyPhaseShortLabel(parseWarrantyCase(deliveredJSON()))).toBe('Entregada al cliente');
+    // A finding on the shelf is closed by its own branch: nothing was ever delivered to a client.
+    const finding = parseWarrantyCase(defectJSON({ phase: 'closed', events: [
+      event({ ordinal: 1, phase: 'received' }), event({ ordinal: 2, phase: 'closed' })] }));
+    expect(warrantyPhaseShortLabel(finding)).toBe('Cerrada por la sucursal');
+    // Every other phase is read from the phase it holds: the act only decides the close.
+    expect(warrantyPhaseShortLabel(parseWarrantyCase(resolvedJSON()))).toBe('Esperando al cliente');
+    expect(warrantyPhaseShortLabel(parseWarrantyCase(caseJSON()))).toBe('En la sucursal');
+  });
+  it('publishes the act that closed the row, and refuses one the row cannot state (S34)', () => {
+    // The row of a closed case carries the act, because the row is the header and has no history: the
+    // server derives it from the last tramo, exactly as it derives the phase.
+    const released = parseWarrantyTray(JSON.stringify({ cases: [
+      row({ id: 2, case_number: 'C-2-000002', phase: 'closed', closed_by: 'release' })] }));
+    expect(released[0].closed_by).toBe('release');
+    const delivered = parseWarrantyTray(JSON.stringify({ cases: [
+      row({ id: 2, case_number: 'C-2-000002', phase: 'closed', closed_by: 'delivery' })] }));
+    expect(delivered[0].closed_by).toBe('delivery');
+    // The selected case carries it too, so the pane and the tray read one fact.
+    expect(parseWarrantyCase(releasedStockJSON()).closed_by).toBe('release');
+    expect(parseWarrantyCase(deliveredJSON()).closed_by).toBe('delivery');
+    // An open row states no act, and a row that carries its own key set refuses an act it cannot have.
+    expect(parseWarrantyTray(JSON.stringify({ cases: [row()] }))[0].closed_by).toBeNull();
+    expect(() => parseWarrantyTray(JSON.stringify({ cases: [
+      row({ phase: 'resolved', closed_by: 'delivery' })] }))).toThrow();
+    expect(() => parseWarrantyTray(JSON.stringify({ cases: [
+      row({ phase: 'closed', closed_by: 'factory' })] }))).toThrow();
+    const missing: Record<string, unknown> = row({ phase: 'closed' });
+    delete missing.closed_by;
+    expect(() => parseWarrantyTray(JSON.stringify({ cases: [missing] }))).toThrow();
+  });
+  it('names the pill of a row by the act it publishes, and never guesses one (S34)', () => {
+    const label = (over: Record<string, unknown>) => warrantyRowPhaseLabel(
+      parseWarrantyTray(JSON.stringify({ cases: [row(over)] }))[0]);
+    // The two acts read as themselves, and the door says who received the unit.
+    expect(label({ phase: 'closed', closed_by: 'delivery' })).toBe('Entregada al cliente');
+    expect(label({ phase: 'closed', closed_by: 'release' })).toBe('Cerrada por liberación');
+    expect(label({ origin: 'stock_defect', variant_id: 4, serial_number: null, quantity: 2,
+      reason: 'Probada en mostrador', phase: 'closed', closed_by: 'delivery' }))
+      .toBe('Cerrada por la sucursal');
+    // A closed row without a published act says only what it knows, and never claims a delivery.
+    expect(label({ phase: 'closed' })).toBe('Cerrada');
+    // Every other phase is read from the phase it holds.
+    expect(label({ phase: 'resolved' })).toBe('Esperando al cliente');
+    expect(label({})).toBe('En la sucursal');
+    // The map a phase-only context reads never claims a delivery either.
+    expect(warrantyPhaseShortLabels.closed).toBe('Cerrada');
+  });
+  it('names the tramo that entered `closed` by the act of the case, not by the phase alone (S34)', () => {
+    // The delivery states the phase, so the tramo of the history reads the act of the case that wrote it.
+    const delivered = parseWarrantyCase(deliveredJSON());
+    expect(warrantyEventLabel(delivered, delivered.events.at(-1)!)).toBe('Entregada al cliente');
+    // The release is its own kind: the history names the act, never a phase it did not write.
+    const released = parseWarrantyCase(releasedStockJSON());
+    expect(warrantyEventLabel(released, released.events.at(-1)!)).toBe('Liberación a stock');
+    // A finding closes with a tramo of its own and no client ever received those units.
+    const finding = parseWarrantyCase(defectJSON({ phase: 'closed', events: [
+      event({ ordinal: 1, phase: 'received' }), event({ ordinal: 2, phase: 'closed' })] }));
+    expect(warrantyEventLabel(finding, finding.events.at(-1)!)).toBe('Cerrada por la sucursal');
+    // Every other tramo keeps the label it always had.
+    expect(warrantyEventLabel(delivered, delivered.events[0])).toBe('Recibida en la sucursal');
+    const notice = parseWarrantyCase(resolvedJSON()).events.at(-1)!;
+    expect(warrantyEventLabel(parseWarrantyCase(resolvedJSON()), notice)).toBe('Aviso al cliente');
   });
   it('offers the notice and the delivery only where the contract admits them (S4, S14)', () => {
     // The same case before the branch told the client anything: the notice is still owed.

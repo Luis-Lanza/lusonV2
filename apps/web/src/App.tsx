@@ -245,12 +245,21 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   const { identity } = state.session;
   const { metadata, query, data } = state;
   const warehouse = identity.location.id === 1;
+  // Cada local corrige lo que cuenta (S36): la sucursal es la otra mitad del mismo acto, así
+  // que se deriva una vez acá, antes de las secciones que necesitan cualquiera de los dos lados.
+  const branch = identity.location.id > 1;
   const adminOwner = state.privateOwner('admin');
   const passwordOwner = state.privateOwner('password');
-  // Ingress and adjustments are warehouse-only surfaces: account 1 is the only
-  // identity assigned to location 1, so the gate is the same one for both.
+  // Ingress is a warehouse-only surface: account 1 is the only identity assigned to
+  // location 1. The adjustment is not: the document belongs to the caller's own location
+  // (S36), so the warehouse and every branch reach the same screen for their own stock.
+  // The gate is no longer the warehouse's and it is not unconditional either: only a
+  // location this installation holds reaches the section, and the screen itself stays
+  // fenced by the session tag (a completed password change), which is the server's own
+  // rule for who counts. Every other section keeps its side untouched.
+  const adjustmentLocation = validTransferLocation(identity.location.id);
   const stock = warehouse && route.section === 'stock';
-  const adjustments = warehouse && route.section === 'adjustments';
+  const adjustments = adjustmentLocation && route.section === 'adjustments';
   // The settlement of a branch is the warehouse's own work (S1, S2, S14): a branch identity
   // never sees the section and never reaches it with a typed hash. Both settlement screens are
   // routes like every other section, so a reload lands back on the same one.
@@ -262,7 +271,6 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
       || route.screen === 'suppliers') ? route.screen : 'prices';
   // The counter and its history are branch-only surfaces (S1): the warehouse (account 1,
   // location 1) neither sees them in the sidebar nor reaches them with a typed hash.
-  const branch = identity.location.id > 1;
   // The branch decides the settlement of its own branch and nothing else: the screen reads
   // its own history and never offers a settlement it could not answer.
   const settlementDecision = branch && route.section === 'settlementDecision';
@@ -401,7 +409,7 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   }
   const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, warrantyCount, warrantyUnavailable, privateSection, admin: adminOwner !== null,
     stock: warehouse, stockActive: stock, onStock: navigateStock,
-    adjustments: warehouse, adjustmentsActive: adjustments, onAdjustments: navigateAdjustments,
+    adjustments: adjustmentLocation, adjustmentsActive: adjustments, onAdjustments: navigateAdjustments,
     catalog: warehouse, catalogActive: catalog, onCatalog: navigateCatalog,
     settlements: warehouse, settlementsActive: settlements, onSettlements: navigateSettlements,
     settlementDecision: branch, settlementDecisionActive: settlementDecision,
@@ -425,8 +433,10 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         : pending && ownerTag && route.section === 'transfers' ? <TransferPending key={ownerTag} controller={state} ownerTag={ownerTag} routedDetail={route.id} onRouteDetail={id => changeRoute({ section: 'transfers', id })} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} />
         : stock && adminOwner ? <StockEntry key={adminOwner} csrf={csrf} />
         : stock ? <p role="status">Verificando la sesión del Almacén…</p>
-        : adjustments && adminOwner ? <StockAdjustment key={adminOwner} csrf={csrf} realtime={state} />
-        : adjustments ? <p role="status">Verificando la sesión del Almacén…</p>
+        : adjustments && ownerTag ? <StockAdjustment key={`ajustes-${ownerTag}`} csrf={csrf} realtime={state}
+          location={identity.location} />
+        : adjustments ? <p role="status">{warehouse
+          ? 'Verificando la sesión del Almacén…' : 'Verificando la sesión de la sucursal…'}</p>
         : settlements && adminOwner ? <ClosingWorkspace key={`rendiciones-${adminOwner}`} csrf={csrf}
           branches={(metadata?.locations ?? []).filter(location => location.id > 1)} />
         : settlements ? <p role="status">Verificando la sesión del Almacén…</p>
