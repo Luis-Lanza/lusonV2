@@ -1417,6 +1417,12 @@ type closingCountLineDTO struct {
 	Detail           *string `json:"detail,omitempty"`
 	ExpectedQuantity int64   `json:"expected_quantity"`
 	CountedQuantity  *int64  `json:"counted_quantity"`
+	// HeldInCaseQuantity is how many units of this variant a stock defect of the branch holds instead
+	// of the branch having them in stock: the read model derives it from the cases of the settlement's
+	// own branch and this contract publishes it exactly as it was read, because it is a fact of the
+	// shelf the operator has to be able to explain and never a term of the count or of its arithmetic
+	// (S13, S16).
+	HeldInCaseQuantity int64 `json:"held_in_case_quantity"`
 }
 
 // closingExpenseDTO is one row of a branch's till as the settlement publishes it: the kind the
@@ -2461,11 +2467,13 @@ func closingCountLineRecord(line closings.CountLine, previous int64) (closingCou
 		line.ExpectedQuantity < 0 || line.ExpectedQuantity > closings.MaxCounted ||
 		(line.CountedQuantity != nil &&
 			(*line.CountedQuantity < 0 || *line.CountedQuantity > closings.MaxCounted)) ||
+		line.HeldInCaseQuantity < 0 || line.HeldInCaseQuantity > closings.MaxCounted ||
 		identity.Valid() != nil {
 		return closingCountLineDTO{}, false
 	}
 	record := closingCountLineDTO{VariantID: line.VariantID, CatalogEntryID: line.CatalogEntryID,
-		ExpectedQuantity: line.ExpectedQuantity, CountedQuantity: line.CountedQuantity}
+		ExpectedQuantity: line.ExpectedQuantity, CountedQuantity: line.CountedQuantity,
+		HeldInCaseQuantity: line.HeldInCaseQuantity}
 	if identity.Battery == nil {
 		// A product line states its name and the detail of its typed fields, and no battery attribute.
 		name, detail := identity.Name, identity.Detail

@@ -186,7 +186,8 @@ POST /api/closings
  "taken_cash":null,"sales_total":"0.00","commission_amount":"0.00","card_total":"0.00",
  "transfer_total":"0.00","qr_total":"0.00","observation":"","opened_by_account_id":1,
  "count_lines":[{"variant_id":1,"catalog_entry_id":1,"brand":"TOYO","model":"NS40ZL",
-  "capacity_ah":"45","polarity":"L","expected_quantity":28,"counted_quantity":28}],
+  "capacity_ah":"45","polarity":"L","expected_quantity":28,"counted_quantity":28,
+  "held_in_case_quantity":0}],
  "rounds":[]}
 ```
 
@@ -1116,7 +1117,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `card_total`, `transfer_total`, `qr_total` | The electronic collection of the period, published on its own, with the same frozen-or-derived rule |
 | `observation` | The free text of the drawer |
 | `opened_by_account_id` | The warehouse account that opened it |
-| `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and the `counted_quantity` the opener seeded from it, which is the warehouse's own number where it disagreed; `null` only on a sheet written before that seeding |
+| `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity`, the `counted_quantity` the opener seeded from it, which is the warehouse's own number where it disagreed (`null` only on a sheet written before that seeding), and `held_in_case_quantity`, the units of the variant a battery case of this branch holds instead of the branch having them in stock: a fact derived on read from the cases, never a term of the expectation and never applied by the closure |
 | `material_lines` | The third account: what the period bought of every used model and every scrap material, what the warehouse counted, the difference and the quantity that goes to the warehouse; ordered by model for the used lines and by material id for the scrap ones, the used ones first. See [the third account](#the-third-account-materials) |
 | `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded, with the corrections of those expenses among them; each row publishes the motive pair `category_id` and `category_label` beside the movement, exactly as the book does |
 | `rounds` | The proposal history, oldest first |
@@ -1124,7 +1125,14 @@ Every route of this contract answers the whole settlement, with exactly these ke
 
 Each `count_lines` entry also carries the catalogue identity of its variant — `catalog_entry_id`,
 `brand`, `model`, `capacity_ah` (canonical decimal text) and `polarity` — so the sheet is legible
-without a second read. Each `material_lines` entry carries `kind`, its key — `model`, or `material_id` and `material` —
+without a second read, and `held_in_case_quantity`, which is how many units of the variant an open
+battery case of the branch holds instead of the branch having them in stock: the units a finding took
+off the shelf and that are still physically there until they ship. It is derived from the cases of the
+settlement's own branch on every read, it is published exactly as derived, and nothing of it enters
+the expected quantity, the seeded sheet or the closure's arithmetic — the acta states the fact and
+takes no decision with it (see [warranty cases](warranty-cases.md)).
+
+Each `material_lines` entry carries `kind`, its key — `model`, or `material_id` and `material` —
 `unit`, `expected_quantity`, `counted_quantity`, `difference` and `delivered_quantity`, every
 quantity as decimal text: whole units for a used line and kilograms with exactly three decimals for
 a scrap one, which is what its `unit` states. The counted quantity, the difference and the delivery

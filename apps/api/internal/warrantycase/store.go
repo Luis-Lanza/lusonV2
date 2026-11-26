@@ -113,7 +113,7 @@ func (s *Store) OpenClaim(ctx context.Context, actor auth.Identity, input OpenCl
 	if err != nil {
 		return Case{}, mapFailure(ctx, err)
 	}
-	claim, err := readCaseHeader(ctx, tx, id, false)
+	claim, err := readCase(ctx, tx, id)
 	if err != nil {
 		return Case{}, err
 	}
@@ -121,6 +121,109 @@ func (s *Store) OpenClaim(ctx context.Context, actor auth.Identity, input OpenCl
 		return Case{}, mapFailure(ctx, err)
 	}
 	return claim, nil
+}
+
+// OpenStockDefect opens the case of a battery the branch found failed on its own shelf (S1). The
+// branch states the variant, the quantity and the motive of the write-off; the database writes the
+// units off `inventory_balances` in the admission's own transaction (067) and refuses a quantity the
+// branch does not have (LW016) or cannot free (LW017) without storing the case either.
+func (s *Store) OpenStockDefect(ctx context.Context, actor auth.Identity, input StockDefectInput) (Case, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Case{}, ErrUnavailable
+	}
+	// The warehouse owns no shelf: a finding is the branch's own document (S19).
+	if !branchClerk(actor) {
+		return Case{}, ErrForbidden
+	}
+	if input.VariantID < 1 || input.VariantID > MaxVariantID {
+		return Case{}, ErrInvalid
+	}
+	if input.Quantity < 1 || input.Quantity > MaxQuantity {
+		return Case{}, ErrInvalid
+	}
+	declaration, ok := canonicalDeclaration(input.DeclaredFailure)
+	if !ok {
+		return Case{}, ErrInvalid
+	}
+	reason, ok := canonicalReason(input.Reason)
+	if !ok {
+		return Case{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Case{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	branch, err := resolveBranch(ctx, tx, actor)
+	if err != nil {
+		return Case{}, err
+	}
+	var id int64
+	err = tx.QueryRow(ctx, `INSERT INTO warranty_cases(branch_location_id,origin,variant_id,
+  quantity,declared_failure,reason,created_by_account_id)
+ VALUES($1,'stock_defect',$2,$3,$4,$5,$6) RETURNING id`,
+		branch, int32(input.VariantID), input.Quantity, declaration, reason,
+		int64(actor.AccountID)).Scan(&id)
+	if err != nil {
+		return Case{}, mapFailure(ctx, err)
+	}
+	finding, err := readCase(ctx, tx, id)
+	if err != nil {
+		return Case{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Case{}, mapFailure(ctx, err)
+	}
+	return finding, nil
+}
+
+// List reads the tray of a branch: its own cases, newest first, with the phase and the origin of the
+// frozen vocabulary as the only filters (S23). The warehouse owns no case and moves every one of
+// them, so it reads the cases of every branch and each row states the branch it belongs to (S19).
+func (s *Store) List(ctx context.Context, actor auth.Identity, filter ListFilter) ([]Case, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return nil, ErrUnavailable
+	}
+	if !provisioned(actor) {
+		return nil, ErrForbidden
+	}
+	if filter.Phase != "" && !filter.Phase.Valid() {
+		return nil, ErrInvalid
+	}
+	if filter.Origin != "" && !filter.Origin.Valid() {
+		return nil, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// The warehouse is location 1: it reads every case, and a branch reads its own tray only.
+	warehouse := actor.Location.ID == warehouseLocationID
+	rows, err := s.pool.Query(ctx, "SELECT "+caseColumns+` FROM warranty_cases case_row
+ WHERE ($1 OR branch_location_id=$2)
+   AND ($3='' OR phase=$3) AND ($4='' OR origin=$4)
+ ORDER BY id DESC LIMIT $5`,
+		warehouse, int16(actor.Location.ID), string(filter.Phase), string(filter.Origin), MaxListed)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	tray := make([]Case, 0, MaxListed)
+	for rows.Next() {
+		document, err := scanCaseHeader(ctx, rows)
+		if err != nil {
+			return nil, err
+		}
+		tray = append(tray, document)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return tray, nil
 }
 
 // Read reads one case with its loans and its append-only history. A branch reads its own
@@ -340,11 +443,11 @@ func (s *Store) Advance(ctx context.Context, actor auth.Identity, caseID int64,
 	if next == PhaseResolved {
 		return Case{}, ErrResolutionRequired
 	}
-	if _, err := insertEvent(ctx, tx, caseID, input.Phase, factoryCaseNumber,
+	if _, err := insertEvent(ctx, tx, caseID, KindPhase, input.Phase, factoryCaseNumber,
 		int64(actor.AccountID), note); err != nil {
 		return Case{}, err
 	}
-	moved, err := readCaseHeader(ctx, tx, caseID, false)
+	moved, err := readCase(ctx, tx, caseID)
 	if err != nil {
 		return Case{}, err
 	}
@@ -373,22 +476,24 @@ func nextPhase(from Phase) (Phase, bool) {
 }
 
 // insertEvent appends one tramo and lets the database number it, date it and write the
-// phase copy of the case.
-func insertEvent(ctx context.Context, tx pgx.Tx, caseID int64, phase Phase,
+// phase copy of the case. The kind says whether the tramo moves the case: a notice and a release
+// carry the phase the case already holds (S14).
+func insertEvent(ctx context.Context, tx pgx.Tx, caseID int64, kind EventKind, phase Phase,
 	factoryCaseNumber string, actor int64, note string) (Event, error) {
 	var event Event
-	var stored string
-	err := tx.QueryRow(ctx, `INSERT INTO warranty_case_events(case_id,phase,factory_case_number,
+	var storedPhase, storedKind string
+	err := tx.QueryRow(ctx, `INSERT INTO warranty_case_events(case_id,kind,phase,factory_case_number,
   actor_account_id,note)
- VALUES($1,$2,$3,$4,$5)
- RETURNING case_id,event_ordinal,phase,factory_case_number,actor_account_id,recorded_at,note`,
-		caseID, string(phase), factoryCaseNumber, actor, note).Scan(&event.CaseID,
-		&event.Ordinal, &stored, &event.FactoryCaseNumber, &event.ActorAccountID,
-		&event.RecordedAt, &event.Note)
+ VALUES($1,$2,$3,$4,$5,$6)
+ RETURNING case_id,event_ordinal,kind,phase,factory_case_number,actor_account_id,recorded_at,note`,
+		caseID, string(kind), string(phase), factoryCaseNumber, actor, note).Scan(&event.CaseID,
+		&event.Ordinal, &storedKind, &storedPhase, &event.FactoryCaseNumber,
+		&event.ActorAccountID, &event.RecordedAt, &event.Note)
 	if err != nil {
 		return Event{}, mapFailure(ctx, err)
 	}
-	event.Phase = Phase(stored)
+	event.Kind = EventKind(storedKind)
+	event.Phase = Phase(storedPhase)
 	return event, nil
 }
 
@@ -458,11 +563,11 @@ func (s *Store) Resolve(ctx context.Context, actor auth.Identity, caseID int64,
 		string(input.ReportedDestination), string(input.LoanDestination)); err != nil {
 		return Case{}, mapFailure(ctx, err)
 	}
-	if _, err := insertEvent(ctx, tx, caseID, PhaseResolved, "", int64(actor.AccountID),
-		note); err != nil {
+	if _, err := insertEvent(ctx, tx, caseID, KindPhase, PhaseResolved, "",
+		int64(actor.AccountID), note); err != nil {
 		return Case{}, err
 	}
-	resolved, err := readCaseHeader(ctx, tx, caseID, false)
+	resolved, err := readCase(ctx, tx, caseID)
 	if err != nil {
 		return Case{}, err
 	}
@@ -470,6 +575,177 @@ func (s *Store) Resolve(ctx context.Context, actor auth.Identity, caseID int64,
 		return Case{}, mapFailure(ctx, err)
 	}
 	return resolved, nil
+}
+
+// RegisterNotice records the notice the branch that receives the unit registers for the client
+// (S14). It is a tramo of the same history with a kind of its own: it carries the actor, the instant
+// and the words of the counter, and it moves no phase, because notifying the client is not a step of
+// the battery's journey. The notice exists once the factory has answered, because before that there is
+// no unit to talk about, and the warehouse never registers one: the branch owes the client the answer
+// and the warehouse only moves the battery (S19).
+func (s *Store) RegisterNotice(ctx context.Context, actor auth.Identity, caseID int64,
+	note string) (Case, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Case{}, ErrUnavailable
+	}
+	if !branchClerk(actor) {
+		return Case{}, ErrForbidden
+	}
+	words, ok := canonicalNote(note)
+	if !ok {
+		return Case{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Case{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	header, err := readCaseHeader(ctx, tx, caseID, true)
+	if err != nil {
+		return Case{}, err
+	}
+	if actor.Location.ID != header.BranchLocationID {
+		return Case{}, ErrForbidden
+	}
+	if header.Phase != PhaseResolved && header.Phase != PhaseClosed {
+		return Case{}, ErrResolutionPending
+	}
+	if _, err := insertEvent(ctx, tx, caseID, KindNotice, header.Phase, "",
+		int64(actor.AccountID), words); err != nil {
+		return Case{}, err
+	}
+	noticed, err := readCase(ctx, tx, caseID)
+	if err != nil {
+		return Case{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Case{}, mapFailure(ctx, err)
+	}
+	return noticed, nil
+}
+
+// AuthorizeRelease authorises the release of the units the case holds in custody back to the
+// branch's sellable stock (S13, S14). The warehouse decides and the branch does not: the branch owes
+// the client the answer, the warehouse moves the battery, and the release is the warehouse moving it
+// across the boundary in the other direction. It requires the recorded notice, it carries its motive,
+// and it happens once; the database states all three as well as this store does.
+func (s *Store) AuthorizeRelease(ctx context.Context, actor auth.Identity, caseID int64,
+	note string) (Case, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Case{}, ErrUnavailable
+	}
+	// The release is the warehouse's own tramo: a branch account never authorises one (S19).
+	if !provisioned(actor) || actor.Location.ID != warehouseLocationID {
+		return Case{}, ErrForbidden
+	}
+	words, ok := canonicalReason(note)
+	if !ok {
+		return Case{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Case{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	header, err := readCaseHeader(ctx, tx, caseID, true)
+	if err != nil {
+		return Case{}, err
+	}
+	if !mayActOn(actor, header.BranchLocationID) {
+		return Case{}, ErrForbidden
+	}
+	if header.Phase != PhaseResolved && header.Phase != PhaseClosed {
+		return Case{}, ErrResolutionPending
+	}
+	if _, err := insertEvent(ctx, tx, caseID, KindRelease, header.Phase, "",
+		int64(actor.AccountID), words); err != nil {
+		return Case{}, err
+	}
+	released, err := readCase(ctx, tx, caseID)
+	if err != nil {
+		return Case{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Case{}, mapFailure(ctx, err)
+	}
+	return released, nil
+}
+
+// DeliverExchange delivers the battery the factory returned to the client and closes the case (S13,
+// S19). The branch delivers, and the counter states what became of the lent battery in the same act:
+// the client gave the used one back or kept it. The delivery settles every open loan of the case and
+// writes no stock -- the unit leaves the branch with the client, and custody was settled by the
+// release or by the delivery itself.
+func (s *Store) DeliverExchange(ctx context.Context, actor auth.Identity, caseID int64,
+	input DeliveryInput) (Case, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Case{}, ErrUnavailable
+	}
+	// The branch answers to the client and the warehouse owns none (S19).
+	if !branchClerk(actor) {
+		return Case{}, ErrForbidden
+	}
+	// A delivery decides the loan: the used battery comes back or stays with the client. The three
+	// other fates are stated by the counter before the delivery and never by it.
+	if input.LoanFate != LoanReturned && input.LoanFate != LoanKeptByCustomer {
+		return Case{}, ErrInvalid
+	}
+	note, ok := canonicalNote(input.Note)
+	if !ok {
+		return Case{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Case{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	header, err := readCaseHeader(ctx, tx, caseID, true)
+	if err != nil {
+		return Case{}, err
+	}
+	if actor.Location.ID != header.BranchLocationID {
+		return Case{}, ErrForbidden
+	}
+	next, admitted := nextPhase(header.Phase)
+	if !admitted || next != PhaseClosed {
+		return Case{}, &PhaseRefusal{From: header.Phase, To: PhaseClosed}
+	}
+	// Every loan still open is settled by the delivery itself, and the database stamps the instant: a
+	// used battery is either back in the branch or gone with the client (S7, S17).
+	if _, err := tx.Exec(ctx, `UPDATE warranty_case_loans SET fate=$2
+ WHERE case_id=$1 AND fate='open'`, caseID, string(input.LoanFate)); err != nil {
+		return Case{}, mapFailure(ctx, err)
+	}
+	if _, err := insertEvent(ctx, tx, caseID, KindPhase, PhaseClosed, "",
+		int64(actor.AccountID), note); err != nil {
+		return Case{}, err
+	}
+	delivered, err := readCase(ctx, tx, caseID)
+	if err != nil {
+		return Case{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Case{}, mapFailure(ctx, err)
+	}
+	return delivered, nil
 }
 
 // judgeResolution applies the resolution matrix of a claim: the verdict and both
@@ -530,28 +806,42 @@ func readCase(ctx context.Context, q querier, id int64) (Case, error) {
 	return document, nil
 }
 
+// caseColumns is the row of a case as every read of this package publishes it: the header, the
+// printed number of the claimed sale (S8) and the motive of a finding on the shelf (S16).
+const caseColumns = `id,branch_location_id,branch_sequence,case_number,origin,phase,
+  verdict,reported_destination,loan_destination,stock_destination,sale_id,
+  (SELECT sale.warranty_number FROM sales sale WHERE sale.id=case_row.sale_id),variant_id,
+  serial_number,quantity,declared_failure,reason,created_by_account_id,created_at`
+
 // readCaseHeader reads one case header. A lock is taken when the caller is about to append
 // a tramo or a loan, so the state it judges is the state the write sees.
 func readCaseHeader(ctx context.Context, q querier, id int64, lock bool) (Case, error) {
-	statement := `SELECT id,branch_location_id,branch_sequence,case_number,origin,phase,
-  verdict,reported_destination,loan_destination,stock_destination,sale_id,variant_id,
-  serial_number,quantity,declared_failure,created_by_account_id,created_at
- FROM warranty_cases WHERE id=$1`
+	statement := "SELECT " + caseColumns + " FROM warranty_cases case_row WHERE id=$1"
 	if lock {
 		statement += " FOR UPDATE"
 	}
+	document, err := scanCaseHeader(ctx, q.QueryRow(ctx, statement, id))
+	if err != nil {
+		return Case{}, err
+	}
+	return document, nil
+}
+
+// scanCaseHeader rebuilds one persisted header and maps the database's refusal when the row is not
+// there: an unknown case is never an empty document.
+func scanCaseHeader(ctx context.Context, row pgx.Row) (Case, error) {
 	var (
 		document                       Case
 		branch                         int16
 		origin, phase                  string
 		verdict, reported, loan, stock *string
-		serial                         *string
+		serial, warrantyNumber, reason *string
 		saleID, quantity               *int64
 	)
-	err := q.QueryRow(ctx, statement, id).Scan(&document.ID, &branch, &document.BranchSequence,
+	err := row.Scan(&document.ID, &branch, &document.BranchSequence,
 		&document.CaseNumber, &origin, &phase, &verdict, &reported, &loan, &stock, &saleID,
-		&document.VariantID, &serial, &quantity, &document.DeclaredFailure,
-		&document.CreatedByAccountID, &document.CreatedAt)
+		&warrantyNumber, &document.VariantID, &serial, &quantity, &document.DeclaredFailure,
+		&reason, &document.CreatedByAccountID, &document.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Case{}, ErrNotFound
 	}
@@ -566,8 +856,10 @@ func readCaseHeader(ctx context.Context, q querier, id int64, lock bool) (Case, 
 	document.LoanDestination = destinationOf(loan)
 	document.StockDestination = destinationOf(stock)
 	document.SaleID = saleID
+	document.WarrantyNumber = warrantyNumber
 	document.SerialNumber = serial
 	document.Quantity = quantity
+	document.Reason = reason
 	return document, nil
 }
 
@@ -618,7 +910,7 @@ func readLoans(ctx context.Context, q querier, id int64) ([]Loan, error) {
 
 // readEvents reads the append-only history of one case in its own order.
 func readEvents(ctx context.Context, q querier, id int64) ([]Event, error) {
-	rows, err := q.Query(ctx, `SELECT case_id,event_ordinal,phase,factory_case_number,
+	rows, err := q.Query(ctx, `SELECT case_id,event_ordinal,kind,phase,factory_case_number,
   actor_account_id,recorded_at,note
  FROM warranty_case_events WHERE case_id=$1 ORDER BY event_ordinal`, id)
 	if err != nil {
@@ -628,11 +920,12 @@ func readEvents(ctx context.Context, q querier, id int64) ([]Event, error) {
 	events := []Event{}
 	for rows.Next() {
 		var item Event
-		var phase string
-		if err := rows.Scan(&item.CaseID, &item.Ordinal, &phase, &item.FactoryCaseNumber,
+		var phase, kind string
+		if err := rows.Scan(&item.CaseID, &item.Ordinal, &kind, &phase, &item.FactoryCaseNumber,
 			&item.ActorAccountID, &item.RecordedAt, &item.Note); err != nil {
 			return nil, fail(ctx)
 		}
+		item.Kind = EventKind(kind)
 		item.Phase = Phase(phase)
 		events = append(events, item)
 	}
@@ -688,6 +981,32 @@ func mapFailure(ctx context.Context, err error) error {
 	// LW014: a loan requires a persisted case.
 	case "LW014":
 		return ErrNotFound
+	// LW016 and LW017: the finding on the shelf writes its stock off, and the branch states what it
+	// has and has not already promised (S16).
+	case "LW016":
+		return ErrNoStock
+	case "LW017":
+		return ErrReservedStock
+	// LW019: a case registers its notice and its release once each (S14).
+	case "LW019":
+		return ErrAlreadyReleased
+	// LW020: the release requires a recorded notice, and LW021 states that the factory has not
+	// answered yet, so there is nothing to notify and nothing to release.
+	case "LW020":
+		return ErrNoticeRequired
+	case "LW021":
+		return ErrResolutionPending
+	// LW022, LW023 and LW026: the actor split of S14 and S19 -- the notice and the delivery are the
+	// branch's, the release is the warehouse's.
+	case "LW022", "LW023", "LW026":
+		return ErrForbidden
+	// LW024 restates an invariant the admission of the finding already enforced; reaching it means the
+	// balance of the branch is not what this domain wrote, so it fails closed instead of inventing one.
+	case "LW024":
+		return ErrUnavailable
+	// LW025: the case holds no unit to release (S13).
+	case "LW025":
+		return ErrReleaseUnavailable
 	// A refused row shape, an unknown reference or an invalid vocabulary value.
 	case "23503", "23514", "22003":
 		return ErrInvalid
