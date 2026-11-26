@@ -43,3 +43,12 @@ L1. User: "bien pa, entonces puedes levantarlo en local para que lo revise,"
 L2. User: "y tu tambien quiero que hagas test en e2e de todos los flujos, TODOS, en playwrigth"
 
 L3. Exploración (L1, L2): la app se levanta con `LUSON_PROFILE=local-trial`, `LUSON_ORIGIN` y `LUSON_LISTEN` en loopback, `LUSON_WEB_DIR=apps/web/dist`; la base local `luson-local-db` estaba en la migración 75 y `go -C apps/api run ./cmd/migrate initialize` la dejó en la 76 con el bootstrap aplicado; la API cachea `dist` al arrancar, así que reconstruir el frontend exige reiniciarla. El arnés actual son 11 tests en 7 archivos, sin script `npm` para Playwright, y `tsconfig.e2e.json` solo incluye `e2e/warranty/**` y `e2e/adjustments/**`, así que un spec nuevo en otro directorio no pasa por el gate de tipos.
+
+L4. Política de slices (L2): el corte de entrega es **un grupo de pantallas por commit**, no ~400 líneas. El catálogo quedó en 892 líneas entre el documento, la base y los 10 specs, porque el arnés del grupo y sus cuatro pantallas se revisan juntos o no se revisan. Cada grupo es autónomo: se puede leer, correr y revertir solo.
+
+L5. Throttle del arnés (L2): el servidor admite diez logins por minuto por dirección y el proyecto `sesiones` firma tres por invocación, así que tres workers corriendo Playwright a la vez rozan el límite y alguno ve fallar los logins. Las corridas bajan a dos workers en paralelo; los specs de un grupo se verifican con `--no-deps` cuando las sesiones ya están abiertas.
+
+L6. Hallazgo de producto (T9, fuera de alcance): el control de proveedor de `#/ingresos` publica **solo la primera página de 50 proveedores activos**, ordenada por `lower(name), id`, sin búsqueda ni paginación (`apps/web/src/StockEntry.tsx:153`, `stockEntryModel.ts:97`, `apps/api/internal/suppliers/store.go:256-257`). Con la base local ya en 167 proveedores, un operador cuyo proveedor ordene después del puesto 50 no puede elegirlo. No se toca en este feature: es comportamiento del producto y necesita decisión del humano.
+
+L7. Los grupos no se commitean con el verde del worker: cada uno se corre desde el árbol del padre sobre la base ya poblada por los otros grupos. Ingresos pasó de 10 verdes reportados a 2 rojos reales en esa corrida, y el arreglo destapó además que el paginador del historial se salteaba la página 1 mientras la tabla se recargaba.
+
