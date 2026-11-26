@@ -196,6 +196,22 @@ describe('the transport of the case contract', () => {
     expect(warrantyCaseErrorMessages.loan_fate_open).toBe(
       'El caso tiene un préstamo sin desenlace: decidí qué pasó con la usada antes de cerrarlo.');
   });
+  it('admits a second claim of the same open serial as its own code and message (S7)', async () => {
+    const api = createWarrantyCasesAPI(stub(failure('claim_already_open', 409)));
+    await expect(api.openClaim(() => ({ serial_number: 'ABC123', declared_failure: 'Falla' }), csrf))
+      .rejects.toMatchObject({ code: 'claim_already_open', status: 409 });
+    // The message names the open claim: one serial carries one at a time, and a closed case blocks nothing.
+    expect(warrantyCaseErrorMessages.claim_already_open).toBe(
+      'Ese número de serie ya tiene un reclamo abierto: un serial lleva un reclamo a la vez. No se registró nada.');
+  });
+  it('admits a claim that would leave the branch without a loan as its own code and message (S4)', async () => {
+    const api = createWarrantyCasesAPI(stub(failure('loan_required', 409)));
+    await expect(api.advance(1, { phase: 'in_transit', factory_case_number: '', note: 'Sale al Almacén' }, csrf))
+      .rejects.toMatchObject({ code: 'loan_required', status: 409 });
+    // The message names the missing loan: the client leaves with a used battery in hand.
+    expect(warrantyCaseErrorMessages.loan_required).toBe(
+      'Un reclamo no sale de la sucursal sin que el cliente tenga una usada en la mano: registrá el préstamo. No se registró nada.');
+  });
   it('reports a lost connection and an aborted read as their own codes', async () => {
     const offline = createWarrantyCasesAPI(vi.fn(() => Promise.reject(new Error('offline'))) as unknown as typeof globalThis.fetch);
     await expect(offline.tray()).rejects.toBeInstanceOf(WarrantyCaseAPIError);
