@@ -23,7 +23,26 @@ import { centsToMoney, formatMoney, moneyCents, parseTypedMoney, typedMoney } fr
 /** The act and the document are always the rendición de cuentas: the old name appears nowhere. */
 export const closingTitle = 'Rendición de cuentas';
 export const closingSectionTitle = 'Rendiciones';
-export const closingMaxCountLines = 190;
+/**
+ * Two bounds, and never one number doing both jobs (S1, S2).
+ *
+ * The **sheet** has none: it carries one line per variant the branch holds in stock, so the catalogue
+ * is its only ceiling and a settlement of any size — 235 variants, 353, whatever a branch holds — is
+ * read whole.
+ *
+ * One **request** is what is bounded, by the transport the server publishes: 32 KiB per settlement
+ * body, out of which the API derives its own ceiling of counted lines from the shortest line this
+ * contract can write, `{"variant_id":1,"counted_quantity":0},` (38 bytes) — `32768 / 38 = 862`. The
+ * same measure is written here from the same text, so the two can never disagree, and a sheet wider
+ * than it is still settled because it travels in more than one request.
+ */
+const closingMaxSettlementBody = 32_768;
+const closingShortestCountLine = '{"variant_id":1,"counted_quantity":0},';
+/** The most counted lines one request of the server's body limit carries: 862. */
+export const closingMaxRequestLines = Math.floor(closingMaxSettlementBody
+  / closingShortestCountLine.length);
+/** What one request of this client carries. A transport batch, never a bound of the sheet. */
+export const closingCountRequestLines = 190;
 export const closingMaxCounted = 1_000_000;
 export const closingMaxObservation = 1000;
 export const closingMaxID = 2_147_483_647;
@@ -600,7 +619,11 @@ export function closingMaterialUnitOf(kind: ClosingMaterialKind): ClosingMateria
   return kind === 'scrap' ? 'kg' : 'unit';
 }
 
-/** The bound of one request: the same 190 lines a count of the stock states. */
+/**
+ * The bound of one request of the *material* sheet, which is the one the server states as 1 to 190
+ * entries. It is a request and not a sheet: the count sheet of the stock has no line bound of its own
+ * (S1, S2) and is the one this client batches.
+ */
 export const closingMaxMaterialLines = 190;
 /** The range of a material id, which is the smallint of the reference table. */
 export const closingMaxMaterialID = 32767;
@@ -1254,7 +1277,6 @@ export function canonicalDrawerPayload(draft: DrawerDraft,
 export const closingQuantityMessage =
   `La cantidad contada debe ser un número entero de 0 a ${closingMaxCounted}.`;
 export const closingCountEmptyMessage = 'Contá al menos una variante antes de guardar.';
-export const closingCountLimitMessage = `Un conteo lleva como máximo ${closingMaxCountLines} variantes.`;
 export const closingSearchMessage = 'La búsqueda admite hasta 128 bytes UTF-8, sin caracteres inválidos.';
 
 /** `TOYO NS40ZL L · 100 Ah` for a battery and `Agua acidulada · 1 L` for a product: the label a
@@ -1333,10 +1355,13 @@ export interface CountPayloadLine { readonly variant_id: number; readonly counte
 /**
  * Admits what the warehouse counted: only a whole quantity per variant, inside the sheet's own
  * bounds. The expected quantity and the difference cannot be expressed here at all (S4).
+ *
+ * The sheet this reads is the whole change set of a settlement, one line per variant with stock, so it
+ * has no bound of its own and no length is refused here (S1, S2): what is bounded is the request, and
+ * `closingCountBatches` is the one that applies that bound on the way out.
  */
 export function canonicalCountPayload(input: readonly CountedLineInput[]): readonly CountPayloadLine[] {
   if (!Array.isArray(input) || input.length === 0) throw new Error(closingCountEmptyMessage);
-  if (input.length > closingMaxCountLines) throw new Error(closingCountLimitMessage);
   const seen = new Set<number>();
   return Object.freeze(input.map(line => {
     const variant = line.variant_id;
@@ -1352,12 +1377,15 @@ export function canonicalCountPayload(input: readonly CountedLineInput[]): reado
   }));
 }
 
-/** One request takes at most 190 lines: a longer sheet is saved in order, batch by batch. */
+/**
+ * One request carries one batch, whatever the sheet holds: a sheet longer than `closingCountRequestLines`
+ * is saved in order, request by request, and no counted line is ever left out (S1, S2).
+ */
 export function closingCountBatches(
   lines: readonly CountPayloadLine[]): readonly (readonly CountPayloadLine[])[] {
   const batches: CountPayloadLine[][] = [];
-  for (let index = 0; index < lines.length; index += closingMaxCountLines) {
-    batches.push(lines.slice(index, index + closingMaxCountLines));
+  for (let index = 0; index < lines.length; index += closingCountRequestLines) {
+    batches.push(lines.slice(index, index + closingCountRequestLines));
   }
   return Object.freeze(batches.map(batch => Object.freeze(batch)));
 }
@@ -2125,6 +2153,9 @@ export const closingCorrectionReasonMessage =
   'Escribí el motivo de la corrección: sin motivo no se puede proponer.';
 export const closingCorrectionValueMessage =
   'La corrección tiene que cambiar al menos un valor: el conteo, la caja, la comisión o el fondo.';
+/** A correction is one request, and a request is the only thing the transport bounds (S1, S2). */
+export const closingCorrectionLimitMessage =
+  `Una corrección lleva como máximo ${closingMaxRequestLines} variantes en un solo pedido.`;
 
 /** The four correctable values as the warehouse types them, over the closed settlement. */
 export interface CorrectionDraft {
@@ -2194,7 +2225,9 @@ export function canonicalCorrectionBody(body: CorrectionBody): CorrectionBody {
   if (body.payload.counted_quantities !== undefined) {
     const lines = body.payload.counted_quantities;
     if (!Array.isArray(lines) || lines.length === 0) throw new Error(closingCorrectionValueMessage);
-    if (lines.length > closingMaxCountLines) throw new Error(closingCountLimitMessage);
+    // The correction travels as one request, so it is the request that is bounded — never the sheet
+    // it corrects, whose size the catalogue sets (S1, S2).
+    if (lines.length > closingMaxRequestLines) throw new Error(closingCorrectionLimitMessage);
     const seen = new Set<number>();
     payload.counted_quantities = lines.map(line => {
       const variant = line.variant_id;

@@ -621,6 +621,23 @@ describe('S4 the count sheet is not blind and never recalculates the expected qu
     expect(model.closingCountBatches([])).toEqual([]);
   });
 
+  it('takes a sheet of any size, because the bound is the request and never the sheet (S1, S2)', () => {
+    // A branch above 190 in-stock variants counts them all: the sheet has no bound of its own, so the
+    // canonicalization takes the whole change set and the request bound is applied only by the batches.
+    const changed = Array.from({ length: 235 }, (_, index) =>
+      ({ variant_id: index + 1, counted: String(index % 5) }));
+    const payload = canonicalCountPayload(changed);
+    expect(payload).toHaveLength(235);
+    expect(payload[234]).toEqual({ variant_id: 235, counted_quantity: 4 });
+    expect(model.closingCountBatches(payload).map(batch => batch.length)).toEqual([190, 45]);
+    expect(model.closingCountBatches(payload).flat().map(line => line.variant_id))
+      .toEqual(changed.map(line => line.variant_id));
+    // The request bound is the one the server publishes, derived from its body limit and never a
+    // sheet size: the ceiling is what one body can carry, far above the batch this client sends.
+    expect(model.closingMaxRequestLines).toBe(862);
+    expect(model.closingCountRequestLines).toBeLessThan(model.closingMaxRequestLines);
+  });
+
   it('filters the sheet by brand, model, capacity and polarity without asking the server', () => {
     expect(filterCountLines(lines, '').length).toBe(11);
     expect(filterCountLines(lines, 'S5').map(entry => entry.variant_id)).toEqual([11]);
@@ -1214,6 +1231,20 @@ describe('S16 the correction the warehouse proposes', () => {
       .toThrow(/motivo/);
     expect(() => canonicalCorrectionBody({ reason: 'un motivo', payload: {} }))
       .toThrow(/al menos un valor/);
+  });
+
+  it('takes a correction of a sheet longer than one request (S1, S2)', () => {
+    const quantities = Array.from({ length: 235 }, (_, index) =>
+      ({ variant_id: index + 1, counted_quantity: index % 5 }));
+    const body = canonicalCorrectionBody({ reason: 'conté mal media planilla',
+      payload: { counted_quantities: quantities } });
+    expect(body.payload.counted_quantities).toHaveLength(235);
+    expect(body.payload.counted_quantities?.[234]).toEqual({ variant_id: 235, counted_quantity: 4 });
+    // What a correction does not exceed is one request of the transport the server publishes.
+    const beyond = Array.from({ length: model.closingMaxRequestLines + 1 }, (_, index) =>
+      ({ variant_id: index + 1, counted_quantity: 1 }));
+    expect(() => canonicalCorrectionBody({ reason: 'un motivo',
+      payload: { counted_quantities: beyond } })).toThrow(model.closingCorrectionLimitMessage);
   });
 
   it('admits only canonical money and whole quantities', () => {

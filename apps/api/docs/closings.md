@@ -238,9 +238,10 @@ POST /api/closings/1/count
 * What bounds a count is the catalogue and never a copied number: the sheet is one line per
   catalogue variant, so the catalogue's own size is its only ceiling, which is why migration `028`
   dropping the catalogue's 190-variant bound left this contract with nothing to re-impose. A body
-  is still a request of this API and stays inside the transport limit of 32 KiB (a sheet of ~900
-  lines); a sheet wider than that is counted in more than one request, and the sheet is read whole
-  either way.
+  is still a request of this API and stays inside the transport limit of 32 KiB, which is 862
+  counted lines — the body limit over the 38 bytes the shortest line of this contract takes
+  (`{"variant_id":1,"counted_quantity":0},`); a sheet wider than that is counted in more than one
+  request, and the sheet is read whole either way.
 * A line that already exists only changes its counted quantity; a line the system did not have
   is added with the database's own snapshot of `0`. The expected quantity is the snapshot the
   database took at open and is never recalculated, so the sheet stays a fact of the cut.

@@ -131,6 +131,34 @@ describe('the settlement document', () => {
     expect(() => parseClosing(JSON.stringify(document({ count_lines: [both] })))).toThrow();
   });
 
+  it('reads a sheet longer than one request, whole, and still refuses one that is malformed (S1, S2)', () => {
+    // A branch above 190 in-stock variants opens, counts and publishes its settlement: the sheet is one
+    // line per variant with stock, so the catalogue bounds it and no line count does (S1).
+    const sheet = Array.from({ length: 235 }, (_, index) => countedLine({
+      variant_id: index + 1, catalog_entry_id: index + 1,
+      expected_quantity: index % 5, counted_quantity: index % 5 }));
+    const closing = parseClosing(JSON.stringify(document({ count_lines: sheet })));
+    expect(closing.count_lines).toHaveLength(235);
+    expect(closing.count_lines.map(line => line.variant_id))
+      .toEqual(sheet.map(line => line.variant_id));
+    expect(closing.count_lines[234]).toMatchObject({ variant_id: 235, counted_quantity: 4 });
+    // The offer freezes the same sheet, so a proposal of a big branch is read whole too (S1).
+    const offered = parseClosing(JSON.stringify(document({ rounds: [round({ offer: offer({
+      count_lines: sheet.map(line => ({ variant_id: line.variant_id,
+        expected_quantity: line.expected_quantity, counted_quantity: line.counted_quantity })) }) })] })));
+    expect(offered.rounds[0].offer.count_lines).toHaveLength(235);
+    expect(offered.rounds[0].offer.count_lines[234])
+      .toEqual({ variant_id: 235, expected_quantity: 4, counted_quantity: 4 });
+    // Every other rule of the sheet is still applied: a line that does not advance in variant is no
+    // line of this contract, whatever the length of the sheet it sits in.
+    const repeated = [...sheet];
+    repeated[200] = countedLine({ variant_id: 200, catalog_entry_id: 200 });
+    expect(() => parseClosing(JSON.stringify(document({ count_lines: repeated })))).toThrow();
+    const notALine: Record<string, unknown>[] = [...sheet];
+    notALine[234] = { ...countedLine({ variant_id: 235 }), polarity: null };
+    expect(() => parseClosing(JSON.stringify(document({ count_lines: notALine })))).toThrow();
+  });
+
   it('reads an open settlement whose drawer and totals are not stated yet', () => {
     const closing = parseClosing(JSON.stringify(openDocument()));
     expect(closing.commission_rate_percent).toBeNull();
@@ -872,6 +900,31 @@ describe('the corrections a closed settlement publishes (S16)', () => {
       { reason: 'una', payload: { counted_cash: '1.00' } }, csrf));
     expect(failure.code).toBe('correction_not_closed');
     expect(failure.refusal?.closing_id).toBe(7);
+  });
+
+  it('reads a correction that touches more lines than one request carried, whole (S1, S2)', () => {
+    // The correction of a closed big settlement states one quantity per corrected variant and one
+    // effect per accepted value: neither is a line count of the request the client sends.
+    const quantities = Array.from({ length: 235 }, (_, index) =>
+      ({ variant_id: index + 1, counted_quantity: index % 5 }));
+    const effects = quantities.map(line => ({ kind: 'stock', variant_id: line.variant_id,
+      quantity_delta: 1, amount_delta: null }));
+    const closing = parseClosing(JSON.stringify(document({ corrections: [acceptedCorrection({
+      payload: { counted_quantities: quantities }, effects })] })));
+    expect(closing.corrections[0].payload.counted_quantities).toHaveLength(235);
+    expect(closing.corrections[0].payload.counted_quantities[234])
+      .toEqual({ variant_id: 235, counted_quantity: 4 });
+    expect(closing.corrections[0].effects).toHaveLength(235);
+    // The list of corrections of one settlement is its own list, not the sheet: a settlement corrected
+    // many times is still one document.
+    const many = parseClosing(JSON.stringify(document({ corrections:
+      Array.from({ length: 191 }, (_, index) => acceptedCorrection({ id: 3 + index })) })));
+    expect(many.corrections).toHaveLength(191);
+    // And the payload is still the one this contract publishes: the same variant twice is refused.
+    const repeated = [...quantities];
+    repeated[200] = { variant_id: 200, counted_quantity: 1 };
+    expect(() => parseClosing(JSON.stringify(document({ corrections: [acceptedCorrection({
+      payload: { counted_quantities: repeated } })] })))).toThrow();
   });
 
   it('reads one correction on its own, which is what the two correction routes answer', () => {

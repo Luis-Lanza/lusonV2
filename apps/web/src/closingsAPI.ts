@@ -10,8 +10,9 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import { parseInventory, queryURL, validSearch } from './model';
 import {
-  canonicalCorrectionBody, closingCataloguePageSize, closingCents, closingDecisionPayload,
-  closingEvidenceTypes, closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaxCountLines,
+  canonicalCorrectionBody, closingCataloguePageSize, closingCents, closingCountRequestLines,
+  closingDecisionPayload,
+  closingEvidenceTypes, closingMaterialMilli, closingMaterialQuantityIsCanonical,
   closingMaxCounted, closingMaxEvidenceBytes,
   closingMaxID, closingMaxMaterialID, closingMaxMaterialLines, closingMaxPage, closingPageSizes,
   closingRail, closingSignedCents, closingStatuses,
@@ -422,9 +423,9 @@ function offer(value: unknown): ClosingOffer {
   const closing_cash = optionalAmount(record.closing_cash);
   // An offer is only made for a counted drawer, so both sides of it are stated.
   if (counted_cash === null || closing_cash === null) return invalidResponse();
-  if (!Array.isArray(record.count_lines) || record.count_lines.length > closingMaxCountLines) {
-    return invalidResponse();
-  }
+  // The offer freezes the sheet the warehouse counted, so it carries one line per variant with stock
+  // and no line count of its own (S1, S2): every line is validated, none of them is counted.
+  if (!Array.isArray(record.count_lines)) return invalidResponse();
   let previous = 0;
   const count_lines = record.count_lines.map(entry => {
     const line = offerLine(entry, previous);
@@ -515,8 +516,9 @@ function correctionPayload(value: unknown): ClosingCorrectionPayload {
   if (Object.keys(record).some(key => !known.includes(key))) return invalidResponse();
   let quantities: readonly ClosingCorrectionQuantity[] = Object.freeze([]);
   if (Object.hasOwn(record, 'counted_quantities')) {
-    if (!Array.isArray(record.counted_quantities) || record.counted_quantities.length < 1
-      || record.counted_quantities.length > closingMaxCountLines) {
+    // A correction states one entry per corrected variant, and it is the closed settlement's own sheet —
+    // never a line count — that bounds it (S1, S2). Every entry is validated below.
+    if (!Array.isArray(record.counted_quantities) || record.counted_quantities.length < 1) {
       return invalidResponse();
     }
     let previous = 0;
@@ -587,7 +589,9 @@ function correctionRecord(value: unknown, closing_id: number | null, previous: n
   const decided_by_account_id = optionalInteger(record.decided_by_account_id, 1, Number.MAX_SAFE_INTEGER);
   const decided_at = optionalTimestamp(record.decided_at);
   const decision_reason = freeText(record.decision_reason, 1000);
-  if (!Array.isArray(record.effects) || record.effects.length > closingMaxCountLines) {
+  // One delta per corrected value: a correction of a big settlement states as many effects as it
+  // changed values, so the list is read whole and each delta is validated on its own (S1, S2).
+  if (!Array.isArray(record.effects)) {
     return invalidResponse();
   }
   const effects = Object.freeze(record.effects.map(entry => correctionEffect(entry)));
@@ -622,7 +626,9 @@ function correctionRecord(value: unknown, closing_id: number | null, previous: n
 /** The corrections of one settlement, oldest first, with the pending one always last (034, S16). */
 function correctionsOf(value: unknown, closing_id: number,
   state: ClosingStatus): readonly ClosingCorrection[] {
-  if (!Array.isArray(value) || value.length > closingMaxCountLines) return invalidResponse();
+  // The corrections of one settlement are a list of its own and not its sheet (S1, S2): a settlement
+  // corrected many times publishes every one of them, and each is validated on its own.
+  if (!Array.isArray(value)) return invalidResponse();
   // A live settlement is corrected by its own rounds, and a rejected correction applied nothing, so
   // neither of them is ever part of a document.
   if (state !== 'closed' && value.length > 0) return invalidResponse();
@@ -709,6 +715,13 @@ const expenseMaxDescription = 500;
 /** The bound of the label of one motive of the closed list an expense is recorded with (061, S2). */
 const expenseMaxLabel = 500;
 
+/**
+ * How many rows of the acta's own list this document keeps. It is the expenses of the window, not the
+ * settlement's count sheet: the sheet has no bound of its own (S1), so this ceiling says nothing about
+ * the size of a settlement and only keeps a hostile list out of the acta.
+ */
+const expenseMaxRows = 190;
+
 /** The digest the acta publishes for one photo: 32 bytes of lowercase hexadecimal. */
 const evidenceDigest = /^[0-9a-f]{64}$/;
 
@@ -760,7 +773,7 @@ function motive(value: unknown): string {
  * The rows are the order the branch recorded them in, so a list that does not advance in id is refused.
  */
 function expensesOf(value: unknown): readonly ClosingExpense[] {
-  if (!Array.isArray(value) || value.length > closingMaxCountLines) return invalidResponse();
+  if (!Array.isArray(value) || value.length > expenseMaxRows) return invalidResponse();
   const expenses: ClosingExpense[] = [];
   let previous = 0;
   for (const entry of value) {
@@ -836,7 +849,10 @@ function readClosing(value: unknown): Closing {
   const commission_base_cents = optionalAmount(record.commission_base ?? null);
   const counted_cash_cents = optionalAmount(record.counted_cash);
   const closing_cash_cents = optionalAmount(record.closing_cash);
-  if (!Array.isArray(record.count_lines) || record.count_lines.length > closingMaxCountLines) {
+  // The sheet is one line per variant the branch had in stock, so the catalogue bounds it and nothing
+  // here restates a size (S1, S2): the lines are read whole, in ascending variant order, and every one
+  // of them is validated by `countLine`.
+  if (!Array.isArray(record.count_lines)) {
     return invalidResponse();
   }
   let previousVariant = 0;
@@ -1236,7 +1252,11 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
       }));
     },
 
-    /** Records only what was counted: the expected quantity cannot even be expressed here. */
+    /**
+     * Records only what was counted: the expected quantity cannot even be expressed here. One request
+     * carries one batch of the sheet and never the sheet itself, whose size the catalogue sets: a wider
+     * settlement is saved in order, request by request (S1, S2).
+     */
     async count(id: number, lines: readonly CountPayloadLine[], csrf: string,
       signal?: AbortSignal): Promise<Closing> {
       let body: string;
@@ -1246,7 +1266,7 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
         token(csrf);
         path = closingCountPath(id);
         wanted = closingID(id);
-        if (!Array.isArray(lines) || lines.length === 0 || lines.length > closingMaxCountLines) {
+        if (!Array.isArray(lines) || lines.length === 0 || lines.length > closingCountRequestLines) {
           throw new Error('conteo inválido');
         }
         body = JSON.stringify({ lines: lines.map(line => ({
