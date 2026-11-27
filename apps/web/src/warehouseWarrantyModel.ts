@@ -110,14 +110,18 @@ export function warehouseLoanDestinations(verdict: WarrantyVerdict): readonly Wa
 export type WarehouseReleaseSubject = 'customer' | 'stock';
 
 /**
- * Which of the two units the release would return, or null when the case holds none. It names the same pair
+ * Which of the two units the release would return, or null when the case holds none. It reads the same pair
  * the case model names for the whole app (`warrantyUnitBoundForStock`, 073's
- * `warranty_case_unit_bound_for_stock()`): a claim, and either a unit destined to the client or a
- * `repaired`/`replaced` unit destined to the branch's shelf. The destination column alone never answers it,
- * and a `not_covered` unit with that same destination is the pool de usadas (LW025, S11).
+ * `warranty_case_unit_bound_for_stock()`): the verdict states in what condition the battery came back and the
+ * destination states where it went, and only the two together say the branch holds a unit it may sell (S11,
+ * S13, S14). A claim the factory answered `lost`, `unrepairable` or `refused_at_warehouse` holds nothing, and
+ * so does a unit sent out as scrap or kept by the factory, whatever destination the claim declared: a
+ * `not_covered` unit with the destination `stock` is the pool de usadas (LW025, S11).
  */
 export function warehouseReleaseSubjectKind(value: WarrantyCase): WarehouseReleaseSubject | null {
   if (value.origin !== 'warranty_claim') return null;
+  // The verdict is the fact that says a unit came back as something the branch may sell (077's guard).
+  if (value.verdict !== 'repaired' && value.verdict !== 'replaced') return null;
   if (value.reported_destination === 'customer') return 'customer';
   return warrantyUnitBoundForStock(value) ? 'stock' : null;
 }

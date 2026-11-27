@@ -1,6 +1,7 @@
 package warrantycase_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -242,4 +243,23 @@ func TestPendingNeverCountsAnActTheActorCannotTake(t *testing.T) {
 	}
 	// The finding waits for nobody: its units already returned to the branch with its verdict.
 	f.wantPending(t, "the finding returns its own units", 1, 0, 0)
+
+	// A claim whose battery the factory kept and that declared the client as its destination is the
+	// same lie on the read side: the warehouse has no unit to release, so it counts no act, and the
+	// branch still owes its client the answer (S11, S13, 077).
+	kept := f.openClaim(t, "SIN-CUSTODIA/2")
+	f.atFactory(t, kept)
+	if _, err := f.store.Resolve(f.ctx, f.actor(1), kept.ID, warrantycase.ResolutionInput{
+		Verdict: warrantycase.VerdictLost, ReportedDestination: warrantycase.DestinationCustomer,
+		LoanDestination: warrantycase.DestinationCustomer, Note: "La fábrica retuvo la unidad"}); err != nil {
+		t.Fatalf("the factory verdict must be admitted: %v", err)
+	}
+	if _, err := f.store.RegisterNotice(f.ctx, f.actor(2), kept.ID, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch must register the notice: %v", err)
+	}
+	if _, err := f.store.AuthorizeRelease(f.ctx, f.actor(1), kept.ID,
+		"La unidad no está"); !errors.Is(err, warrantycase.ErrReleaseUnavailable) {
+		t.Fatalf("the unit the factory kept is never released, got %v", err)
+	}
+	f.wantPending(t, "the kept claim waits only for its branch, notified or not", 2, 0, 0)
 }

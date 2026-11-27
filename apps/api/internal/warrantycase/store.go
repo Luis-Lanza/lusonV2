@@ -234,9 +234,10 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, filter ListFilter
 // they came through) and the claims it owes its client an answer: the notice and the delivery
 // both wait on a resolved claim. The warehouse counts the battery it is moving -- in transit,
 // waiting verification, waiting the factory's verdict -- and the release it may authorise, which
-// is the single unit a claim got back for its client, already notified and not released yet. A
-// finding on the shelf holds no unit in custody and a battery the factory kept never comes back,
-// so neither is ever counted for the warehouse. The count is one aggregate of the read-only
+// is the single unit a claim got back for its client, already notified and not released yet. That
+// unit is the one the verdict states (S11, S13, 077): a finding on the shelf holds no unit in
+// custody and a battery the factory kept, could not repair or never saw never comes back, so none
+// of them is ever counted for the warehouse. The count is one aggregate of the read-only
 // snapshot: it never loads a case, and a case of another branch is never counted.
 func (s *Store) Pending(ctx context.Context, actor auth.Identity) (int64, error) {
 	if ctx == nil || s == nil || s.pool == nil {
@@ -262,6 +263,7 @@ func (s *Store) Pending(ctx context.Context, actor auth.Identity) (int64, error)
  WHERE CASE WHEN $1 THEN
    case_row.phase IN ('in_transit','at_warehouse','at_factory')
    OR (case_row.phase='resolved' AND case_row.origin='warranty_claim'
+       AND case_row.verdict IN ('repaired','replaced')
        AND case_row.reported_destination='customer'
        AND EXISTS (SELECT 1 FROM warranty_case_events noticed
          WHERE noticed.case_id=case_row.id AND noticed.kind='notice')

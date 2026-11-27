@@ -1240,3 +1240,58 @@ func TestWarrantyFailureOfTheLoanGateAndTheSecondOpenClaim(t *testing.T) {
 		}
 	}
 }
+
+// TestReleaseOfAUnitThatNeverCameBackOverPostgreSQL proves the release of S14 through the route the
+// warehouse presses: the unit it returns is the one the factory gave back as a sellable battery, so a
+// claim whose verdict says no usable unit came back -- the factory kept it, or nobody could repair it --
+// is refused with `409 nothing_to_release` whatever destination the claim declared, and the refusal
+// writes no event, no phase and no balance. The destination alone never answers it (S11, S13).
+func TestReleaseOfAUnitThatNeverCameBackOverPostgreSQL(t *testing.T) {
+	f := warrantyFixture(t)
+	variant := f.variant
+	for _, verdict := range []string{"lost", "unrepairable"} {
+		// Every claim is the claim of its own sold battery: one serial carries one open claim (S7).
+		if w := f.serve(t, f.request(2, "POST", "/api/sales",
+			saleBody(f.variant, 1, "96000.00", 12))); w.Code != 201 {
+			t.Fatalf("the sale of the fixture must be admitted: %d %s", w.Code, w.Body.String())
+		}
+		claim := f.caseWire(t, f.serve(t, f.request(2, "POST", "/api/warranty-cases/claims",
+			fmt.Sprintf(`{"serial_number":%q,"declared_failure":"No arranca el motor"}`,
+				f.lastSerial(t)))), 201)
+		// The client leaves with a used battery before the case can leave the branch (S4).
+		f.lendUsed(t, claim.ID)
+		for _, tramo := range []struct {
+			actor int
+			path  string
+			body  string
+		}{
+			{2, "advance", `{"phase":"in_transit","factory_case_number":"","note":"Sale al Almacén"}`},
+			{1, "advance", `{"phase":"at_warehouse","factory_case_number":"","note":"Recibida"}`},
+			{1, "advance", `{"phase":"at_factory","factory_case_number":"LEG-9","note":"A fábrica"}`},
+			{1, "resolution", fmt.Sprintf(`{"verdict":%q,"reported_destination":"customer",`+
+				`"loan_destination":"customer","note":"Sin unidad vendible"}`, verdict)},
+		} {
+			if w := f.serve(t, f.request(tramo.actor, "POST",
+				fmt.Sprintf("/api/warranty-cases/%d/%s", claim.ID, tramo.path), tramo.body)); w.Code != 200 {
+				t.Fatalf("the case must reach its %s: %d %s", tramo.path, w.Code, w.Body.String())
+			}
+		}
+		if w := f.serve(t, f.request(2, "POST",
+			fmt.Sprintf("/api/warranty-cases/%d/notice", claim.ID),
+			`{"note":"Avisado el cliente"}`)); w.Code != 200 {
+			t.Fatalf("the branch registers the notice: %d %s", w.Code, w.Body.String())
+		}
+		shelf := f.balance(t, 2, variant)
+		// refused proves the whole state of the vertical is unchanged: no case, no loan, no event and no
+		// balance.
+		f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/warranty-cases/%d/release", claim.ID),
+			`{"note":"La unidad no está"}`), 409, "nothing_to_release")
+		if got := f.balance(t, 2, variant); got != shelf {
+			t.Fatalf("a %s unit is never sellable stock: the shelf %d became %d", verdict, shelf, got)
+		}
+		if read := f.caseWire(t, f.serve(t, f.request(2, "GET",
+			fmt.Sprintf("/api/warranty-cases/%d", claim.ID), "")), 200); read.Phase != "resolved" {
+			t.Fatalf("the case keeps waiting for its branch, got %s", read.Phase)
+		}
+	}
+}
