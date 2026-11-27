@@ -1003,15 +1003,18 @@ export function filterMaterialRows(rows: readonly ClosingMaterialRow[],
 }
 
 // ---------------------------------------------------------------------------------
-// The two tabs and the three balances of one settlement (S10, S13, S14)
+// The tabs and the three balances of one settlement (S10, S13, S14, S16)
 // ---------------------------------------------------------------------------------
 
-/** The two tabs are navigation, never two life cycles: one cut, one offer, one acceptance (S10). */
-export type ClosingTab = 'caja' | 'chatarra';
+/** The tabs are navigation, never two life cycles: one cut, one offer, one acceptance (S10). */
+export type ClosingTab = 'caja' | 'chatarra' | 'correcciones';
 
-export const closingTabOrder: readonly ClosingTab[] = Object.freeze(['caja', 'chatarra']);
+export const closingTabOrder: readonly ClosingTab[] =
+  Object.freeze(['caja', 'chatarra', 'correcciones']);
+/** The tabs of a screen the corrections have nothing to say to: no settlement that is not closed. */
+const closingTabsWithoutCorrections: readonly ClosingTab[] = Object.freeze(['caja', 'chatarra']);
 export const closingTabLabels: Readonly<Record<ClosingTab, string>> = Object.freeze({
-  caja: 'Caja', chatarra: 'Chatarra',
+  caja: 'Caja', chatarra: 'Chatarra', correcciones: 'Correcciones',
 });
 /** The name the tab list and its panels share. */
 export const closingTabsLabel = 'Rendición';
@@ -1022,14 +1025,27 @@ export const closingBalanceLabels: Readonly<Record<'cash' | 'fund' | 'materials'
   Object.freeze({ cash: 'Caja operativa', fund: 'Fondo de compras', materials: 'Materiales' });
 
 /**
- * The tab an arrow key moves to, which is the one interaction model the screens share with the
- * purchases tabs: the arrows wrap around the two tabs and nothing else moves the selection.
+ * The tabs one screen offers: the drawer and the scrap sheet always, and the corrections only when
+ * that screen holds a correction panel to show — the warehouse offers it for a settlement that is
+ * `closed`, because a live one is corrected by its own rounds, and the branch offers it only when
+ * the settlement it reads carries a correction (S16).
  */
-export function closingTabAfter(tab: ClosingTab, key: string): ClosingTab | null {
+export function closingOfferedTabs(withCorrections: boolean): readonly ClosingTab[] {
+  return withCorrections ? closingTabOrder : closingTabsWithoutCorrections;
+}
+
+/**
+ * The tab an arrow key moves to, which is the one interaction model the screens share with the
+ * purchases tabs: the arrows wrap around the offered tabs and nothing else moves the selection. A
+ * tab the screen does not offer is not in the list, so the arrows can never select it.
+ */
+export function closingTabAfter(tab: ClosingTab, key: string,
+  offered: readonly ClosingTab[] = closingTabOrder): ClosingTab | null {
   if (key !== 'ArrowRight' && key !== 'ArrowLeft') return null;
-  const index = closingTabOrder.indexOf(tab);
-  return closingTabOrder[(index + (key === 'ArrowRight' ? 1 : closingTabOrder.length - 1))
-    % closingTabOrder.length];
+  const index = offered.indexOf(tab);
+  if (index < 0) return null;
+  return offered[(index + (key === 'ArrowRight' ? 1 : offered.length - 1))
+    % offered.length];
 }
 
 /** One balance of the header: its difference in words and the tab it belongs to (S13). */
@@ -1131,7 +1147,13 @@ export function closingBalanceStrip(facts: ClosingBalanceFacts): readonly Closin
  * or `2 con diferencia` — and `null` when none of them carries one. It is never a bare dot, because
  * a colour or a mark alone is not a reading (S13).
  */
-export function closingTabMarker(balances: readonly ClosingBalance[], tab: ClosingTab): string | null {
+export function closingTabMarker(balances: readonly ClosingBalance[], tab: ClosingTab,
+  pendingCorrection: ClosingCorrection | null = null): string | null {
+  // A correction is not one of the three accounts of the strip (S13), so it arrives as its own
+  // fact: the tab says a correction waits for the branch and says nothing once it is answered.
+  if (tab === 'correcciones') {
+    return pendingCorrection === null ? null : closingPendingCorrectionMarker;
+  }
   const carrying = balances.filter(balance => balance.tab === tab && balance.difference);
   if (carrying.length === 0) return null;
   if (carrying.length === 1) return carrying[0].value;
@@ -1899,6 +1921,12 @@ export const closingCorrectionStatusLabels: Readonly<Record<ClosingCorrectionSta
     accepted: 'Aceptada',
     rejected: 'Rechazada',
   });
+
+/**
+ * The marker the corrections tab carries while a correction waits for the branch: the operator
+ * reads on the tab that something waits, without opening it (S16).
+ */
+export const closingPendingCorrectionMarker = 'Corrección pendiente';
 
 /** The four facts one correction can restate: the sheet, the drawer, the commission and the fund. */
 export type ClosingCorrectionKind = 'stock' | 'counted_cash' | 'commission' | 'fund';

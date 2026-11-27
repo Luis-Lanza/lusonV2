@@ -179,6 +179,11 @@ const balanceStrip = () => screen.getByRole('group', { name: 'Saldos de la rendi
 const materials = () => screen.findByRole('region', { name: 'Materiales rendidos' });
 /** The scrap tab holds the envelope and the material sheet of the same document (S10, S13). */
 function openScrapTab() { fireEvent.click(scrapTab()); }
+function openCashTab() { fireEvent.click(cashTab()); }
+/** The corrections of a closed settlement live behind their own tab (S16). */
+async function openCorrectionsTab() {
+  fireEvent.click(await screen.findByRole('tab', { name: /^Correcciones/ }));
+}
 
 const changes = () => screen.findByRole('region', { name: 'Qué cambia si aceptás' });
 const cash = () => screen.getByRole('region', { name: 'Caja y pago' });
@@ -405,6 +410,17 @@ describe('the two tabs and the three balances of the decision (S10, S13)', () =>
     fireEvent.keyDown(tabList(), { key: 'ArrowLeft' });
     expect(cashTab()).toHaveAttribute('aria-selected', 'true');
     expect(h.posts('/api/closings/1/decision')).toHaveLength(0);
+  });
+
+  it('offers no corrections tab while the settlement carries no correction (S16)', async () => {
+    // A settlement that is not closed carries no correction at all, so the tab is not offered and
+    // the branch reads the offer with the two tabs it always had.
+    const h = server();
+    await ready(h);
+    await changes();
+    expect(within(tabList()).getAllByRole('tab')).toHaveLength(2);
+    expect(screen.queryByRole('tab', { name: /^Correcciones/ })).not.toBeInTheDocument();
+    expect(document.getElementById('closing-decision-panel-correcciones')).toBeNull();
   });
 
   it('reads the material sheet read-only, in the frozen order and with the delivery (S7, S8, S9)',
@@ -742,14 +758,28 @@ describe('the correction that waits for the branch (S16)', () => {
     const h = server(closed());
     await ready(h);
     expect(screen.getByText(/no tiene una corrección esperando tu decisión/)).toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: /^Correcciones/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Corrección pendiente' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Aceptar la corrección' })).not.toBeInTheDocument();
+    expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(0);
+  });
+
+  it('says on its tab that a correction waits, before the tab is opened (S16)', async () => {
+    const h = server(awaitingCorrection());
+    await ready(h);
+    // The tab states the correction that waits, so the branch knows without opening it.
+    expect(await screen.findByRole('tab', { name: /^Correcciones/ }))
+      .toHaveTextContent('Corrección pendiente');
+    expect(screen.queryByRole('region', { name: 'Corrección pendiente' })).not.toBeInTheDocument();
+    await openCorrectionsTab();
+    expect(await pendingPanel()).toBeInTheDocument();
     expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(0);
   });
 
   it('shows the reason and what accepting it would change before the answer', async () => {
     const h = server(awaitingCorrection());
     await ready(h);
+    await openCorrectionsTab();
     const panel = await pendingPanel();
     expect(within(panel).getByText('conté mal el cajón y una batería')).toBeInTheDocument();
     expect(within(panel).getByText(/Cuenta #1/)).toBeInTheDocument();
@@ -767,7 +797,9 @@ describe('the correction that waits for the branch (S16)', () => {
     expect(within(panel).getByText('Diferencia').parentElement).toHaveTextContent('+ Bs 85,00');
     expect(within(panel).getByText('Te llevás al Almacén').parentElement)
       .toHaveTextContent('Bs 6.200,00');
-    // Nothing of it is applied while it waits: the settlement still publishes the signed drawer.
+    // Nothing of it is applied while it waits: the settlement still publishes the signed drawer,
+    // which the cash tab carries, so the branch reads it there.
+    openCashTab();
     expect(within(cash()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(0);
   });
@@ -775,6 +807,7 @@ describe('the correction that waits for the branch (S16)', () => {
   it('accepts the correction it was shown, and the settlement reads as corrected', async () => {
     const h = server(awaitingCorrection());
     await ready(h);
+    await openCorrectionsTab();
     await pendingPanel();
     fireEvent.click(acceptCorrection());
     await waitFor(() => expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(1));
@@ -787,6 +820,7 @@ describe('the correction that waits for the branch (S16)', () => {
   it('cannot reject without a motive', async () => {
     const h = server(awaitingCorrection());
     await ready(h);
+    await openCorrectionsTab();
     await pendingPanel();
     fireEvent.click(rejectToggle());
     expect(sendRejection()).toBeDisabled();

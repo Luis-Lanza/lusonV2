@@ -26,7 +26,7 @@ import {
   closingChangedTag, closingCountDifferenceText, closingCountMatchTag, closingCountReading,
   closingEvidencePath, closingEvidenceText,
   closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
-  closingSeedQuantity, closingTabAfter, closingTabLabels, closingTabMarker, closingTabOrder,
+  closingSeedQuantity, closingOfferedTabs, closingTabAfter, closingTabLabels, closingTabMarker,
   closingTabsLabel,
   correctionDraftFrom, drawerDraftFrom,
   drawerView,
@@ -141,8 +141,9 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const working = useRef(false);
   // The frame that arrived while this screen was working: it waits here instead of being lost.
   const waiting = useRef(false);
-  // The roving tab index of the two tabs: the tabs are navigation, never two life cycles (S10).
-  const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>({ caja: null, chatarra: null });
+  // The roving tab index of the tabs: the tabs are navigation, never two life cycles (S10).
+  const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>(
+    { caja: null, chatarra: null, correcciones: null });
 
   useEffect(() => {
     const flight = lifetime.current;
@@ -413,11 +414,11 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   }
 
   /**
-   * Moves the selection between the two tabs with the arrows, the one interaction model the screens
-   * share with the purchases tabs: the focus follows the tab the arrow selects.
+   * Moves the selection between the tabs this settlement offers with the arrows, the one interaction
+   * model the screens share with the purchases tabs: the focus follows the tab the arrow selects.
    */
   function moveTab(event: KeyboardEvent<HTMLDivElement>) {
-    const next = closingTabAfter(tab, event.key);
+    const next = closingTabAfter(activeTab, event.key, offeredTabs);
     if (next === null) return;
     event.preventDefault();
     setTab(next);
@@ -524,6 +525,12 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   // correction figure is ever shown for one (S16).
   const acceptedCorrections = closing === null ? [] : closingAcceptedCorrections(closing);
   const pendingCorrection = closing === null ? null : closingPendingCorrection(closing);
+  // The corrections are a fact of a settlement that is `closed`, so a live one does not offer that
+  // tab at all and the sheets keep the room the panel used to take below them (S16).
+  const offeredTabs = closingOfferedTabs(closing !== null && closing.status === 'closed');
+  // A selection left on a tab this settlement does not offer falls back to the drawer, so one panel
+  // is always the one the operator is reading.
+  const activeTab: ClosingTab = offeredTabs.includes(tab) ? tab : 'caja';
   const correctedAmounts = closing === null ? [] : closingCorrectedAmounts(closing);
   const correctedCounts = closing === null ? [] : closingCorrectedCounts(closing);
   const preview = closing === null ? null : closingCorrectionPreview(closing);
@@ -594,7 +601,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
           verifies without changing tabs. A kilogram is never added to a peso or to a unit. */}
       <div className="closing-balances" role="group" aria-label={closingBalancesLabel}>
         {balances.map(balance => <button key={balance.key} type="button"
-          className={`closing-balance ${balance.tone}`} aria-pressed={tab === balance.tab}
+          className={`closing-balance ${balance.tone}`} aria-pressed={activeTab === balance.tab}
           onClick={() => setTab(balance.tab)}>
           <small>{balance.label}</small>
           <strong className={balance.tone}>{balance.value}</strong>
@@ -602,14 +609,15 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
         </button>)}
       </div>
 
-      {/* One settlement, one closure, one acceptance: the two tabs are navigation (S10). The marker
-          of a tab is the difference of its accounts in words, never a bare dot (S13). */}
+      {/* One settlement, one closure, one acceptance: the tabs are navigation (S10). The marker
+          of a tab is the difference of its accounts in words, never a bare dot (S13), and the
+          corrections tab states the correction that waits for the branch (S16). */}
       <div className="closing-tabs" role="tablist" aria-label={closingTabsLabel} onKeyDown={moveTab}>
-        {closingTabOrder.map(key => {
-          const marker = closingTabMarker(balances, key);
+        {offeredTabs.map(key => {
+          const marker = closingTabMarker(balances, key, pendingCorrection);
           return <button key={key} type="button" role="tab" id={`closing-tab-${key}`}
-            aria-selected={tab === key} aria-controls={`closing-panel-${key}`}
-            tabIndex={tab === key ? 0 : -1}
+            aria-selected={activeTab === key} aria-controls={`closing-panel-${key}`}
+            tabIndex={activeTab === key ? 0 : -1}
             ref={element => { tabButtons.current[key] = element; }}
             onClick={() => setTab(key)}>
             {closingTabLabels[key]}
@@ -619,7 +627,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       </div>
 
       <div id="closing-panel-caja" role="tabpanel" aria-labelledby="closing-tab-caja"
-        hidden={tab !== 'caja'}>
+        hidden={activeTab !== 'caja'}>
       <div className="closing-layout">
         <section className="closing-panel" aria-labelledby="closing-count-title">
           <header className="closing-panel-head">
@@ -884,7 +892,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
           against what the shelf holds, and the fund the warehouse counted and leaves behind. Both
           are one account of the same settlement, never a second life cycle (S10, S14). */}
       <div id="closing-panel-chatarra" role="tabpanel" aria-labelledby="closing-tab-chatarra"
-        hidden={tab !== 'chatarra'}>
+        hidden={activeTab !== 'chatarra'}>
         <div className="closing-layout">
           <section className="closing-panel closing-materials-panel" aria-labelledby="closing-materials-title">
             <header className="closing-panel-head">
@@ -1032,8 +1040,13 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
         </div>
       </div>
 
-      {closing.status === 'closed' && <section className="closing-panel closing-corrections"
-        aria-labelledby="closing-corrections-title">
+      {/* The corrections of a closed settlement: their own tab, so the two sheets keep the room
+          they need while the warehouse counts. The panel is exactly the one that used to sit below
+          them, and the tab that carries it says so while a correction waits (S16). */}
+      {closing.status === 'closed' && <div id="closing-panel-correcciones" role="tabpanel"
+        aria-labelledby="closing-tab-correcciones" hidden={activeTab !== 'correcciones'}>
+        <section className="closing-panel closing-corrections"
+          aria-labelledby="closing-corrections-title">
         <header className="closing-panel-head">
           <h2 id="closing-corrections-title">Correcciones del cierre</h2>
           {pendingCorrection !== null
@@ -1204,7 +1217,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             <small id="closing-correction-issue">{correctionIssue.problem}</small>
           </div>
         </div>}
-      </section>}
+        </section>
+      </div>}
 
       <div className="closing-bar" role="region" aria-label="Acciones de la rendición">
         <div className="closing-bar-state">

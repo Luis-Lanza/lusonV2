@@ -310,11 +310,16 @@ const proposeButton = () => within(actionBar()).getByRole('button', { name: 'Pro
 const tabList = () => screen.getByRole('tablist', { name: 'Rendición' });
 const cashTab = () => within(tabList()).getByRole('tab', { name: /^Caja/ });
 const scrapTab = () => within(tabList()).getByRole('tab', { name: /^Chatarra/ });
+const correctionsTab = () => within(tabList()).getByRole('tab', { name: /^Correcciones/ });
 const balanceStrip = () => screen.getByRole('group', { name: 'Saldos de la rendición' });
 const materials = () => screen.findByRole('region', { name: 'Materiales rendidos' });
 /** The scrap tab of the settlement: the envelope and the material sheet live there (S10, S13). */
 function openScrapTab() { fireEvent.click(scrapTab()); }
 function openCashTab() { fireEvent.click(cashTab()); }
+/** The corrections of a closed settlement live behind their own tab, not below the sheets (S16). */
+async function openCorrectionsTab() {
+  fireEvent.click(await screen.findByRole('tab', { name: /^Correcciones/ }));
+}
 
 /** States the drawer of the artboard; the sheet already coincides with the system (S1). */
 async function completeTheSheet() {
@@ -950,6 +955,55 @@ describe('the two tabs and the three balances (S10, S13)', () => {
     expect(h.posts('/api/closings/1/cash')).toHaveLength(0);
   });
 
+  it('offers the corrections tab only on a closed settlement (S16)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    // A live settlement has no corrections at all, so the tab is not offered and nothing of the
+    // corrections panel is in the document: the sheets keep the room it used to take.
+    expect(within(tabList()).getAllByRole('tab')).toHaveLength(2);
+    expect(within(tabList()).queryByRole('tab', { name: /^Correcciones/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+    expect(document.getElementById('closing-panel-correcciones')).toBeNull();
+    // The arrows never select a tab the settlement does not offer.
+    cashTab().focus();
+    fireEvent.keyDown(tabList(), { key: 'ArrowLeft' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(scrapTab());
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the corrections of a closed settlement behind their own tab (S16)', async () => {
+    const h = server({ status: 'closed' });
+    await ready(h);
+    await sheet();
+    expect(within(tabList()).getAllByRole('tab')).toHaveLength(3);
+    expect(correctionsTab()).toHaveAttribute('aria-selected', 'false');
+    expect(correctionsTab()).toHaveAttribute('tabindex', '-1');
+    expect(correctionsTab()).toHaveAttribute('aria-controls', 'closing-panel-correcciones');
+    // The panel is behind the tab: on any other tab it is not in the document at all.
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+    await openCorrectionsTab();
+    expect(correctionsTab()).toHaveAttribute('aria-selected', 'true');
+    expect(correctionsTab()).toHaveAttribute('tabindex', '0');
+    const panel = screen.getByRole('region', { name: 'Correcciones del cierre' });
+    expect(within(panel).getByText(/El cierre no tiene correcciones/)).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Proponer corrección' })).toBeDisabled();
+    // One document, one closure: opening the tab writes nothing.
+    expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
+    // The arrows walk the three tabs and wrap around, taking the focus with them.
+    openCashTab();
+    cashTab().focus();
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(correctionsTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(correctionsTab());
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(cashTab());
+  });
+
   // The strip is the promise the heading makes — "los números del cierre quedan siempre a la
   // vista" — so the row that compacts it keeps all three parts of every account: what the account
   // is, what it reads today and what that reading is made of. The one part of this that a browser
@@ -1418,19 +1472,25 @@ describe('corrections of a closed settlement (S16)', () => {
   it('offers nothing invented on a settlement with no correction', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    // The drawer of the closed settlement is the signed one, on the tab it always was.
+    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
+    await openCorrectionsTab();
     const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
     expect(within(panel).getByText(/El cierre no tiene correcciones/)).toBeInTheDocument();
     // No corrected figure is published when nothing was corrected: the numbers are the signed ones.
     expect(within(panel).queryByRole('table', { name: 'Números corregidos del cierre' }))
       .not.toBeInTheDocument();
-    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
   });
 
   it('shows a corrected number as corrected, with its delta beside the signed one', async () => {
     const h = server({ status: 'closed', countedCash: '6950.00', corrections: [acceptedDrawer()] });
     await ready(h);
+    await openCorrectionsTab();
     const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
+    // The corrected figures are the table of the panel, inside the tab that carries them.
+    expect(within(panel).getByRole('table', { name: 'Números corregidos del cierre' }))
+      .toBeInTheDocument();
     const row = within(panel).getByText('Caja contada').closest('.closing-correction-value')!;
     // The three numbers of a corrected figure, together: what was signed, what it reads today and the
     // delta that produced it.
@@ -1439,7 +1499,9 @@ describe('corrections of a closed settlement (S16)', () => {
     expect(within(row as HTMLElement).getByText('− Bs 30,00')).toBeInTheDocument();
     // The correction that produced it is legible beside it, with its reason.
     expect(within(panel).getByText('conté mal el cajón, faltaba plata')).toBeInTheDocument();
-    // The rail keeps the identities over the corrected drawer, never over the signed one.
+    // The rail keeps the identities over the corrected drawer, never over the signed one: it lives
+    // on the cash tab, so the drawer is read there, one panel at a time.
+    openCashTab();
     expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.950,00');
     expect(within(rail()).getByText('− Bs 65,00')).toBeInTheDocument();
     expect(within(rail()).getByText('Te llevás al Almacén').parentElement).toHaveTextContent('Bs 6.050,00');
@@ -1448,6 +1510,7 @@ describe('corrections of a closed settlement (S16)', () => {
   it('will not propose a correction without a reason', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    await openCorrectionsTab();
     fireEvent.change(await within(corrections()).findByLabelText('Caja contada corregida (Bs)'),
       { target: { value: '6.900,00' } });
     expect(proposeCorrection()).toBeDisabled();
@@ -1458,6 +1521,7 @@ describe('corrections of a closed settlement (S16)', () => {
   it('will not propose a correction that changes no value', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    await openCorrectionsTab();
     fireEvent.change(await within(corrections()).findByLabelText('Motivo de la corrección'),
       { target: { value: 'revisé todo y estaba bien' } });
     expect(proposeCorrection()).toBeDisabled();
@@ -1468,6 +1532,7 @@ describe('corrections of a closed settlement (S16)', () => {
   it('proposes the correction with its reason and only the values that changed', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    await openCorrectionsTab();
     fireEvent.change(await within(corrections()).findByLabelText('Caja contada corregida (Bs)'),
       { target: { value: '6.900,00' } });
     fireEvent.change(within(corrections()).getByLabelText('Contado corregido de Bosch Power R · 110 Ah'),
@@ -1491,14 +1556,21 @@ describe('corrections of a closed settlement (S16)', () => {
   it('shows the correction that waits for the branch and refuses a second one', async () => {
     const h = server({ status: 'closed', corrections: [pendingDrawer()] });
     await ready(h);
+    // The tab says a correction waits before it is opened, so nothing is hidden behind it (S16).
+    expect(await screen.findByRole('tab', { name: /^Correcciones/ }))
+      .toHaveTextContent('Corrección pendiente');
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+    await openCorrectionsTab();
     const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
     expect(within(panel).getByText('Espera la decisión de la sucursal')).toBeInTheDocument();
     expect(within(panel).getByText('la caja estaba mal contada')).toBeInTheDocument();
     // What it would change is stated before the branch answers, and nothing is applied yet.
     expect(within(panel).getByText('Bs 6.900,00')).toBeInTheDocument();
-    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     // One correction waits at a time: there is no second proposal to make.
     expect(within(panel).queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+    // The drawer still reads the signed amount: it is the cash tab that carries the rail.
+    openCashTab();
+    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
   });
 });

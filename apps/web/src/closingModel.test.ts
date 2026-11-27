@@ -22,7 +22,8 @@ import {
   closingMaterialEmptySheet, closingMaterialKindLabels, closingMaterialLines,
   closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaterialQuantityLabel,
   closingMaterialQuantityText, closingMaterialReading, closingMaterialSeed,
-  closingMaterialSignedText, closingMaterialWireText, closingTabAfter, closingTabLabels,
+  closingMaterialSignedText, closingMaterialWireText, closingOfferedTabs,
+  closingPendingCorrectionMarker, closingTabAfter, closingTabLabels,
   closingTabMarker, closingTabOrder, closingTabsLabel, emptyMaterialDraft, materialDraftFrom,
   type Closing, type ClosingCatalogueVariant, type ClosingBatteryLine, type ClosingCountLine,
   type ClosingCorrection, type ClosingProductLine,
@@ -594,21 +595,57 @@ describe('S10, S13 the two tabs and the three balances of one settlement', () =>
     expect(closingTabMarker(materialsOnly, 'chatarra')).toBe('2 cuentas con diferencia');
   });
 
-  it('moves between the two tabs with the arrows and wraps around (S10)', () => {
-    expect(closingTabOrder).toEqual(['caja', 'chatarra']);
+  it('moves between the three tabs with the arrows and wraps around (S10, S16)', () => {
+    expect(closingTabOrder).toEqual(['caja', 'chatarra', 'correcciones']);
     expect(closingTabLabels.caja).toBe('Caja');
     expect(closingTabLabels.chatarra).toBe('Chatarra');
+    expect(closingTabLabels.correcciones).toBe('Correcciones');
     expect(closingTabsLabel).toBe('Rendición');
     expect(closingBalancesLabel).toBe('Saldos de la rendición');
     expect(closingTabAfter('caja', 'ArrowRight')).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowRight')).toBe('correcciones');
+    // The last tab wraps around to the first one, and the first one back to the last.
+    expect(closingTabAfter('correcciones', 'ArrowRight')).toBe('caja');
+    expect(closingTabAfter('caja', 'ArrowLeft')).toBe('correcciones');
     expect(closingTabAfter('chatarra', 'ArrowLeft')).toBe('caja');
-    expect(closingTabAfter('caja', 'ArrowLeft')).toBe('chatarra');
-    expect(closingTabAfter('chatarra', 'ArrowRight')).toBe('caja');
+    expect(closingTabAfter('correcciones', 'ArrowLeft')).toBe('chatarra');
     // Nothing else moves the selection: the tabs are the only thing the arrows change.
     expect(closingTabAfter('caja', 'Enter')).toBeNull();
     expect(closingTabAfter('caja', 'Tab')).toBeNull();
     expect(closingMaterialKindLabels.used).toBe('Baterías usadas');
     expect(closingMaterialKindLabels.scrap).toBe('Chatarra');
+  });
+
+  it('offers the corrections tab only when the screen has a correction panel (S16)', () => {
+    // A screen without a corrections panel offers the two tabs it always had...
+    expect(closingOfferedTabs(false)).toEqual(['caja', 'chatarra']);
+    expect(closingTabOrder).toEqual(['caja', 'chatarra', 'correcciones']);
+    // ...and the arrows walk only the tabs that are offered, wrapping around them.
+    const offered = closingOfferedTabs(false);
+    expect(closingTabAfter('chatarra', 'ArrowRight', offered)).toBe('caja');
+    expect(closingTabAfter('caja', 'ArrowLeft', offered)).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowLeft', offered)).toBe('caja');
+    // With a panel to show, the third tab joins the walk between the two others.
+    expect(closingOfferedTabs(true)).toEqual(['caja', 'chatarra', 'correcciones']);
+    const all = closingOfferedTabs(true);
+    expect(closingTabAfter('chatarra', 'ArrowRight', all)).toBe('correcciones');
+    expect(closingTabAfter('correcciones', 'ArrowLeft', all)).toBe('chatarra');
+  });
+
+  it('marks the corrections tab while a correction waits for the branch (S16)', () => {
+    const balances = closingBalanceStrip(facts());
+    // A correction is not one of the three accounts of the strip: with nothing waiting the tab is
+    // bare, and a correction the branch already answered is no reason to mark it either.
+    expect(closingTabMarker(balances, 'correcciones')).toBeNull();
+    expect(closingTabMarker(balances, 'correcciones',
+      closingPendingCorrection(settled({ corrections: [accepted()] })))).toBeNull();
+    // The correction that waits is stated on the tab itself, in words and never a bare dot.
+    expect(closingTabMarker(balances, 'correcciones',
+      closingPendingCorrection(settled({ corrections: [pending()] })))).toBe('Corrección pendiente');
+    expect(closingPendingCorrectionMarker).toBe('Corrección pendiente');
+    // The marker a tab already carries from its balances is untouched by the correction argument.
+    expect(closingTabMarker(balances, 'caja',
+      closingPendingCorrection(settled({ corrections: [pending()] })))).toBe('− Bs 35,00');
   });
 });
 
