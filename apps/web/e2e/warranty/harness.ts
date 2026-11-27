@@ -37,26 +37,55 @@ export const warehouseRole: Role = {
 export interface Session {
   readonly request: APIRequestContext;
   readonly csrf: string;
+  /** The account the session acts as, which is the actor an append-only tramo has to name. */
+  readonly accountId: number;
   readonly locationId: number;
   readonly locationName: string;
 }
 
-/** The only shape a spec reads back from the API: the case, its loans and its append-only history. */
+/**
+ * The only shape a spec reads back from the API: the case, its loans and its append-only history. The
+ * history publishes what a tramo has to state — the factory's file number, the actor and the instant —
+ * so a spec that asserts the journey reads those values instead of assuming them.
+ */
 export interface CaseRecord {
   readonly id: number;
   readonly case_number: string;
+  readonly branch_location_id: number;
   readonly phase: string;
+  readonly closed_by: string | null;
   readonly origin: string;
   readonly verdict: string | null;
   readonly reported_destination: string | null;
   readonly loan_destination: string | null;
   readonly stock_destination: string | null;
+  readonly sale_id: number | null;
+  readonly warranty_number: string | null;
   readonly serial_number: string | null;
   readonly variant_id: number;
   readonly quantity: number | null;
+  readonly declared_failure: string;
   readonly reason: string | null;
-  readonly loans: readonly { readonly ordinal: number; readonly model: string; readonly fate: string }[];
-  readonly events: readonly { readonly kind: string; readonly phase: string }[];
+  readonly created_at: string;
+  readonly loans: readonly {
+    readonly ordinal: number;
+    readonly model: string;
+    readonly quantity: number;
+    readonly serial_number: string;
+    readonly source_location_id: number;
+    readonly given_at: string;
+    readonly fate: string;
+    readonly fate_decided_at: string | null;
+  }[];
+  readonly events: readonly {
+    readonly ordinal: number;
+    readonly kind: string;
+    readonly phase: string;
+    readonly factory_case_number: string;
+    readonly actor_account_id: number;
+    readonly recorded_at: string;
+    readonly note: string;
+  }[];
 }
 
 interface SellableRow {
@@ -106,12 +135,15 @@ export async function sessionFor(factory: RequestFactory, role: Role): Promise<S
     extraHTTPHeaders: { Origin: origin },
     storageState: sessionState(role.username),
   });
-  const current = await json<{ authenticated: boolean; csrf_token: string }>(
+  const current = await json<{ authenticated: boolean; csrf_token: string; identity: { account_id: number } }>(
     await request.get('/api/auth/session'), 'GET /api/auth/session');
   if (!current.authenticated) {
     throw new Error(`la sesión de ${role.username} no está activa: el proyecto de sesiones tiene que correr antes`);
   }
-  return { request, csrf: current.csrf_token, locationId: role.locationId, locationName: role.locationName };
+  return {
+    request, csrf: current.csrf_token, accountId: current.identity.account_id,
+    locationId: role.locationId, locationName: role.locationName,
+  };
 }
 
 async function send<T>(session: Session, method: 'post' | 'put', path: string, body: unknown,
@@ -255,6 +287,24 @@ export async function advance(session: Session, caseId: number, phase: string, n
     { phase, factory_case_number: factoryCaseNumber, note }, 200);
 }
 
+/**
+ * One tramo of the journey, answered raw: a spec that expects the refusal reads its status and its code
+ * instead of guessing it from a required field. The file number travels with the factory shipment and
+ * with nothing else, so the caller always states it — the empty text on every other tramo.
+ */
+export async function advanceAttempt(session: Session, caseId: number, phase: string, note: string,
+  factoryCaseNumber: string, expected: number): Promise<{ readonly status: number; readonly body: { readonly error?: string } }> {
+  const reply = await session.request.post(`/api/warranty-cases/${caseId}/advance`, {
+    headers: { 'X-CSRF-Token': session.csrf },
+    data: { phase, factory_case_number: factoryCaseNumber, note },
+  });
+  const answer = await json<{ error?: string }>(reply, `POST /api/warranty-cases/${caseId}/advance`);
+  if (reply.status() !== expected) {
+    throw new Error(`el tramo ${phase} respondió ${reply.status()} en vez de ${expected}: ${JSON.stringify(answer)}`);
+  }
+  return { status: reply.status(), body: answer };
+}
+
 export async function decideLoanFate(branch: Session, caseId: number, ordinal: number, fate: string): Promise<void> {
   await send(branch, 'post', `/api/warranty-cases/${caseId}/loans/${ordinal}/fate`, { fate }, 200);
 }
@@ -366,6 +416,38 @@ export async function sellableExisting(branch: Session, variantId: number): Prom
   const row = catalogue.items.find(item => item.variant_id === variantId);
   if (row === undefined) throw new Error(`la variante ${variantId} no figura en el catálogo vendible de la sucursal`);
   return row.existing;
+}
+
+/**
+ * One sale as its own document publishes it: the instant it was issued and the serial and the term of
+ * every battery it carries. A replacement is delivered against this document, so the spec compares this
+ * read before and after instead of assuming the term and the units never moved.
+ */
+export interface SaleDetail {
+  readonly id: number;
+  readonly branch_sequence: number;
+  readonly warranty_number: string;
+  readonly customer_name: string;
+  readonly total: string;
+  readonly created_at: string;
+  readonly lines: readonly {
+    readonly variant_id: number;
+    readonly quantity: number;
+    readonly units: readonly { readonly serial_number: string; readonly warranty_months: number | null }[];
+  }[];
+}
+
+export async function saleRecord(session: Session, saleId: number): Promise<SaleDetail> {
+  return read<SaleDetail>(session, `/api/sales/${saleId}`);
+}
+
+/**
+ * How many sales the branch holds. A factory replacement is delivered against the sale that sold the
+ * battery, so the document count of the branch is what says no second sale was invented for it.
+ */
+export async function salesTotal(session: Session): Promise<number> {
+  const history = await read<{ total_sales: number }>(session, '/api/sales?page=1&page_size=10');
+  return history.total_sales;
 }
 
 // ---------------------------------------------------------------------------------
