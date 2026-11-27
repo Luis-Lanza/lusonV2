@@ -1,5 +1,5 @@
 import {
-  arrangeApproved, arrangeRunStock, balance, branchB, expect, filterTransfers, openTransfer,
+  arrangeApproved, arrangeRunBattery, balance, branchB, expect, filterTransfers, openTransfer,
   openTransferList, receiveTransfer, test, transferRecord, warehouseRole, warehouseSessionState,
 } from './harness';
 
@@ -8,7 +8,9 @@ import {
  *
  * La solicitud aprobada espera en el origen. El Almacén la abre desde su bandeja —la fila le dice que le
  * toca despachar—, confirma el despacho completo y ve el resultado: las unidades salen de Almacén, la
- * reserva propia de esta solicitud se consume y Sucursal B todavía no recibe stock.
+ * reserva propia de esta solicitud se consume y Sucursal B todavía no recibe stock. El despacho no admite
+ * selección parcial: la pantalla despacha todas las unidades del documento
+ * (`apps/web/src/TransferDispatch.tsx:164`), y por eso no hay un acto «despachar menos» que probar.
  *
  * El despacho no tiene vuelta: la recepción del destino es la única salida. La prueba la registra al final
  * con el mismo contrato público para que las unidades que salieron queden contabilizadas donde llegaron.
@@ -16,13 +18,14 @@ import {
 
 test.use({ storageState: warehouseSessionState });
 
-test('el Almacén despacha la solicitud completa y la deja en tránsito', async ({ page, api }) => {
+test('el Almacén despacha la solicitud completa de una batería y la deja en tránsito', async ({ page, api }) => {
   const branch = await api.as(branchB);
   const warehouse = await api.as(warehouseRole);
-  const stock = await arrangeRunStock(warehouse);
+  const battery = await arrangeRunBattery(warehouse);
   const units = 3;
-  const approved = await arrangeApproved(stock, { branch, warehouse }, units);
-  const before = await balance(warehouse, warehouse.locationId, stock.variantId);
+  const approved = await arrangeApproved(battery.line, { branch, warehouse }, units);
+  const shelf = { kind: 'battery' as const, search: battery.model };
+  const before = await balance(warehouse, warehouse.locationId, battery.line.variantId, shelf);
 
   // La bandeja le dice al origen que la solicitud espera su despacho.
   await openTransferList(page);
@@ -61,16 +64,16 @@ test('el Almacén despacha la solicitud completa y la deja en tránsito', async 
   expect(record.receipt_location_id).toBeUndefined();
   expect(new Date(record.dispatched_at ?? 0).getTime())
     .toBeGreaterThanOrEqual(new Date(record.decided_at ?? 0).getTime());
-  expect(await balance(warehouse, warehouse.locationId, stock.variantId)).toEqual({
+  expect(await balance(warehouse, warehouse.locationId, battery.line.variantId, shelf)).toEqual({
     existing: before.existing - units, reserved: before.reserved - units, available: before.available,
   });
 
   // La única salida del tránsito es la recepción: las unidades siguen su ruta y quedan acreditadas en
   // Sucursal B, no perdidas en el camino.
-  const destination = await balance(branch, branch.locationId, stock.variantId);
-  const received = await receiveTransfer(branch, approved.id, { variantId: stock.variantId, units });
+  const destination = await balance(branch, branch.locationId, battery.line.variantId, shelf);
+  const received = await receiveTransfer(branch, approved.id, { variantId: battery.line.variantId, units });
   expect(received.status).toBe('received');
-  expect(await balance(branch, branch.locationId, stock.variantId)).toEqual({
+  expect(await balance(branch, branch.locationId, battery.line.variantId, shelf)).toEqual({
     existing: destination.existing + units, reserved: destination.reserved,
     available: destination.available + units,
   });

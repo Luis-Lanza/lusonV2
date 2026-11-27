@@ -1,6 +1,6 @@
 import {
-  addToCart, arrangeDirectShipment, arrangeRunStock, balance, branchB, branchBSession, cancelTransfer,
-  chooseProductsKind, creationCart, expect, filterTransfers, openReview, openTransferList, test,
+  addBatteryToCart, arrangeDirectShipment, arrangeRunBattery, balance, branchB, branchBSession, cancelTransfer,
+  chooseBatteryKind, creationCart, expect, filterTransfers, openReview, openTransferList, test,
   transferByReference, warehouseRole,
 } from './harness';
 
@@ -12,33 +12,36 @@ import {
  * queda Pending en la mesa del Almacén y la propuesta se retira después con la cancelación del creador.
  *
  * El stock que la propuesta nombra es de la corrida: un envío directo del Almacén, despachado y recibido
- * con el mismo contrato, deja esas unidades en Sucursal B antes del acto.
+ * con el mismo contrato, deja esas unidades de la batería de la corrida en Sucursal B antes del acto.
  */
 
 test.use({ storageState: branchBSession });
 
-test('la sucursal propone un envío al Almacén y la propuesta queda pendiente de aprobación',
+test('la sucursal propone un envío de su batería al Almacén y la propuesta queda pendiente de aprobación',
   async ({ page, api }) => {
     const branch = await api.as(branchB);
     const warehouse = await api.as(warehouseRole);
-    const stock = await arrangeRunStock(warehouse);
-    await arrangeDirectShipment(stock, { branch, warehouse }, 5);
-    const before = await balance(branch, branch.locationId, stock.variantId);
+    const battery = await arrangeRunBattery(warehouse);
+    await arrangeDirectShipment(battery.line, { branch, warehouse }, 5);
+    const shelf = { kind: 'battery' as const, search: battery.model };
+    const before = await balance(branch, branch.locationId, battery.line.variantId, shelf);
     const units = 3;
 
     await openTransferList(page);
     await page.getByRole('button', { name: 'Nueva transferencia' }).click();
-    await chooseProductsKind(page);
+    await chooseBatteryKind(page);
     await page.getByLabel('Tipo de transferencia').selectOption({ label: 'Proponer envío a Almacén' });
 
     // La ruta invertida: el origen es la sucursal y el Almacén recibe y decide, sin reserva inmediata.
     await expect(page.getByRole('heading', { level: 1, name: 'Proponer envío a Almacén' })).toBeVisible();
     await expect(page.getByText('Requiere aprobación de Almacén · No genera reserva inmediata de stock')).toBeVisible();
-    await addToCart(page, stock, units);
-    await expect(creationCart(page).getByLabel('Total a transferir')).toHaveText(`${units} productos`);
+    await addBatteryToCart(page, battery, battery.line, units);
+    await expect(creationCart(page).getByLabel('Total a transferir')).toHaveText(`${units} baterías`);
 
     const review = await openReview(page, false);
     await expect(review.getByText('La solicitud quedará Pending, pendiente de aprobación de Almacén.')).toBeVisible();
+    await expect(review.getByRole('row').filter({ hasText: battery.name }).locator('td[data-label="Cantidad a transferir"]'))
+      .toHaveText(String(units));
     await review.getByRole('button', { name: 'Enviar solicitud' }).click();
 
     const confirmed = page.getByRole('dialog', { name: 'Solicitud Pending confirmada' });
@@ -56,8 +59,9 @@ test('la sucursal propone un envío al Almacén y la propuesta queda pendiente d
     expect(record.origin_location_id).toBe(branch.locationId);
     expect(record.destination_location_id).toBe(warehouse.locationId);
     expect(record.approver_location_id).toBe(warehouse.locationId);
-    expect(record.items.map(line => [line.variant_id, line.quantity])).toEqual([[stock.variantId, String(units)]]);
-    expect(await balance(branch, branch.locationId, stock.variantId)).toEqual(before);
+    expect(record.items.map(line => [line.variant_id, line.kind, line.quantity]))
+      .toEqual([[battery.line.variantId, 'battery', String(units)]]);
+    expect(await balance(branch, branch.locationId, battery.line.variantId, shelf)).toEqual(before);
 
     // La bandeja la publica como propuesta de envío y le dice a la sucursal a quién espera.
     await confirmed.getByRole('button', { name: 'Volver a transferencias' }).click();
@@ -69,5 +73,5 @@ test('la sucursal propone un envío al Almacén y la propuesta queda pendiente d
 
     // La propuesta se retira con la cancelación del creador, que por estar pendiente no mueve stock.
     await cancelTransfer(branch, record.id);
-    expect(await balance(branch, branch.locationId, stock.variantId)).toEqual(before);
+    expect(await balance(branch, branch.locationId, battery.line.variantId, shelf)).toEqual(before);
   });

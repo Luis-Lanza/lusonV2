@@ -1,5 +1,5 @@
 import {
-  arrangeInTransit, arrangeRunStock, balance, branchB, branchBSession, expect, filterTransfers, openTransfer,
+  arrangeInTransit, arrangeRunBattery, balance, branchB, branchBSession, expect, filterTransfers, openTransfer,
   openTransferList, test, transferRecord, warehouseRole,
 } from './harness';
 
@@ -10,19 +10,21 @@ import {
  * «Recibir»—, cuenta lo que llegó, revisa el conteo y lo confirma una sola vez. El resultado: el stock
  * disponible del destino se acredita con el mínimo entre lo recibido y lo enviado, y las existencias del
  * origen no cambian. Acá el conteo coincide con lo enviado, así que las unidades que salieron de Almacén
- * quedan acreditadas completas en Sucursal B.
+ * quedan acreditadas completas en Sucursal B: es la última estación de la ruta de una batería que la
+ * corrida creó, pidió por pantalla y el Almacén aprobó y despachó.
  */
 
 test.use({ storageState: branchBSession });
 
-test('la sucursal recibe la solicitud completa y acredita el stock en su ubicación', async ({ page, api }) => {
+test('la sucursal recibe la batería completa y acredita el stock en su ubicación', async ({ page, api }) => {
   const branch = await api.as(branchB);
   const warehouse = await api.as(warehouseRole);
-  const stock = await arrangeRunStock(warehouse);
+  const battery = await arrangeRunBattery(warehouse);
   const units = 3;
-  const transit = await arrangeInTransit(stock, { branch, warehouse }, units);
-  const origin = await balance(warehouse, warehouse.locationId, stock.variantId);
-  const before = await balance(branch, branch.locationId, stock.variantId);
+  const transit = await arrangeInTransit(battery.line, { branch, warehouse }, units);
+  const shelf = { kind: 'battery' as const, search: battery.model };
+  const origin = await balance(warehouse, warehouse.locationId, battery.line.variantId, shelf);
+  const before = await balance(branch, branch.locationId, battery.line.variantId, shelf);
 
   // La bandeja del destino publica que la solicitud espera su recepción.
   await openTransferList(page);
@@ -35,11 +37,15 @@ test('la sucursal recibe la solicitud completa y acredita el stock en su ubicaci
   await expect(detail.getByText('En tránsito', { exact: true })).toBeVisible();
   await detail.getByRole('button', { name: 'Recibir solicitud' }).click();
 
-  // El conteo se carga a mano, sin que la pantalla ajuste la cantidad al stock del destino.
+  // El conteo se carga a mano, contra lo enviado que la pantalla publica al lado del campo.
   const capture = page.getByRole('dialog', { name: 'Registrar cantidades recibidas' });
   await expect(capture).toBeVisible();
   await expect(capture.getByText('Contá lo que llegó e ingresá cada cantidad. Usá 0 si una variante no llegó.')).toBeVisible();
   await expect(capture.getByText('Todavía no se modifica el stock. Primero revisarás el conteo.')).toBeVisible();
+  const captureRow = capture.getByRole('row').filter({ hasText: battery.name });
+  await expect(captureRow).toContainText(battery.line.detail);
+  await expect(captureRow.locator('td[data-label="Polaridad"]')).toHaveText('Izquierda [L]');
+  await expect(captureRow.locator('td[data-label="Enviadas"]')).toHaveText(String(units));
   const received = capture.getByLabel(/^Cantidad recibida /);
   await expect(received).toHaveCount(1);
   await received.fill(String(units));
@@ -57,7 +63,7 @@ test('la sucursal recibe la solicitud completa y acredita el stock en su ubicaci
   const confirmed = page.getByRole('dialog', { name: 'Recepción confirmada' });
   await expect(confirmed).toBeVisible();
   await expect(confirmed.getByText('Recepción registrada correctamente.')).toBeVisible();
-  const receiptRow = confirmed.getByRole('row').filter({ hasText: stock.name });
+  const receiptRow = confirmed.getByRole('row').filter({ hasText: battery.name });
   await expect(receiptRow).toContainText(String(units));
   await expect(receiptRow).toContainText('Sin discrepancia');
   await confirmed.getByRole('button', { name: 'Volver al detalle' }).click();
@@ -76,10 +82,10 @@ test('la sucursal recibe la solicitud completa y acredita el stock en su ubicaci
   expect(record.received_at).toBeDefined();
   expect(record.receipt?.items.map(line =>
     [line.variant_id, line.expected_quantity, line.actual_quantity, line.available_quantity]))
-    .toEqual([[stock.variantId, String(units), String(units), String(units)]]);
+    .toEqual([[battery.line.variantId, String(units), String(units), String(units)]]);
   expect(record.receipt?.exceptions).toEqual([]);
-  expect(await balance(branch, branch.locationId, stock.variantId)).toEqual({
+  expect(await balance(branch, branch.locationId, battery.line.variantId, shelf)).toEqual({
     existing: before.existing + units, reserved: before.reserved, available: before.available + units,
   });
-  expect(await balance(warehouse, warehouse.locationId, stock.variantId)).toEqual(origin);
+  expect(await balance(warehouse, warehouse.locationId, battery.line.variantId, shelf)).toEqual(origin);
 });
