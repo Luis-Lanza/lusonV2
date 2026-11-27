@@ -64,7 +64,19 @@
 kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px; border: 1px solid var(--border);
   border-bottom-width: 2px; border-radius: 3px; background: white; color: var(--muted); }
 
-.closing-table-wrap { overflow-x: auto; }
+/* Every long sheet of the screen scrolls inside its own region: the count sheet of the batteries,
+   the corrections of a closed settlement and the same tables on the branch's side sit in this
+   wrapper, so the wrapper is the bounded region. The header the tables already declare sticky
+   (`.closing-table th`, below) then sticks to its top while the rows pass under it, instead of the
+   table running down the page. The treatment is the material sheet's own, moved here so every
+   sheet of the screen uses one rule: a height bound of the viewport's 60%, vertical scrolling, and
+   the platform's overlay scrollbar — which only shows on hover — stated as a thin classic one in
+   the convention the rest of the app already styles (`stock-entry.css`: `scrollbar-width` +
+   `scrollbar-color`, with no `::-webkit-scrollbar` rule), its gutter reserved so the rows never
+   shift as it appears. The bound is a maximum, never a height: a short sheet keeps its natural
+   height and gains no dead band under its last row. */
+.closing-table-wrap { overflow-x: auto; overflow-y: auto; max-height: 60vh;
+  scrollbar-width: thin; scrollbar-color: var(--muted) var(--page); scrollbar-gutter: stable; }
 .closing-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .closing-table th { position: sticky; top: 0; height: 40px; padding: 0 12px; background: white;
   color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
@@ -254,12 +266,13 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
 /* Everything the sheet states above and below its regions keeps its own height; only the regions
    give way, so their end is always reachable without being left under the bar (S7, S8). */
 .closing-materials-panel > :not(.closing-materials-wrap) { flex: none; }
-.closing-materials-wrap { flex: 0 1 auto; min-height: 0; max-height: 60vh; overflow-y: auto;
-  /* The region clips a row and the platform's overlay scrollbar only shows on hover, so it is
-     stated as a thin classic one in the convention the rest of the app already styles
-     (`stock-entry.css`: `scrollbar-width` + `scrollbar-color`, with no `::-webkit-scrollbar` rule),
-     and its gutter is reserved so the rows never shift when it appears. */
-  scrollbar-width: thin; scrollbar-color: var(--muted) var(--page); scrollbar-gutter: stable; }
+/* The height bound, the vertical scrolling and the scrollbar are no longer stated here: this
+   wrapper is also a `.closing-table-wrap` and takes them from that one rule, so there is a single
+   height in the file. What is left is the part only the material sheet needs — it is a child of a
+   flex column, and it is the one child that gives way (the initial `flex`, against the `flex: none`
+   of its siblings) so the panel's own maximum cuts the region instead of being fought by a second
+   bound. `min-height: 0` is restated for the same reason: nothing of the region may keep it open. */
+.closing-materials-wrap { flex: 0 1 auto; min-height: 0; }
 .closing-materials + .closing-materials { border-top: 1px solid var(--border); }
 /* The material sheet of the compacted screen takes the row pitch back from the padding around its
    rows, never from the control: the counted input keeps its 44px touch minimum and the row around
