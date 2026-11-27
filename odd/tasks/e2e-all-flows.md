@@ -56,7 +56,7 @@ Qué tiene que hacer la migración cuando se encare, como feature propio y con r
 El defecto que esta sección difería quedó arreglado en su propio feature, `odd/tasks/rendicion-sin-tope-fijo.md`, y **no necesitó migración**: el 190 vivía solo en Go (`MaxCountLines`), nunca en el esquema. Lo que la base tenía era el límite de 190 variantes del catálogo, que `apps/api/migrations/028_catalog_operational_authority.sql:14` ya había borrado.
 
 - Se borró la constante y sus cuatro usos (`canonicalCount`, `loadCountLines`, `closingRecord`, `closingCorrectionPayloadRecord`): la planilla está acotada por el catálogo por construcción —una línea por variante, con la clave primaria `(closing_id, variant_id)` y la clave foránea a `catalog_variants` como único límite.
-- El único número que queda es el límite de transporte (32 KiB), y el tope del decodificador **se calcula desde él** (910 líneas), así que no pueden desalinearse.
+- El único número que queda es el límite de transporte (32 KiB), y el tope del decodificador **se calcula desde él** (862 líneas, no 910: son 32 768 bytes divididos por los 38 de la línea JSON más corta), así que no pueden desalinearse.
 - Siguen en pie los topes de entrada del operador: `MaxCounted`, `MaxObservation`, `MaxReason`, `MaxMaterialLines` y el de líneas de un documento de ajuste.
 - Test que lo prueba: `TestClosingsBranchAboveTheOldSheetBoundSettles` (192 variantes con stock), RED `503 service_unavailable` → GREEN.
 

@@ -19,6 +19,15 @@ T2 — Migración y constante alineadas al catálogo, con el contrato actualizad
 T3 — Test que abre, cuenta y cierra una rendición sobre una sucursal con más de 190 variantes con existencia, y prueba que la planilla trae todas. Commit `test(api): a branch above 190 in-stock variants settles`.
 T4 — Los specs de rendición vuelven a Sucursal B (o a la sucursal que elija el test) y el margen de Sucursal A deja de importar. Commit `test(e2e): the closing specs need no small branch`.
 
+## Pendientes que deja el arreglo
+
+Dos listas del mismo vertical siguen con un tope fijo, cada una con su propio contrato y fuera de estas specs:
+
+- `apps/web/src/closingsAPI.ts` (`expensesOf`, tope local `expenseMaxRows = 190`): el servidor publica los gastos de la ventana sin tope documentado, así que una sucursal con más de 190 gastos en el período volvería a rechazar su acta. Decisión aparte.
+- La planilla de **materiales** sigue en 190 (`MaxMaterialLines`, `closingMaxMaterialLines`), que coincide con el 1..190 de la *request* documentada pero no con una respuesta acotada: un período que compre más de 190 modelos o materiales se rechaza igual. La planilla de materiales no tiene batching en el cliente.
+
+Ninguno de los dos se tocó: son listas distintas de la planilla de stock y merecen su propia medición antes de cambiar nada.
+
 ## Log
 
 L1. User: "dale si dale con sucursal A pero eso debe quedar documentado que hay que hacer una migracion luego!"
