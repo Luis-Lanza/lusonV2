@@ -168,3 +168,94 @@ that is refused always names the live holder instead of reading an empty file,
 and releasing never erases a pid written by the next holder. The lock itself is
 kernel state, so it cannot go stale and a killed invocation never blocks the
 next one.
+
+## `preflight-warranty-open-claims.sql`
+
+A read-only question to answer **before** migration `076` is applied, of a
+database that already has `warranty_cases` (`065` applied): does a serial carry
+more than one open warranty claim?
+
+`076` creates the unique partial index `warranty_cases_one_open_claim` over the
+rows already stored — `upper(btrim(serial_number))` where
+`origin = 'warranty_claim'` and `phase <> 'closed'` — so a database that already
+holds two open claims for one serial refuses that migration. Which of the two is
+the real complaint is a person's decision; this script only reports the pairs
+that need it.
+
+```sh
+psql "$(cat /path/to/database_url)" -f scripts/preflight-warranty-open-claims.sql
+```
+
+Run it immediately before applying `076` — before `migrate initialize`, and
+before starting a server build that carries it — while the counters are stopped.
+It is one statement with two CTEs: no `INSERT`/`UPDATE`/`DELETE`, no temporary
+table, no function, no DDL, nothing that survives the session, and no extension
+beyond the ones the migrations already require. Two consecutive runs print the
+same rows, so it can be repeated until it is clean.
+
+### Reading the result
+
+* **`nothing to report: no serial has more than one open warranty claim`** — the
+  single line a clean database prints, and `076` will build its index. The line
+  is about serials with more than one open claim, never about the size of the
+  tray: a database with hundreds of open claims of hundreds of different
+  batteries prints exactly this line.
+* **One row per open claim of an offending serial** — normalized serial,
+  `case_id`, `case_number`, `phase`, `created_at`, `branch_location_id`,
+  `sale_id`, the serial as the counter typed it, and the declared failure. The
+  competing rows of one serial are adjacent, so they can be compared side by
+  side.
+* The key is `upper(btrim(serial_number))`, the exact expression `076` indexes,
+  so ` abc/1 ` and `ABC/1` are reported as one serial: that is the pair the
+  index would refuse.
+
+### A serial with two open claims
+
+Nothing in the script guesses between them: one of the two is a complaint a
+branch is answering to a client about, and being older, or having the lower id,
+is not evidence of which one is real.
+
+1. Read both cases — `GET /api/warranty-cases/{id}`, or the branch's tray and the
+   case history — and decide which one is the real complaint. A duplicate opened
+   by mistake is usually the pair with the same serial, the same sale and the
+   same declared failure minutes apart.
+2. Take the duplicate out of the open set through the API, in whatever order its
+   own phases allow (advance, resolve, release, deliver — a claim needs a loan
+   before it can leave the branch). The case keeps its history and nothing is
+   deleted.
+3. Re-run the script until it prints the nothing-to-report line, then apply
+   `076`.
+
+**Do not edit `076` to guess.** The migration is one index over the stored rows
+and a decision no SQL statement can make; applied migrations are immutable
+(`internal/db.readApplied` compares their checksum), and an index that dropped or
+picked one of the two rows would silently discard a case somebody is accountable
+for. Do not delete or rewrite the duplicate row either: warranty history is
+append-only, and the tray is what the branch answered the client with.
+
+### If it is skipped
+
+`076` fails as it builds the index, and startup fails with it: the server runs
+`bootstrap.Initialize` → `db.Apply` before serving anything, so it exits with
+`database initialization refused` and no route, login or tray is served until the
+duplicate is decided. The database's own error is SQLSTATE `23505`,
+`could not create unique index "warranty_cases_one_open_claim"`, with a
+`Key (upper(btrim(serial_number)))=(...) is duplicated` detail naming the serial.
+That detail is visible only to whoever ran the migration: the binaries print a
+sanitized refusal and never driver output, so the offending serial has to be
+found by running this script — the machine that failed does not name it.
+
+### What it does not catch
+
+* **Closed claims.** `phase = 'closed'` is outside the index by predicate. One
+  open claim plus five closed ones of the same serial is not reported and is not
+  a problem: a battery that failed twice is a new claim once its case closed.
+* **Claims of another origin.** A `stock_defect` carries no serial at all (`065`
+  forbids it) and the index names `origin = 'warranty_claim'`, so a finding on
+  the shelf never collides here and is never reported.
+* **A `NULL` serial.** `065` already forbids it on a claim, and a unique index
+  treats `NULL`s as distinct, so it cannot collide and is left out.
+* **Anything after it runs.** A claim opened between the preflight and the
+  migration is outside it: run the script right before applying `076`, not hours
+  earlier.
+* **Any other migration.** This file knows the one index of `076`.
