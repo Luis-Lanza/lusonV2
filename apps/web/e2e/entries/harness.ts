@@ -348,10 +348,27 @@ export async function openEntries(page: Page): Promise<void> {
   await expect(page.getByText('ALMACÉN / INGRESOS')).toBeVisible();
 }
 
-/** El rótulo de una opción del selector: el nombre del proveedor y lo que ofrece, como lo compone la pantalla. */
+/**
+ * El rótulo de una opción del selector: el nombre del proveedor y lo que ofrece, como lo compone la
+ * pantalla —el proveedor sin productos asignados también, porque el control lo publica así—.
+ */
 export function supplierOptionLabel(supplierName: string, offers: number): string {
-  return `${supplierName} · ${offers} ${offers === 1 ? 'producto' : 'productos'}`;
+  const count = offers === 0 ? 'Sin productos asignados'
+    : `${offers} ${offers === 1 ? 'producto' : 'productos'}`;
+  return `${supplierName} · ${count}`;
 }
+
+/**
+ * El rótulo exacto con el que el selector publica una fila de la lista del contrato: el nombre, lo que
+ * ofrece y, si el proveedor está retirado, la marca con la que la pantalla lo dice. La lista del contrato
+ * ordena los retirados al final, así que la comparación de opciones se hace contra esta misma forma.
+ */
+export function supplierOptionText(listed: ListedSupplier): string {
+  return supplierOptionLabel(listed.name, listed.offers) + (listed.retired ? ' · Retirado' : '');
+}
+
+/** La opción que no es un proveedor: la pantalla pide elegir uno antes de abrir un catálogo. */
+export const supplierPlaceholderOption = 'Elegí un proveedor';
 
 /**
  * El selector de proveedor del documento: la primera decisión, y sin ella nada se lee ni se guarda. Se
@@ -361,7 +378,16 @@ export function supplierSelect(page: Page): Locator {
   return page.locator('select#stock-supplier');
 }
 
-/** Uno de los proveedores que la pantalla publica en su única página, con lo que ofrece. */
+/**
+ * Los rótulos que el selector publica, en el orden en que los publica: la primera opción es el pedido de
+ * elegir uno y desde la segunda van los proveedores. Es lo que el operador puede elegir, leído del control
+ * y no del contrato, para poder contrastar los dos.
+ */
+export async function supplierOptions(page: Page): Promise<readonly string[]> {
+  return (await supplierSelect(page).locator('option').allTextContents()).map(text => text.trim());
+}
+
+/** Uno de los proveedores que la pantalla publica, con lo que ofrece y si está retirado. */
 export interface ListedSupplier {
   readonly id: number;
   readonly name: string;
@@ -385,11 +411,6 @@ export interface ListedSupplierPage {
 
 /** La página más ancha del contrato: la que la pantalla pide en cada paso de su lectura. */
 const supplierPageSize = 50;
-
-/** La primera página del selector, para probar qué proveedores quedan fuera de ella. */
-export async function screenSupplierPage(session: Session): Promise<ListedSupplierPage> {
-  return read<ListedSupplierPage>(session, `/api/suppliers?page=1&page_size=${supplierPageSize}`);
-}
 
 /**
  * Todas las páginas que el contrato publica de proveedores, leídas como las camina la pantalla: desde la

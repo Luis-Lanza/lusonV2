@@ -1,7 +1,8 @@
 import {
   addBattery, allListedSuppliers, arrangeBatterySupplier, catalogPanel, catalogRow, catalogRows, catalogSearch,
   chooseSupplier, confirmButton, documentPanel, draftQuantity, draftRow, draftTotals, expect, openEntries,
-  screenSupplierPage, supplierCatalog, supplierSelect, test, warehouseRole, warehouseSessionState,
+  supplierCatalog, supplierOptionText, supplierOptions, supplierPlaceholderOption, supplierSelect, test,
+  warehouseRole, warehouseSessionState,
 } from './harness';
 
 // El catálogo que el ingreso nombra es el del proveedor elegido: la pantalla es del Almacén.
@@ -19,12 +20,15 @@ test.use({ storageState: warehouseSessionState });
  * la lectura con la que se contrasta qué variante ofreció el proveedor. Este acto no escribe nada: el
  * borrador no toca el stock hasta confirmar, y por eso no hay documento que leer.
  *
- * El proveedor de la corrida ordena **último** por su nombre (`supplierName`, en el arnés), así que queda
- * fuera de la primera página de `GET /api/suppliers`. Ese es el defecto que esta prueba cubre: el selector
- * pedía una sola página de cincuenta y el operador no podía elegir a los proveedores que ordenaban
- * después. Se afirma primero, contra el contrato, que el proveedor no entra en esa primera página; después
- * que el selector ofrece su opción y que elegirla deja el documento con ese proveedor, y recién entonces
- * se recorre el catálogo. Ninguna otra aserción de este acto cambia.
+ * El selector de Ingresos tiene que publicar la lista **entera** de proveedores del contrato, no su primera
+ * página: el control pedía una sola página de cincuenta y el operador no podía elegir a los proveedores que
+ * ordenaban después. Ese es el defecto que esta prueba cubre, y se afirma donde se ve —en las opciones del
+ * control—: se leen todas las páginas publicadas y las opciones tienen que ser exactamente esas filas, en
+ * ese orden y con esos nombres. El proveedor de la corrida ordena **último** entre los activos por
+ * construcción (`supplierName`, en el arnés), así que elegirlo obliga a la lista a llegar hasta el final.
+ * En una base acumulada esta igualdad falla en voz alta si el selector lee una sola página; en una base
+ * fresca —once proveedores sembrados— sigue valiendo, porque la lista completa también entra en una.
+ * Ninguna otra aserción de este acto cambia.
  */
 
 test('la búsqueda en el catálogo del proveedor filtra sus productos y llena las líneas del documento',
@@ -36,16 +40,20 @@ test('la búsqueda en el catálogo del proveedor filtra sus productos y llena la
     const offered = await supplierCatalog(warehouse, supplier.supplierId, 'battery');
     expect(offered.map(item => item.variant_id)).toEqual([variant.variantId]);
 
-    // El proveedor que esta prueba elige no está en la primera página de la lista y ordena después de
-    // todos los que sí están: la base tiene más de una página, y la lista completa lo contiene.
-    const firstPage = await screenSupplierPage(warehouse);
-    expect(firstPage.total_suppliers).toBeGreaterThan(firstPage.page_size);
-    expect(firstPage.suppliers.map(listed => listed.id)).not.toContain(supplier.supplierId);
-    expect(firstPage.suppliers.every(listed => listed.name.toLowerCase() < supplier.supplierName.toLowerCase()))
-      .toBe(true);
-    expect((await allListedSuppliers(warehouse)).map(listed => listed.id)).toContain(supplier.supplierId);
+    // La lista completa que el operador tiene que poder elegir, leída del contrato página por página.
+    const published = await allListedSuppliers(warehouse);
+    const active = published.filter(listed => !listed.retired);
+    // El proveedor de la corrida es el último activo: el control tiene que llegar hasta él.
+    expect(active.at(-1)?.id).toBe(supplier.supplierId);
 
     await openEntries(page);
+    // Las opciones del selector son la lista publicada entera, con sus nombres y en su orden: la primera
+    // opción es el pedido de elegir un proveedor y las demás son las filas del contrato, retirados al final.
+    await expect(supplierSelect(page).locator('option')).toHaveCount(published.length + 1);
+    await expect.poll(() => supplierOptions(page)).toEqual([
+      supplierPlaceholderOption, ...published.map(listed => supplierOptionText(listed)),
+    ]);
+
     await chooseSupplier(page, warehouse, supplier.supplierId);
     // Elegirlo es un acto real: el contexto del documento queda con el proveedor que ordena último.
     await expect(supplierSelect(page)).toHaveValue(String(supplier.supplierId));

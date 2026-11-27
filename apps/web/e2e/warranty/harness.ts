@@ -15,7 +15,13 @@ import { sessionState, warehouseSessionState } from './sessions';
  * application's own modules, so a spec can never pass by agreeing with the code it is testing.
  */
 
-export const origin = 'http://127.0.0.1:8080';
+/**
+ * The one origin every spec arranges data on: the API session below, the second browsers of the tray and
+ * the desk, and the `baseURL` of `playwright.config.ts`, which reads the same variable with the same
+ * default. `scripts/test-e2e.sh` states it for the server it starts on a port it chose itself; a run that
+ * states nothing keeps driving the local server of every documented command, `http://127.0.0.1:8080`.
+ */
+export const origin = process.env.LUSON_E2E_ORIGIN?.trim() || 'http://127.0.0.1:8080';
 
 export interface Role {
   readonly username: string;

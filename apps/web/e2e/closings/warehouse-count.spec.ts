@@ -9,12 +9,22 @@ import {
  *
  * La planilla arranca coincidiendo con el sistema, y el operador escribe sólo las variantes que contó
  * distintas. La prueba cuenta una batería de más, lee la diferencia en la fila y en la barra, guarda el
- * borrador y contrasta el número con el que el documento persiste. Antes de contar afirma la planilla
- * entera de la sucursal grande —una línea por variante con existencia, más de las 190 que antes la
- * truncaban (S1)—, porque un conteo sobre una planilla recortada no probaría nada. Después devuelve la
- * fila al sistema antes de cerrar, así el cierre de la prueba no mueve la góndola de la sucursal: lo
- * contado es exactamente lo que el sistema ya tenía (S4).
+ * borrador y contrasta el número con el que el documento persiste. Antes de contar afirma la regla de la
+ * planilla entera de la sucursal grande: una línea por **cada** variante con existencia, sin faltar una
+ * —la cobertura, que es la dirección que importa—, porque un conteo sobre una planilla recortada no
+ * probaría nada. El tamaño no se exige: la prueba de que una planilla por encima del viejo tope de 190
+ * líneas se lee entera vive en `TestClosingsBranchAboveTheOldSheetBoundSettles` (apps/api/internal/httpapi),
+ * donde armar 190+ variantes con existencia es trabajo del fixture efímero y no de esta base. Después
+ * devuelve la fila al sistema antes de cerrar, así el cierre de la prueba no mueve la góndola de la
+ * sucursal: lo contado es exactamente lo que el sistema ya tenía (S4).
  */
+
+/**
+ * El tope de líneas que el servidor aplicaba a la planilla antes de S1 (`MaxCountLines`). La migración 028
+ * lo soltó del catálogo y la planilla no tiene tope propio: se afirma sólo cuando esta sucursal pasa ese
+ * tamaño por sí sola, nunca como requisito de la prueba.
+ */
+const oldSheetBound = 190;
 
 freeBranch();
 
@@ -28,12 +38,17 @@ test('el Almacén cuenta una variante, la planilla muestra la diferencia y el bo
     const opened = await arrangedOpen(warehouse, branch, knownBranchId);
 
     // La planilla es la del catálogo y no la de un tope (S1): una línea por variante con existencia, sin
-    // recortes, y esta sucursal tiene más de las 190 que antes truncaban la lectura.
+    // faltar una. Esa cobertura es lo que esta base puede afirmar; el tamaño lo afirma el test de Go
+    // `TestClosingsBranchAboveTheOldSheetBoundSettles`, que arma 190+ variantes sobre el fixture efímero y
+    // corre el cierre entero arriba de ese tope. Acá el viejo tope se afirma sólo si esta sucursal lo pasa
+    // por su propio tamaño, nunca como requisito: exigirlo sería afirmar el tamaño de la base, no la regla.
     const shelf = await stockOf(warehouse, knownBranchId);
     const inStock = [...shelf].filter(([, existing]) => existing > 0).map(([variant]) => variant);
     const sheet = new Set(opened.count_lines.map(row => row.variant_id));
     expect(inStock.filter(variant => !sheet.has(variant))).toEqual([]);
-    expect(opened.count_lines.length).toBeGreaterThan(190);
+    if (inStock.length > oldSheetBound) {
+      expect(opened.count_lines.length).toBeGreaterThan(oldSheetBound);
+    }
 
     // La fila que esta prueba cuenta: una batería con existencia esperada en el corte.
     const line = opened.count_lines.find(row => row.expected_quantity > 0 && row.brand !== undefined);

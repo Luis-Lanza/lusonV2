@@ -152,6 +152,25 @@ The seam check reports as skipped in CI for the same reason: it needs a capture
 produced by a Go test against that fixture. Skipped is reported as skipped,
 never as passed, and it is strict whenever the capture is supplied.
 
+### Nightly browser suite
+
+`.github/workflows/e2e.yml` runs the whole Playwright suite of `apps/web/e2e`
+once a night and on demand, through `./scripts/test-e2e.sh`. One command brings
+the cycle up and down: an ephemeral PostgreSQL with its data directory on a
+tmpfs, the migrations to the head of `apps/api/migrations`, the three accounts
+over a private controlling terminal, the frontend build, the API on the origin
+the suite drives, the suite itself, and a teardown that stops the API and drops
+the database even when a spec fails.
+
+It is deliberately **not** part of `verify.yml`: it boots a real server, a real
+PostgreSQL and a real Chromium, mutates stock in every spec and takes far longer
+than the pull-request gates, so it runs nightly instead of per pull request. It is
+also not a substitute for `make test-pg`: the Go suites prove migrations and
+queries under the audited fixture admission, and this one proves screens against
+a single database. See [the nightly end-to-end suite](docs/e2e-nightly.md) for how
+to run it locally, how it chooses the loopback origin it serves, and what it does
+not cover.
+
 ## Historical L01–L05 verification status
 
 L01–L04 independently passed; their PostgreSQL bindings are historical and
