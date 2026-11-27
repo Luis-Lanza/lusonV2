@@ -21,11 +21,10 @@ T4 — Los specs de rendición vuelven a Sucursal B (o a la sucursal que elija e
 
 ## Pendientes que deja el arreglo
 
-Dos listas del mismo vertical siguen con un tope fijo, cada una con su propio contrato y fuera de estas specs:
+Una lista del mismo vertical sigue con un tope fijo, con su propio contrato y fuera de estas specs; la otra ya se cerró:
 
 - `apps/web/src/closingsAPI.ts` (`expensesOf`, tope local `expenseMaxRows = 190`): el servidor publica los gastos de la ventana sin tope documentado, así que una sucursal con más de 190 gastos en el período volvería a rechazar su acta. Decisión aparte.
-- La planilla de **materiales** sigue en 190 (`MaxMaterialLines`, `closingMaxMaterialLines`), que coincide con el 1..190 de la *request* documentada pero no con una respuesta acotada: un período que compre más de 190 modelos o materiales se rechaza igual. La planilla de materiales no tiene batching en el cliente.
-
+- **Resuelto: la planilla de materiales ya no tiene tope.** `MaxMaterialLines` y `closingMaxMaterialLines` fueron borrados, y el único techo es el de transporte, derivado del cuerpo de 32 KiB igual que el de la planilla de stock (`closingsMaterialLineCeiling`, 642 líneas: el límite sobre los 51 bytes de la línea más corta). La lista está acotada por la propia planilla: una línea por modelo y por material que el período compró. Test: `TestClosingsMaterialSheetAboveTheOldBoundCounts` abre una rendición sobre un período con 191 modelos comprados, envía las 191 líneas en un cuerpo (RED: `400 invalid_request`) y comprueba que un cuerpo por encima del límite de transporte se rechaza entero sin escribir nada. El `1..190` de `003_pending_requests.sql` **no** era este tope: guarda los ítems de una solicitud de transferencia (`transfer_request_items`) y no se tocó. Contrato al día en `apps/api/docs/closings.md`.
 Ninguno de los dos se tocó: son listas distintas de la planilla de stock y merecen su propia medición antes de cambiar nada.
 
 ## Log

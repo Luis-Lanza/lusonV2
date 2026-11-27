@@ -258,10 +258,6 @@ const (
 	MaxCounted     = 1_000_000
 	MaxObservation = 1000
 	MaxReason      = 1000
-	// MaxMaterialLines is the bound of one material count, which is the bound the count sheet of
-	// the stock admits (S8): the sheet of a period holds one line per model and per material it
-	// bought, and a request states at most that many lines at once.
-	MaxMaterialLines = 190
 	// MaxDescription is the bound of the description of an expense, which is the database's
 	// own: the ledger admits between 1 and 500 characters once trimmed (S12), and from 061 the
 	// note of an expense may also be empty when the row names a motive (S3).
@@ -612,11 +608,18 @@ type MaterialLine struct {
 	Delivered  *Quantity       `json:"delivered_quantity"`
 }
 
-// canonicalMaterials admits the counted sheet of one request: one to MaxMaterialLines lines, each
-// naming one row of the sheet once, with the key its kind names and the canonical quantity of its
-// unit. The lines are copied in the caller's order; the caller's slice is never modified.
+// canonicalMaterials admits the counted sheet of one request: one or more lines, each naming one row
+// of the sheet once, with the key its kind names and the canonical quantity of its unit. The sheet has
+// no line bound of its own and this function states none, for the same reason the count sheet of the
+// stock states none: a line names one model or one material, the caller's list is refused a repeated
+// key, and the sheet of the opening carries exactly one line per model and per material the period
+// bought (seed_closing_material_lines, 045), so the catalogue's models plus the reference table of
+// materials are the bound -- and a count can name no key the sheet does not already carry. A number
+// copied here would be a bound the catalogue outgrows: the number this contract carried was the 190
+// lines of the count sheet, which the catalogue already left behind. What remains is the body limit of
+// the request. The lines are copied in the caller's order; the caller's slice is never modified.
 func canonicalMaterials(counted []MaterialCounted) ([]MaterialCounted, error) {
-	if len(counted) < 1 || len(counted) > MaxMaterialLines {
+	if len(counted) < 1 {
 		return nil, ErrInvalid
 	}
 	seen := make(map[string]bool, len(counted))

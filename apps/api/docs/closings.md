@@ -469,13 +469,20 @@ POST /api/closings/1/materials
   `delivered_quantity` are not part of it at all — the first is the fact of the opening and the
   other two are derived from it — so a blinded count of this sheet cannot even be expressed,
   exactly like the count sheet of the stock.
-* `lines` holds 1 to 190 entries, one per line of the sheet, each with the one key its kind names
+* `lines` holds one or more entries, one per line of the sheet, each with the one key its kind names
   (`model` for a used line and `material_id` for a scrap one, and never both) and a
   `counted_quantity` that is the canonical text of that kind's unit: a whole number of units for a
   used line and kilograms with exactly three decimals for a scrap one, which is the scale the
   weight of a purchase already stores. A quantity of the other scale — `"7.5"` for a battery or
   `"12.5"` for a kilogram — is `400 invalid_request`, and so is a JSON number, a padded or
   negative value, a material outside the reference table and a key stated twice.
+* What bounds a count of materials is the sheet itself and never a copied number: the sheet holds one
+  line per model and per material the period bought, so the purchases of the window are its only
+  ceiling, and a count can name no key the sheet does not already carry. The 190 lines this contract
+  used to state were the count sheet's number, which the catalogue had already outgrown. A body is
+  still a request of this API and stays inside the transport limit of 32 KiB, which is 642 material
+  lines — the body limit over the 51 bytes the shortest line of this contract takes
+  (`{"kind":"used","model":"A","counted_quantity":"0"},`).
 * A line that already exists only changes its counted quantity, and a line the period did not buy
   is added with an expected quantity of **zero**, which is the database's own fact of the opening
   for that key and never a promise of the client. A line the request does not state keeps the count

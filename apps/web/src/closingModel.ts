@@ -619,12 +619,6 @@ export function closingMaterialUnitOf(kind: ClosingMaterialKind): ClosingMateria
   return kind === 'scrap' ? 'kg' : 'unit';
 }
 
-/**
- * The bound of one request of the *material* sheet, which is the one the server states as 1 to 190
- * entries. It is a request and not a sheet: the count sheet of the stock has no line bound of its own
- * (S1, S2) and is the one this client batches.
- */
-export const closingMaxMaterialLines = 190;
 /** The range of a material id, which is the smallint of the reference table. */
 export const closingMaxMaterialID = 32767;
 
