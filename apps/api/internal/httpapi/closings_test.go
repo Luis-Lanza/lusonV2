@@ -3705,6 +3705,69 @@ func TestClosingsMaterialSheetAndItsDraft(t *testing.T) {
 		`{"error":"count_frozen"}`)
 }
 
+// TestClosingsMaterialSheetAboveTheOldBoundCounts pins the rule the material sheet shares with the
+// count sheet: the sheet of a period is one line per model and per material the branch bought, so it
+// states no line bound of its own. The branch buys used batteries of more models than the 190 lines
+// this contract used to carry and the whole sheet is counted in one request: the count is taken and
+// every line keeps exactly what it was counted with.
+func TestClosingsMaterialSheetAboveTheOldBoundCounts(t *testing.T) {
+	f := closingFixture(t)
+	// The bootstrap settlement of branch 2 closes and leaves the purchase fund the 191 purchases below
+	// spend from, so the purchases that follow fall inside the window of the next period.
+	f.closeSettlement(t, 2, `{"counted_cash":"0.00","contributed_cash":"3000.00",`+
+		`"closing_cash":"3000.00","observation":"arranque de la sucursal"}`)
+	const models = 191
+	for i := 0; i < models; i++ {
+		f.buyUsed(t, fmt.Sprintf("closings-materials-bound-%03d", i),
+			fmt.Sprintf("TALON-%03d", i), 1, "10.00")
+	}
+	id := f.open(t, 2)
+	opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	// The premise: the period bought more models than the line bound this contract carried.
+	if len(opened.MaterialLines) <= 190 {
+		t.Fatalf("the sheet must take the period above 190 lines: %d", len(opened.MaterialLines))
+	}
+	// The whole sheet in one request, which is what the warehouse does when every line agrees.
+	counted := map[string]string{}
+	parts := make([]string, 0, len(opened.MaterialLines))
+	for i, line := range opened.MaterialLines {
+		if line.Kind != "used" || line.Model == nil {
+			t.Fatalf("every line of this period is a used model: %+v", line)
+		}
+		quantity := fmt.Sprintf("%d", i%3)
+		counted[*line.Model] = quantity
+		parts = append(parts, fmt.Sprintf(`{"kind":"used","model":%q,"counted_quantity":%q}`,
+			*line.Model, quantity))
+	}
+	saved := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/materials", id),
+		`{"lines":[`+strings.Join(parts, ",")+`]}`)), 200)
+	if len(saved.MaterialLines) != len(opened.MaterialLines) {
+		t.Fatalf("the count must keep the whole sheet: %d lines (want %d)",
+			len(saved.MaterialLines), len(opened.MaterialLines))
+	}
+	for _, line := range saved.MaterialLines {
+		if line.Counted == nil || *line.Counted != counted[*line.Model] {
+			t.Fatalf("the line of %q must keep the count it was counted with: %+v", *line.Model, line)
+		}
+	}
+	// The one bound left is the transport limit of the body: a list longer than the 32 KiB a request
+	// can carry is refused whole, and the sheet keeps every count it already had.
+	oversized := make([]string, 0, 800)
+	for i := 0; i < 800; i++ {
+		oversized = append(oversized, fmt.Sprintf(`{"kind":"used","model":%q,"counted_quantity":"1"}`,
+			fmt.Sprintf("LARGA-%03d-%s", i, strings.Repeat("A", 20))))
+	}
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/materials", id),
+		`{"lines":[`+strings.Join(oversized, ",")+`]}`), 400, `{"error":"invalid_request"}`)
+	kept := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	for _, line := range kept.MaterialLines {
+		if line.Counted == nil || *line.Counted != counted[*line.Model] {
+			t.Fatalf("a refused body must write nothing: the line of %q is %+v", *line.Model, line)
+		}
+	}
+}
+
 // TestClosingsMaterialSheetOfAPeriodWithoutPurchases pins the empty side of S7 over HTTP: a period
 // that bought nothing publishes an empty sheet rather than a missing one, so a client always reads
 // the key and never has to tell an absent sheet from a period with no material.

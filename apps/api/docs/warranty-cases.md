@@ -140,6 +140,10 @@ POST /api/warranty-cases/claims
   case-folded serial, so ` abc/1 ` and `ABC/1` are one battery. The refusal is the database's own
   (a unique partial index over the open claims, `076`), so two counters pressing at once cannot both
   open a case. A `closed` case never blocks the next claim: a battery that failed twice is a new case.
+* A database that already held two open claims of one serial when `076` first
+  arrives refuses that migration, so the preflight in
+  `scripts/preflight-warranty-open-claims.sql` reports those serials before the
+  migration runs and a person decides which claim is real (`scripts/README.md`).
 * The term counts from the sale's own date and never restarts, so a factory replacement does not
   renew it.
 * Only the branch opens a claim: the warehouse is `403 forbidden`.

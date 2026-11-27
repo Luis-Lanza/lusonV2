@@ -5,7 +5,17 @@
    left and the settlement numbers stay fixed on the right, so the admin never scrolls between
    them. */
 
-.closing-workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.closing-workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0;
+  /* The two bands the action bar needs, stated once for the whole screen: the sticky top the rail
+     already keeps below the shell's header, and the room the bar reserves at the bottom of the
+     viewport. The shell reserves the room of its bottom bar the same way (`style.css` `.warehouse`
+     padding-bottom, `stock-entry.css` `.warehouse:has(.bottom-nav)`), and the artboard of this
+     screen leaves 96px under it (`design/rendicion-caja-y-chatarra/03-chatarra-guiada.html`). */
+  --closing-sticky-top: 72px; --closing-bar-room: 96px; }
+/* The bar is the same one for the whole workspace and it is never moved or restyled: the workspace
+   keeps its room at its end, so the last row of a sheet is scrolled clear of it instead of ending
+   under it. */
+.closing-workspace:has(.closing-bar) { padding-bottom: var(--closing-bar-room); }
 .closing-workspace h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; overflow-wrap: anywhere; }
 .closing-workspace h2 { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
 .closing-workspace p { margin: 0; }
@@ -54,7 +64,19 @@
 kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px; border: 1px solid var(--border);
   border-bottom-width: 2px; border-radius: 3px; background: white; color: var(--muted); }
 
-.closing-table-wrap { overflow-x: auto; }
+/* Every long sheet of the screen scrolls inside its own region: the count sheet of the batteries,
+   the corrections of a closed settlement and the same tables on the branch's side sit in this
+   wrapper, so the wrapper is the bounded region. The header the tables already declare sticky
+   (`.closing-table th`, below) then sticks to its top while the rows pass under it, instead of the
+   table running down the page. The treatment is the material sheet's own, moved here so every
+   sheet of the screen uses one rule: a height bound of the viewport's 60%, vertical scrolling, and
+   the platform's overlay scrollbar — which only shows on hover — stated as a thin classic one in
+   the convention the rest of the app already styles (`stock-entry.css`: `scrollbar-width` +
+   `scrollbar-color`, with no `::-webkit-scrollbar` rule), its gutter reserved so the rows never
+   shift as it appears. The bound is a maximum, never a height: a short sheet keeps its natural
+   height and gains no dead band under its last row. */
+.closing-table-wrap { overflow-x: auto; overflow-y: auto; max-height: 60vh;
+  scrollbar-width: thin; scrollbar-color: var(--muted) var(--page); scrollbar-gutter: stable; }
 .closing-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .closing-table th { position: sticky; top: 0; height: 40px; padding: 0 12px; background: white;
   color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
@@ -107,7 +129,7 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   border-color: #CCAAAA; color: #991515; background: white; }
 
 /* The rail: fixed beside the sheet at desktop widths, and below it when there is no room. */
-.closing-rail { position: sticky; top: 72px; align-self: start; min-width: 0; }
+.closing-rail { position: sticky; top: var(--closing-sticky-top); align-self: start; min-width: 0; }
 .closing-group { padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .closing-group:last-child { border-bottom: 0; }
 .closing-group h2 { margin-bottom: 10px; }
@@ -196,6 +218,31 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
 .closing-balances .zero { color: var(--muted); }
 .closing-balances .mixed { color: #805400; }
 
+/* The compacted warehouse screen. The heading promises that "los números del cierre quedan siempre
+   a la vista", and on a 1440x900 viewport the strip of three balances —account, reading, detail on
+   their own three lines— plus the room the panel head, the shelf paragraph and the table's own row
+   pitch took left the material sheet with three of its rows above the action bar. Each account
+   keeps its three parts in a two-line card (the account and its reading on the first line, what the
+   reading is made of on the second, one type and one padding step smaller), nothing is hidden, no
+   card is folded behind a toggle and nothing moves below the tabs; the detail keeps its own line so
+   the card is the same height counted or not, and the card keeps the file's 44px touch minimum.
+   The column count stays the strip's own (three above 768px, one below), so a narrow viewport still
+   stacks the three balances instead of squeezing them. The rules are scoped to this screen: the
+   branch's decision screen renders the same strip and the same panel head, and it keeps them as
+   they are. */
+.closing-workspace-compact { gap: 10px; }
+.closing-workspace-compact .closing-balances .closing-balance { display: flex; flex-wrap: wrap;
+  align-items: baseline; justify-content: flex-start; gap: 0 8px; min-height: 44px; padding: 6px 12px; }
+.closing-workspace-compact .closing-balances small { font-size: 11px; line-height: 14px; }
+.closing-workspace-compact .closing-balances strong { font-size: 14px; line-height: 18px; }
+.closing-workspace-compact .closing-balances em { flex-basis: 100%; font-size: 11px; line-height: 14px; }
+/* The heading and the scope of the branch are one line each over a sentence of help: they lose the
+   type step and the padding the sheet needs more than they do, and they stay where they are. */
+.closing-workspace-compact .closing-heading h1 { font-size: 20px; }
+.closing-workspace-compact .closing-heading p { font-size: 12px; line-height: 16px; }
+.closing-workspace-compact .closing-scope { padding: 8px 16px; }
+.closing-workspace-compact .closing-materials-panel .closing-panel-head { padding: 10px 20px; }
+
 .closing-tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--border); }
 .closing-tabs button { appearance: none; min-height: 44px; padding: 12px 14px; border: 0;
   border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
@@ -208,8 +255,35 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* The material sheet: the two kinds of the third account, each with its total row when it has more
-   than one line, and the delivery reading under them (S7, S8, S9). */
+   than one line, and the delivery reading under them (S7, S8, S9). The sheet has no line bound of
+   its own, so each table sits in the wrapper the count sheet uses, bounded in height: a long kind
+   scrolls inside its own region, header stuck to its top, instead of pushing the page down.
+   The workspace's sticky action bar is the same bar for the whole screen and keeps the bottom band
+   of the viewport, so the panel ends above it: the panel is bounded by the room the viewport leaves
+   between that sticky top and the bar's own room, and each region takes what the panel has left. */
+.closing-materials-panel { display: flex; flex-direction: column;
+  max-height: calc(100dvh - var(--closing-sticky-top) - var(--closing-bar-room)); }
+/* Everything the sheet states above and below its regions keeps its own height; only the regions
+   give way, so their end is always reachable without being left under the bar (S7, S8). */
+.closing-materials-panel > :not(.closing-materials-wrap) { flex: none; }
+/* The height bound, the vertical scrolling and the scrollbar are no longer stated here: this
+   wrapper is also a `.closing-table-wrap` and takes them from that one rule, so there is a single
+   height in the file. What is left is the part only the material sheet needs — it is a child of a
+   flex column, and it is the one child that gives way (the initial `flex`, against the `flex: none`
+   of its siblings) so the panel's own maximum cuts the region instead of being fought by a second
+   bound. `min-height: 0` is restated for the same reason: nothing of the region may keep it open. */
+.closing-materials-wrap { flex: 0 1 auto; min-height: 0; }
 .closing-materials + .closing-materials { border-top: 1px solid var(--border); }
+/* The material sheet of the compacted screen takes the row pitch back from the padding around its
+   rows, never from the control: the counted input keeps its 44px touch minimum and the row around
+   it keeps a single pixel, so each line of a long sheet costs 47px instead of 55. The caption that
+   names each kind loses the same slack, and the two paragraphs that read the sheet under the region
+   are one block: the same band, the same words, one rule between them instead of two. */
+.closing-workspace-compact .closing-materials-table caption { padding: 8px 12px 2px; }
+.closing-workspace-compact .closing-materials-table td { height: 44px; padding: 1px 12px; }
+.closing-workspace-compact .closing-materials-table .count { min-height: 44px; }
+.closing-workspace-compact .closing-materials-panel > .closing-help + .closing-help
+  { border-top: 0; padding-top: 6px; }
 .closing-materials-table caption { padding: 12px 12px 4px; color: var(--muted); font-size: 11px;
   font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
 .closing-materials-table tfoot td { border-bottom: 0; font-weight: 700; }
@@ -239,6 +313,11 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
 @media (max-width: 767px) {
   .closing-balances { grid-template-columns: minmax(0, 1fr); }
   .closing-tabs button { flex: 1 1 auto; }
+  /* The mobile column stacks the bar's two halves, so its own bar takes the room the shell reserves
+     for the bottom bar it replaces (`stock-entry.css`: 140px), and the sheet panel keeps its natural
+     height: this column has no sticky top of its own to measure the panel against. */
+  .closing-workspace { --closing-bar-room: 140px; }
+  .closing-materials-panel { display: block; max-height: none; }
 }
 
 /* The branch's side of the settlement (design/rendicion-de-cuentas/04-decision-sucursal.html):

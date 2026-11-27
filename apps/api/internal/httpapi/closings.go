@@ -113,6 +113,13 @@ const (
 	closingsShortestCountLine = len(`{"variant_id":1,"counted_quantity":0},`)
 	// closingsCountLineCeiling is how many counted lines one body of the limit above can carry.
 	closingsCountLineCeiling = closingsBodyLimit / closingsShortestCountLine
+	// closingsShortestMaterialLine is the fewest bytes one counted material line can take on the
+	// wire, for the same reason: the material sheet of a period holds one line per model and per
+	// material it bought and states no bound of its own -- the purchases of the window bound it (see
+	// canonicalMaterials) -- so the transport limit is the one number that can bind the list.
+	closingsShortestMaterialLine = len(`{"kind":"used","model":"A","counted_quantity":"0"},`)
+	// closingsMaterialLineCeiling is how many material lines one body of the limit above can carry.
+	closingsMaterialLineCeiling = closingsBodyLimit / closingsShortestMaterialLine
 	// closingsFirstBranch is the first branch id. The warehouse is location 1 and never
 	// settles itself, so a branch below this is not a branch at all.
 	closingsFirstBranch = 2
@@ -806,15 +813,17 @@ func decodeClosingMaterials(r *http.Request) ([]closings.MaterialCounted, error)
 
 // closingMaterialLines reads the counted lines of that sheet: exact names, presence, types and
 // duplicate keys at every object level, the one key the kind names, and the canonical quantity of
-// its unit. One request states at most MaxMaterialLines lines, which is the bound of a count of the
-// stock, and the request is accepted or refused whole.
+// its unit. The sheet states no line bound of its own -- one line per model and per material the
+// period bought -- so no number of lines is refused here either: the array cap is derived from the
+// body limit of the request, so the two can never disagree and neither of them is a sheet size
+// copied from another file. The request is accepted or refused whole.
 func closingMaterialLines(d *json.Decoder) ([]closings.MaterialCounted, error) {
 	if !closingDelimiter(d, '[') {
 		return nil, closings.ErrInvalid
 	}
 	lines := make([]closings.MaterialCounted, 0)
 	for d.More() {
-		if len(lines) >= closings.MaxMaterialLines || !closingDelimiter(d, '{') {
+		if len(lines) >= closingsMaterialLineCeiling || !closingDelimiter(d, '{') {
 			return nil, closings.ErrInvalid
 		}
 		var line closings.MaterialCounted

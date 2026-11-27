@@ -14,8 +14,8 @@ import {
   closingMaterialWireText, closingMoneyText,
   closingMomentText, closingPendingCorrection, closingPeriod, closingPeriodLabel, closingRail,
   closingRateText, closingRoundStateLabel, closingSheetChanges, closingSignedText,
-  closingStatusLabels, closingAcceptanceMismatchMessage, closingTabAfter, closingTabLabels,
-  closingTabMarker, closingTabOrder, closingTabsLabel,
+  closingStatusLabels, closingAcceptanceMismatchMessage, closingOfferedTabs, closingTabAfter,
+  closingTabLabels, closingTabMarker, closingTabsLabel,
   emptyMaterialDraft,
   type Closing, type ClosingAcceptance, type ClosingRail, type ClosingStockChange,
   type ClosingTab,
@@ -85,8 +85,9 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   answering.current = busy || motive.trim() !== '' || correctionMotive.trim() !== '';
   // The frame that arrived while the branch was answering: it waits here instead of being lost.
   const waiting = useRef(false);
-  // The roving tab index of the two tabs, the same one the purchases screen uses.
-  const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>({ caja: null, chatarra: null });
+  // The roving tab index of the tabs, the same one the purchases screen uses.
+  const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>(
+    { caja: null, chatarra: null, correcciones: null });
 
   useEffect(() => {
     const flight = lifetime.current;
@@ -232,6 +233,12 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const pendingCorrection = closing === null ? null : closingPendingCorrection(closing);
   const correctionPreview = closing === null ? null : closingCorrectionPreview(closing);
   const acceptedCorrections = closing === null ? [] : closingAcceptedCorrections(closing);
+  // The corrections tab exists only when this screen has a correction to read: a live settlement and
+  // a closed one without corrections keep the two tabs they always had (S16).
+  const offeredTabs = closingOfferedTabs(closing !== null && closing.corrections.length > 0);
+  // A selection left on a tab this settlement does not offer falls back to the drawer, so one panel
+  // is always the one the branch is reading.
+  const activeTab: ClosingTab = offeredTabs.includes(tab) ? tab : 'caja';
   const correctedAmounts = closing === null ? [] : closingCorrectedAmounts(closing);
   const correctedCounts = closing === null ? [] : closingCorrectedCounts(closing);
   const canRejectCorrection = !busy && correctionMotive.trim() !== '';
@@ -267,9 +274,9 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
     materials: materialReading,
   });
 
-  /** The arrows move the two tabs of the decision, exactly like the purchases tabs. */
+  /** The arrows move the tabs this settlement offers, exactly like the purchases tabs. */
   function moveTab(event: KeyboardEvent<HTMLDivElement>) {
-    const next = closingTabAfter(tab, event.key);
+    const next = closingTabAfter(activeTab, event.key, offeredTabs);
     if (next === null) return;
     event.preventDefault();
     setTab(next);
@@ -310,6 +317,44 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
         && <p className="closing-readonly">{closing.status === 'closed'
           ? 'La rendición ya está cerrada y no tiene una corrección esperando tu decisión: el Almacén no puede reabrirla.'
           : readiness.reason}</p>}
+
+      {balances.length > 0 && <>
+        {/* S13: the branch confirms the three accounts before accepting, and every balance leads to
+            the tab it belongs to. No money figure and no kilogram is ever added to another. */}
+        <div className="closing-balances" role="group" aria-label={closingBalancesLabel}>
+          {balances.map(balance => <button key={balance.key} type="button"
+            className={`closing-balance ${balance.tone}`} aria-pressed={activeTab === balance.tab}
+            onClick={() => setTab(balance.tab)}>
+            <small>{balance.label}</small>
+            <strong className={balance.tone}>{balance.value}</strong>
+            <em>{balance.detail}</em>
+          </button>)}
+        </div>
+
+        {/* The tabs are navigation over the one document (S10). The corrections tab joins them only
+            when this screen has a correction to read, and it states on the tab itself the correction
+            that waits for the branch (S16). */}
+        <div className="closing-tabs" role="tablist" aria-label={closingTabsLabel} onKeyDown={moveTab}>
+          {offeredTabs.map(key => {
+            const marker = closingTabMarker(balances, key, pendingCorrection);
+            return <button key={key} type="button" role="tab" id={`closing-decision-tab-${key}`}
+              aria-selected={activeTab === key} aria-controls={`closing-decision-panel-${key}`}
+              tabIndex={activeTab === key ? 0 : -1}
+              ref={element => { tabButtons.current[key] = element; }}
+              onClick={() => setTab(key)}>
+              {closingTabLabels[key]}
+              {marker !== null && <span className="closing-tab-marker">{marker}</span>}
+            </button>;
+          })}
+        </div>
+      </>}
+
+      {/* The corrections of a closed settlement: their own tab, so the sheets keep the room they
+          need while the branch reads the offer. The panels are the ones that used to sit above the
+          tabs, and the tab that carries them says so while a correction waits (S16). */}
+      {closing.corrections.length > 0 && <div id="closing-decision-panel-correcciones"
+        role="tabpanel" aria-labelledby="closing-decision-tab-correcciones"
+        hidden={activeTab !== 'correcciones'}>
 
       {pendingCorrection !== null && correctionPreview !== null
         && <section className="closing-panel closing-correction" aria-labelledby="closing-correction-pending">
@@ -453,39 +498,12 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
               && <small>Aceptada por {closingAccountLabel(entry.decided_by_account_id)} el {closingMomentText(entry.decided_at)}</small>}
           </li>)}</ol>
         </section>}
-
-      {balances.length > 0 && <>
-        {/* S13: the branch confirms the three accounts before accepting, and every balance leads to
-            the tab it belongs to. No money figure and no kilogram is ever added to another. */}
-        <div className="closing-balances" role="group" aria-label={closingBalancesLabel}>
-          {balances.map(balance => <button key={balance.key} type="button"
-            className={`closing-balance ${balance.tone}`} aria-pressed={tab === balance.tab}
-            onClick={() => setTab(balance.tab)}>
-            <small>{balance.label}</small>
-            <strong className={balance.tone}>{balance.value}</strong>
-            <em>{balance.detail}</em>
-          </button>)}
-        </div>
-
-        <div className="closing-tabs" role="tablist" aria-label={closingTabsLabel} onKeyDown={moveTab}>
-          {closingTabOrder.map(key => {
-            const marker = closingTabMarker(balances, key);
-            return <button key={key} type="button" role="tab" id={`closing-decision-tab-${key}`}
-              aria-selected={tab === key} aria-controls={`closing-decision-panel-${key}`}
-              tabIndex={tab === key ? 0 : -1}
-              ref={element => { tabButtons.current[key] = element; }}
-              onClick={() => setTab(key)}>
-              {closingTabLabels[key]}
-              {marker !== null && <span className="closing-tab-marker">{marker}</span>}
-            </button>;
-          })}
-        </div>
-      </>}
+      </div>}
 
       <div className="closing-layout">
         <div>
           <div id="closing-decision-panel-caja" role="tabpanel"
-            aria-labelledby="closing-decision-tab-caja" hidden={tab !== 'caja'}>
+            aria-labelledby="closing-decision-tab-caja" hidden={activeTab !== 'caja'}>
           <section className="closing-panel" aria-labelledby="closing-decision-changes">
             <header className="closing-panel-head">
               <h2 id="closing-decision-changes">Qué cambia si aceptás</h2>
@@ -600,7 +618,7 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
           {/* The other tab of the same document: the envelope the branch accepts and the material
               sheet the warehouse counted, both read-only and both inside the one acceptance (S9, S10). */}
           <div id="closing-decision-panel-chatarra" role="tabpanel"
-            aria-labelledby="closing-decision-tab-chatarra" hidden={tab !== 'chatarra'}>
+            aria-labelledby="closing-decision-tab-chatarra" hidden={activeTab !== 'chatarra'}>
           {/* The second envelope the branch accepts, read-only: the warehouse counts it and leaves the
               amount that opens the next period; here the branch reads what it is accepting of it and
               what its purchase fund becomes (S1, S5, S6). */}

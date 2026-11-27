@@ -599,6 +599,26 @@ describe('the transport of the warehouse side', () => {
     expect(new Headers(h.calls[0].init.headers).get('X-CSRF-Token')).toBe(csrf);
   });
 
+  it('reads a material sheet longer than the count sheet ever bounded (S7)', () => {
+    // The sheet of a period is one line per model and per material it bought, so it states no line
+    // bound of its own: the same rule the count sheet of the stock follows.
+    const sheet = Array.from({ length: 191 },
+      (_, index) => usedLine(`USADA-${String(index).padStart(3, '0')}`, '1', '1'));
+    const closing = parseClosing(JSON.stringify(document({ material_lines: sheet })));
+    expect(closing.material_lines).toHaveLength(191);
+    expect(closing.material_lines![190]).toMatchObject({ model: 'USADA-190',
+      counted_quantity: '1' });
+  });
+
+  it('sends a material count longer than the count sheet ever bounded (S8)', async () => {
+    const lines = Array.from({ length: 191 }, (_, index) => ({ kind: 'used' as const,
+      model: `USADA-${String(index).padStart(3, '0')}`, material_id: null,
+      counted_quantity: '1' }));
+    const h = harness(() => json(document({ material_lines: materialLines() })));
+    expect((await h.api.materials(1, lines, csrf)).id).toBe(1);
+    expect(JSON.parse(String(h.calls[0].init.body)).lines).toHaveLength(191);
+  });
+
   it('never sends a material count the contract does not take (S8)', async () => {
     const h = harness(() => json(document({ material_lines: materialLines() })));
     const line = { kind: 'scrap' as const, model: null, material_id: 3, counted_quantity: '12.500' };

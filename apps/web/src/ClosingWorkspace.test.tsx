@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import ClosingWorkspace from './ClosingWorkspace';
+import { closingMaterialShelfHelp } from './closingModel';
 import { notifyClosingInvalidation } from './useInventory';
 
 const csrf = 'c'.repeat(43);
@@ -309,11 +310,16 @@ const proposeButton = () => within(actionBar()).getByRole('button', { name: 'Pro
 const tabList = () => screen.getByRole('tablist', { name: 'Rendición' });
 const cashTab = () => within(tabList()).getByRole('tab', { name: /^Caja/ });
 const scrapTab = () => within(tabList()).getByRole('tab', { name: /^Chatarra/ });
+const correctionsTab = () => within(tabList()).getByRole('tab', { name: /^Correcciones/ });
 const balanceStrip = () => screen.getByRole('group', { name: 'Saldos de la rendición' });
 const materials = () => screen.findByRole('region', { name: 'Materiales rendidos' });
 /** The scrap tab of the settlement: the envelope and the material sheet live there (S10, S13). */
 function openScrapTab() { fireEvent.click(scrapTab()); }
 function openCashTab() { fireEvent.click(cashTab()); }
+/** The corrections of a closed settlement live behind their own tab, not below the sheets (S16). */
+async function openCorrectionsTab() {
+  fireEvent.click(await screen.findByRole('tab', { name: /^Correcciones/ }));
+}
 
 /** States the drawer of the artboard; the sheet already coincides with the system (S1). */
 async function completeTheSheet() {
@@ -519,6 +525,25 @@ describe('the count sheet (S4)', () => {
     expect(within(count).getByText(/Blue/)).toBeInTheDocument();
     expect(within(count).queryByText(/Power/)).not.toBeInTheDocument();
     expect(h.calls).toHaveLength(reads);
+  });
+
+  it('walks the counted cells of the stock sheet with the arrows, as it always did (S1, S2)', async () => {
+    const h = server();
+    await ready(h);
+    const count = await sheet();
+    const first = within(count).getByLabelText('Contado de Bosch S4 L · 45 Ah');
+    const second = within(count).getByLabelText('Contado de Bosch Power R · 110 Ah');
+    const third = within(count).getByLabelText('Contado de Bosch Blue L · 60 Ah');
+    first.focus();
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'Enter' });
+    expect(document.activeElement).toBe(third);
+    fireEvent.keyDown(third, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(third);
+    fireEvent.keyDown(third, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(second);
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
   });
 
   it('reads a sheet of both kinds and counts a product like any other row (S2, S3, S4)', async () => {
@@ -929,10 +954,225 @@ describe('the two tabs and the three balances (S10, S13)', () => {
     expect(balances()[1]).toHaveAttribute('aria-pressed', 'false');
     expect(h.posts('/api/closings/1/cash')).toHaveLength(0);
   });
+
+  it('offers the corrections tab only on a closed settlement (S16)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    // A live settlement has no corrections at all, so the tab is not offered and nothing of the
+    // corrections panel is in the document: the sheets keep the room it used to take.
+    expect(within(tabList()).getAllByRole('tab')).toHaveLength(2);
+    expect(within(tabList()).queryByRole('tab', { name: /^Correcciones/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+    expect(document.getElementById('closing-panel-correcciones')).toBeNull();
+    // The arrows never select a tab the settlement does not offer.
+    cashTab().focus();
+    fireEvent.keyDown(tabList(), { key: 'ArrowLeft' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(scrapTab());
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the corrections of a closed settlement behind their own tab (S16)', async () => {
+    const h = server({ status: 'closed' });
+    await ready(h);
+    await sheet();
+    expect(within(tabList()).getAllByRole('tab')).toHaveLength(3);
+    expect(correctionsTab()).toHaveAttribute('aria-selected', 'false');
+    expect(correctionsTab()).toHaveAttribute('tabindex', '-1');
+    expect(correctionsTab()).toHaveAttribute('aria-controls', 'closing-panel-correcciones');
+    // The panel is behind the tab: on any other tab it is not in the document at all.
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+    await openCorrectionsTab();
+    expect(correctionsTab()).toHaveAttribute('aria-selected', 'true');
+    expect(correctionsTab()).toHaveAttribute('tabindex', '0');
+    const panel = screen.getByRole('region', { name: 'Correcciones del cierre' });
+    expect(within(panel).getByText(/El cierre no tiene correcciones/)).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Proponer corrección' })).toBeDisabled();
+    // One document, one closure: opening the tab writes nothing.
+    expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
+    // The arrows walk the three tabs and wrap around, taking the focus with them.
+    openCashTab();
+    cashTab().focus();
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(correctionsTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(correctionsTab());
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(cashTab());
+  });
+
+  // The strip is the promise the heading makes — "los números del cierre quedan siempre a la
+  // vista" — so the row that compacts it keeps all three parts of every account: what the account
+  // is, what it reads today and what that reading is made of. The one part of this that a browser
+  // alone can state is the layout: jsdom lays nothing out, so the height of the row and the room it
+  // leaves to the material sheet below are not asserted here.
+  it('states the title, the reading and the detail of each balance in its own card', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    const cards = within(balanceStrip()).getAllByRole('button');
+    expect(cards).toHaveLength(3);
+    const parts = (card: HTMLElement) => [...card.children]
+      .map(part => `${part.tagName} ${part.textContent}`);
+    expect(parts(cards[0])).toEqual([
+      'SMALL Caja operativa', 'STRONG Sin contar', 'EM esperada 800,00']);
+    expect(parts(cards[1])).toEqual([
+      'SMALL Fondo de compras', 'STRONG Sin contar', 'EM esperado 379,00']);
+    // The third account is read in its own unit and names what each kind of its sheet reads.
+    expect(parts(cards[2])).toEqual([
+      'SMALL Materiales', 'STRONG 2 cuentas con diferencia',
+      'EM baterías usadas − 1 unidad · chatarra − 4,300 kg']);
+  });
 });
 
 describe('the material sheet of the scrap tab (S7, S8, S9)', () => {
   const table = async (name: string) => within(await materials()).getByRole('table', { name });
+  const materialSearch = async () => within(await materials())
+    .getByLabelText('Buscar en la planilla de materiales');
+
+  // The sheet starts as high as the screen allows, so the paragraph that reads the shelf's baseline
+  // sits under the region instead of above it: it costs the rows the region needs. It is the same
+  // block and the same words — a paragraph of the panel, never a tooltip and never a caption folded
+  // away — and the region does not move it out of the panel. (Where it lands on the screen, and the
+  // height it leaves the region, only a browser states.)
+  it('keeps the shelf baseline readable inside the panel, under the region (S7)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const panel = await materials();
+    const help = within(panel).getByText(closingMaterialShelfHelp);
+    expect(help.tagName).toBe('P');
+    const region = within(panel).getByRole('table', { name: 'Baterías usadas · unidades por modelo' });
+    expect(region.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('searches the sheet by the model or the material of each row, without touching its totals (S7, S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    const scrap = await table('Chatarra · kilogramos por material');
+    const reads = h.calls.length;
+    // A used row answers to its model: the term narrows what the table shows and nothing else.
+    fireEvent.change(await materialSearch(), { target: { value: '31' } });
+    expect(within(used).getByLabelText('Contadas modelo 31-100')).toBeInTheDocument();
+    expect(within(used).queryByLabelText('Contadas modelo 24F-45')).not.toBeInTheDocument();
+    expect(within(scrap).queryByLabelText('Contados kg de Cobre')).not.toBeInTheDocument();
+    // A scrap row answers to the name of its material, in any case the operator writes it.
+    fireEvent.change(await materialSearch(), { target: { value: 'plomo' } });
+    expect(within(scrap).getByLabelText('Contados kg de Plomo')).toBeInTheDocument();
+    expect(within(scrap).queryByLabelText('Contados kg de Cobre')).not.toBeInTheDocument();
+    expect(within(used).queryByLabelText('Contadas modelo 31-100')).not.toBeInTheDocument();
+    // A kind's total is the reading of the whole sheet and never of the rows the search left, so
+    // under a narrowed sheet it is not rendered at all: it would read as the sum of those rows (S8).
+    expect(used.querySelector('tfoot')).toBeNull();
+    expect(scrap.querySelector('tfoot')).toBeNull();
+    // The filter is local: the sheet is already here, so nothing is read from the server again (S8).
+    expect(h.calls).toHaveLength(reads);
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+    // An empty search brings the whole sheet back, its totals with the numbers they always had.
+    fireEvent.change(await materialSearch(), { target: { value: '' } });
+    expect(within(used).getByLabelText('Contadas modelo 24F-45')).toBeInTheDocument();
+    expect(within(scrap).getByLabelText('Contados kg de Cobre')).toBeInTheDocument();
+    const usedTotal = used.querySelector('tfoot')!;
+    expect(usedTotal).toHaveTextContent('27');
+    expect(usedTotal).toHaveTextContent('26');
+    const scrapTotal = scrap.querySelector('tfoot')!;
+    expect(scrapTotal).toHaveTextContent('108,750 kg');
+    expect(scrapTotal).toHaveTextContent('104,450 kg');
+  });
+
+  it('renders no total row while the search narrows the sheet and the same ones when it clears (S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    const scrap = await table('Chatarra · kilogramos por material');
+    const usedTotal = () => used.querySelector('tfoot');
+    const scrapTotal = () => scrap.querySelector('tfoot');
+    // Before any search each kind states the total of its whole sheet.
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(usedTotal()).toHaveTextContent('26');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    expect(scrapTotal()).toHaveTextContent('104,450 kg');
+    // A term that leaves one row out of the used kind takes the totals out with it: six rows under
+    // a row that reads 300 would say those six sum 300.
+    fireEvent.change(await materialSearch(), { target: { value: '31' } });
+    expect(within(used).getByLabelText('Contadas modelo 31-100')).toBeInTheDocument();
+    expect(usedTotal()).toBeNull();
+    expect(scrapTotal()).toBeNull();
+    // Whitespace is not a search: the sheet is whole and so are its totals.
+    fireEvent.change(await materialSearch(), { target: { value: '   ' } });
+    expect(within(used).getByLabelText('Contadas modelo 24F-45')).toBeInTheDocument();
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    // An empty search brings the very same numbers back, never a total recomputed over the rows it
+    // shows, and a search the sheet refuses leaves the sheet and its totals as they are.
+    fireEvent.change(await materialSearch(), { target: { value: '' } });
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(usedTotal()).toHaveTextContent('26');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    expect(scrapTotal()).toHaveTextContent('104,450 kg');
+    fireEvent.change(await materialSearch(), { target: { value: 'x'.repeat(129) } });
+    expect(within(await materials()).getByRole('alert'))
+      .toHaveTextContent('La búsqueda admite hasta 128 bytes UTF-8');
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+  });
+
+  it('scrolls inside its own region and walks its counted cells with the arrows (S7, S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    const scrap = await table('Chatarra · kilogramos por material');
+    // The sheet has no line bound of its own, so a long one scrolls inside its own region instead
+    // of pushing the page down: the same wrapper the count sheet already uses, plus the material
+    // class the region's own scrollbar and height are stated on (S7, S8).
+    expect(used.closest('.closing-table-wrap')).not.toBeNull();
+    expect(scrap.closest('.closing-table-wrap')).not.toBeNull();
+    // What jsdom can honestly assert here is the hook the stylesheet rides on, never a layout: the
+    // region's visible scrollbar and the room the action bar needs are verified in a real browser.
+    expect(used.closest('.closing-table-wrap.closing-materials-wrap')).not.toBeNull();
+    expect(scrap.closest('.closing-table-wrap.closing-materials-wrap')).not.toBeNull();
+    expect((await materials()).closest('.closing-panel')?.className)
+      .toBe('closing-panel closing-materials-panel');
+    // The arrows walk the counted cells of a kind in the order its table shows them.
+    const first = within(used).getByLabelText('Contadas modelo 24F-45');
+    const second = within(used).getByLabelText('Contadas modelo 27-60');
+    const third = within(used).getByLabelText('Contadas modelo 31-100');
+    first.focus();
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'Enter' });
+    expect(document.activeElement).toBe(third);
+    // The last cell of a kind and the first one do not wrap around: moving never jumps rows.
+    fireEvent.keyDown(third, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(third);
+    fireEvent.keyDown(third, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(first);
+    // The scrap table walks its own cells the same way, in the unit it counts.
+    const cobre = within(scrap).getByLabelText('Contados kg de Cobre');
+    const aluminio = within(scrap).getByLabelText('Contados kg de Aluminio');
+    cobre.focus();
+    fireEvent.keyDown(cobre, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(aluminio);
+    fireEvent.keyDown(aluminio, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(cobre);
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+  });
 
   it('renders both tables with their totals and the sign of every difference (S8)', async () => {
     const h = server();
@@ -1232,19 +1472,25 @@ describe('corrections of a closed settlement (S16)', () => {
   it('offers nothing invented on a settlement with no correction', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    // The drawer of the closed settlement is the signed one, on the tab it always was.
+    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
+    await openCorrectionsTab();
     const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
     expect(within(panel).getByText(/El cierre no tiene correcciones/)).toBeInTheDocument();
     // No corrected figure is published when nothing was corrected: the numbers are the signed ones.
     expect(within(panel).queryByRole('table', { name: 'Números corregidos del cierre' }))
       .not.toBeInTheDocument();
-    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
   });
 
   it('shows a corrected number as corrected, with its delta beside the signed one', async () => {
     const h = server({ status: 'closed', countedCash: '6950.00', corrections: [acceptedDrawer()] });
     await ready(h);
+    await openCorrectionsTab();
     const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
+    // The corrected figures are the table of the panel, inside the tab that carries them.
+    expect(within(panel).getByRole('table', { name: 'Números corregidos del cierre' }))
+      .toBeInTheDocument();
     const row = within(panel).getByText('Caja contada').closest('.closing-correction-value')!;
     // The three numbers of a corrected figure, together: what was signed, what it reads today and the
     // delta that produced it.
@@ -1253,7 +1499,9 @@ describe('corrections of a closed settlement (S16)', () => {
     expect(within(row as HTMLElement).getByText('− Bs 30,00')).toBeInTheDocument();
     // The correction that produced it is legible beside it, with its reason.
     expect(within(panel).getByText('conté mal el cajón, faltaba plata')).toBeInTheDocument();
-    // The rail keeps the identities over the corrected drawer, never over the signed one.
+    // The rail keeps the identities over the corrected drawer, never over the signed one: it lives
+    // on the cash tab, so the drawer is read there, one panel at a time.
+    openCashTab();
     expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.950,00');
     expect(within(rail()).getByText('− Bs 65,00')).toBeInTheDocument();
     expect(within(rail()).getByText('Te llevás al Almacén').parentElement).toHaveTextContent('Bs 6.050,00');
@@ -1262,6 +1510,7 @@ describe('corrections of a closed settlement (S16)', () => {
   it('will not propose a correction without a reason', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    await openCorrectionsTab();
     fireEvent.change(await within(corrections()).findByLabelText('Caja contada corregida (Bs)'),
       { target: { value: '6.900,00' } });
     expect(proposeCorrection()).toBeDisabled();
@@ -1272,6 +1521,7 @@ describe('corrections of a closed settlement (S16)', () => {
   it('will not propose a correction that changes no value', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    await openCorrectionsTab();
     fireEvent.change(await within(corrections()).findByLabelText('Motivo de la corrección'),
       { target: { value: 'revisé todo y estaba bien' } });
     expect(proposeCorrection()).toBeDisabled();
@@ -1282,6 +1532,7 @@ describe('corrections of a closed settlement (S16)', () => {
   it('proposes the correction with its reason and only the values that changed', async () => {
     const h = server({ status: 'closed' });
     await ready(h);
+    await openCorrectionsTab();
     fireEvent.change(await within(corrections()).findByLabelText('Caja contada corregida (Bs)'),
       { target: { value: '6.900,00' } });
     fireEvent.change(within(corrections()).getByLabelText('Contado corregido de Bosch Power R · 110 Ah'),
@@ -1305,14 +1556,21 @@ describe('corrections of a closed settlement (S16)', () => {
   it('shows the correction that waits for the branch and refuses a second one', async () => {
     const h = server({ status: 'closed', corrections: [pendingDrawer()] });
     await ready(h);
+    // The tab says a correction waits before it is opened, so nothing is hidden behind it (S16).
+    expect(await screen.findByRole('tab', { name: /^Correcciones/ }))
+      .toHaveTextContent('Corrección pendiente');
+    expect(screen.queryByRole('region', { name: 'Correcciones del cierre' })).not.toBeInTheDocument();
+    await openCorrectionsTab();
     const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
     expect(within(panel).getByText('Espera la decisión de la sucursal')).toBeInTheDocument();
     expect(within(panel).getByText('la caja estaba mal contada')).toBeInTheDocument();
     // What it would change is stated before the branch answers, and nothing is applied yet.
     expect(within(panel).getByText('Bs 6.900,00')).toBeInTheDocument();
-    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     // One correction waits at a time: there is no second proposal to make.
     expect(within(panel).queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+    // The drawer still reads the signed amount: it is the cash tab that carries the rail.
+    openCashTab();
+    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
   });
 });

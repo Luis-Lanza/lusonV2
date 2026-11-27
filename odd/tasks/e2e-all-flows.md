@@ -47,7 +47,7 @@ Defecto confirmado en T6 y diferido por decisión del humano (`L9`): **una sucur
 
 Qué tiene que hacer la migración cuando se encare, como feature propio y con riesgo item 1 (esquema):
 1. Subir `MaxCountLines` en Go y su contraparte en la base al mismo número, o reemplazar el tope por paginación de la planilla. Un número más grande es un parche: el catálogo crece y el problema vuelve.
-2. Revisar los otros dos topes que quedaron con el mismo 190 y dependen del catálogo: `MaxMaterialLines` (`closing.go:260`) y el límite de 1..190 ítems de `apps/api/migrations/003_pending_requests.sql:40`.
+2. Revisar los otros dos topes que quedaron con el mismo 190 y dependen del catálogo: `MaxMaterialLines` (`closing.go:260`) — **hecho**, ver `odd/tasks/rendicion-sin-tope-fijo.md` — y el límite de 1..190 ítems de `apps/api/migrations/003_pending_requests.sql:40`, que resultó no ser del catálogo sino de una solicitud de transferencia (`transfer_request_items`) y sigue intacto a propósito.
 3. Test que abra una rendición sobre una sucursal con más de 190 variantes con stock y la cierre, hoy imposible.
 4. Recién con eso, los specs de rendición pueden volver a cualquier sucursal grande y el grupo deja de depender de que Sucursal A esté debajo del tope.
 
@@ -57,7 +57,7 @@ El defecto que esta sección difería quedó arreglado en su propio feature, `od
 
 - Se borró la constante y sus cuatro usos (`canonicalCount`, `loadCountLines`, `closingRecord`, `closingCorrectionPayloadRecord`): la planilla está acotada por el catálogo por construcción —una línea por variante, con la clave primaria `(closing_id, variant_id)` y la clave foránea a `catalog_variants` como único límite.
 - El único número que queda es el límite de transporte (32 KiB), y el tope del decodificador **se calcula desde él** (862 líneas, no 910: son 32 768 bytes divididos por los 38 de la línea JSON más corta), así que no pueden desalinearse.
-- Siguen en pie los topes de entrada del operador: `MaxCounted`, `MaxObservation`, `MaxReason`, `MaxMaterialLines` y el de líneas de un documento de ajuste.
+- Siguen en pie los topes de entrada del operador: `MaxCounted`, `MaxObservation`, `MaxReason` y el de líneas de un documento de ajuste. `MaxMaterialLines` ya no existe: la planilla de materiales quedó acotada por la propia planilla, como la de stock.
 - Test que lo prueba: `TestClosingsBranchAboveTheOldSheetBoundSettles` (192 variantes con stock), RED `503 service_unavailable` → GREEN.
 
 Los specs de rendición pueden volver a cualquier sucursal grande; Sucursal A y su margen de tres líneas dejan de importar.

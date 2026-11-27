@@ -11,6 +11,7 @@ import {
   closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
   closingEvidencePath, closingEvidenceSizeText, closingEvidenceText,
   closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
+  filterMaterialRows,
   canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
   closingCorrectedCommission, closingCorrectedCounts, closingCorrectionPreview,
   closingCorrectionReadiness, closingPendingCorrection, correctionDraftFrom,
@@ -21,7 +22,8 @@ import {
   closingMaterialEmptySheet, closingMaterialKindLabels, closingMaterialLines,
   closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaterialQuantityLabel,
   closingMaterialQuantityText, closingMaterialReading, closingMaterialSeed,
-  closingMaterialSignedText, closingMaterialWireText, closingTabAfter, closingTabLabels,
+  closingMaterialSignedText, closingMaterialWireText, closingOfferedTabs,
+  closingPendingCorrectionMarker, closingTabAfter, closingTabLabels,
   closingTabMarker, closingTabOrder, closingTabsLabel, emptyMaterialDraft, materialDraftFrom,
   type Closing, type ClosingCatalogueVariant, type ClosingBatteryLine, type ClosingCountLine,
   type ClosingCorrection, type ClosingProductLine,
@@ -345,7 +347,42 @@ const materialLines: readonly ClosingMaterialLine[] = [
   scrapMaterial(4, 'Bronce', '3.100', '3.100'),
 ];
 
+/**
+ * The material sheet of a branch the sheet has no bound for (S7, S8): 300 lines over its two kinds,
+ * every used model of one of two families and the four materials the branch sells as scrap.
+ */
+const longMaterialSheet: readonly ClosingMaterialLine[] = [
+  ...Array.from({ length: 180 }, (_, index) => usedMaterial(
+    `${index % 2 === 0 ? 'NS60' : '24F'}-${String(index).padStart(3, '0')}`, '4', '4')),
+  ...Array.from({ length: 120 }, (_, index) => scrapMaterial(index + 1,
+    ['Cobre', 'Plomo', 'Aluminio', 'Bronce'][index % 4], '1.000', '1.000')),
+];
+
 describe('S7, S8, S9 the materials the purchase fund bought', () => {
+  it('narrows a long sheet by the model of a used row and the material of a scrap one (S7, S8)', () => {
+    const reading = closingMaterialReading(longMaterialSheet, emptyMaterialDraft);
+    expect(reading.total).toBe(300);
+    // An empty search is the whole sheet of both kinds, in the order the document published it.
+    expect(filterMaterialRows(reading.used.lines, '')).toHaveLength(180);
+    expect(filterMaterialRows(reading.scrap.lines, '')).toHaveLength(120);
+    expect(filterMaterialRows(reading.used.lines, '')).toEqual(reading.used.lines);
+    // A used row answers to its model, in any case and with the blanks around the term ignored.
+    const ns60 = filterMaterialRows(reading.used.lines, ' ns60 ');
+    expect(ns60).toHaveLength(90);
+    expect(ns60.every(row => row.line.kind === 'used'
+      && (row.line.model ?? '').startsWith('NS60'))).toBe(true);
+    // A scrap row answers to the name of its material, which is the identity its kind shows.
+    const plomo = filterMaterialRows(reading.scrap.lines, 'PLOMO');
+    expect(plomo).toHaveLength(30);
+    expect(plomo.every(row => row.line.material === 'Plomo')).toBe(true);
+    // A kind the term does not reach is narrowed to nothing, and no row is invented for it.
+    expect(filterMaterialRows(reading.scrap.lines, 'ns60')).toEqual([]);
+    expect(filterMaterialRows(reading.used.lines, 'plomo')).toEqual([]);
+    // A term that is not a search is refused instead of being read as no row at all.
+    expect(() => filterMaterialRows(reading.rows, 'x'.repeat(200)))
+      .toThrow(model.closingSearchMessage);
+  });
+
   it('reads a quantity of either kind in exact thousandths, never as a float', () => {
     expect(closingMaterialMilli('kg', '84.500')).toBe(84500n);
     expect(closingMaterialMilli('unit', '12')).toBe(12000n);
@@ -558,21 +595,57 @@ describe('S10, S13 the two tabs and the three balances of one settlement', () =>
     expect(closingTabMarker(materialsOnly, 'chatarra')).toBe('2 cuentas con diferencia');
   });
 
-  it('moves between the two tabs with the arrows and wraps around (S10)', () => {
-    expect(closingTabOrder).toEqual(['caja', 'chatarra']);
+  it('moves between the three tabs with the arrows and wraps around (S10, S16)', () => {
+    expect(closingTabOrder).toEqual(['caja', 'chatarra', 'correcciones']);
     expect(closingTabLabels.caja).toBe('Caja');
     expect(closingTabLabels.chatarra).toBe('Chatarra');
+    expect(closingTabLabels.correcciones).toBe('Correcciones');
     expect(closingTabsLabel).toBe('Rendición');
     expect(closingBalancesLabel).toBe('Saldos de la rendición');
     expect(closingTabAfter('caja', 'ArrowRight')).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowRight')).toBe('correcciones');
+    // The last tab wraps around to the first one, and the first one back to the last.
+    expect(closingTabAfter('correcciones', 'ArrowRight')).toBe('caja');
+    expect(closingTabAfter('caja', 'ArrowLeft')).toBe('correcciones');
     expect(closingTabAfter('chatarra', 'ArrowLeft')).toBe('caja');
-    expect(closingTabAfter('caja', 'ArrowLeft')).toBe('chatarra');
-    expect(closingTabAfter('chatarra', 'ArrowRight')).toBe('caja');
+    expect(closingTabAfter('correcciones', 'ArrowLeft')).toBe('chatarra');
     // Nothing else moves the selection: the tabs are the only thing the arrows change.
     expect(closingTabAfter('caja', 'Enter')).toBeNull();
     expect(closingTabAfter('caja', 'Tab')).toBeNull();
     expect(closingMaterialKindLabels.used).toBe('Baterías usadas');
     expect(closingMaterialKindLabels.scrap).toBe('Chatarra');
+  });
+
+  it('offers the corrections tab only when the screen has a correction panel (S16)', () => {
+    // A screen without a corrections panel offers the two tabs it always had...
+    expect(closingOfferedTabs(false)).toEqual(['caja', 'chatarra']);
+    expect(closingTabOrder).toEqual(['caja', 'chatarra', 'correcciones']);
+    // ...and the arrows walk only the tabs that are offered, wrapping around them.
+    const offered = closingOfferedTabs(false);
+    expect(closingTabAfter('chatarra', 'ArrowRight', offered)).toBe('caja');
+    expect(closingTabAfter('caja', 'ArrowLeft', offered)).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowLeft', offered)).toBe('caja');
+    // With a panel to show, the third tab joins the walk between the two others.
+    expect(closingOfferedTabs(true)).toEqual(['caja', 'chatarra', 'correcciones']);
+    const all = closingOfferedTabs(true);
+    expect(closingTabAfter('chatarra', 'ArrowRight', all)).toBe('correcciones');
+    expect(closingTabAfter('correcciones', 'ArrowLeft', all)).toBe('chatarra');
+  });
+
+  it('marks the corrections tab while a correction waits for the branch (S16)', () => {
+    const balances = closingBalanceStrip(facts());
+    // A correction is not one of the three accounts of the strip: with nothing waiting the tab is
+    // bare, and a correction the branch already answered is no reason to mark it either.
+    expect(closingTabMarker(balances, 'correcciones')).toBeNull();
+    expect(closingTabMarker(balances, 'correcciones',
+      closingPendingCorrection(settled({ corrections: [accepted()] })))).toBeNull();
+    // The correction that waits is stated on the tab itself, in words and never a bare dot.
+    expect(closingTabMarker(balances, 'correcciones',
+      closingPendingCorrection(settled({ corrections: [pending()] })))).toBe('Corrección pendiente');
+    expect(closingPendingCorrectionMarker).toBe('Corrección pendiente');
+    // The marker a tab already carries from its balances is untouched by the correction argument.
+    expect(closingTabMarker(balances, 'caja',
+      closingPendingCorrection(settled({ corrections: [pending()] })))).toBe('− Bs 35,00');
   });
 });
 

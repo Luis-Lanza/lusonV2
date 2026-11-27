@@ -14,7 +14,7 @@ import {
   closingDecisionPayload,
   closingEvidenceTypes, closingMaterialMilli, closingMaterialQuantityIsCanonical,
   closingMaxCounted, closingMaxEvidenceBytes,
-  closingMaxID, closingMaxMaterialID, closingMaxMaterialLines, closingMaxPage, closingPageSizes,
+  closingMaxID, closingMaxMaterialID, closingMaxPage, closingPageSizes,
   closingRail, closingSignedCents, closingStatuses,
   closingFirstBranch, closingMaxBranch,
   type Closing, type ClosingCatalogueVariant, type ClosingCorrection,
@@ -371,12 +371,14 @@ function materialLine(value: unknown, previous: ClosingMaterialLine | null): Clo
 /**
  * The sheet of one settlement. A payload that does not publish `material_lines` is read as a
  * document without a sheet — an older one — and one that publishes it reads every line in the order
- * the contract writes it; an empty array is a period that bought nothing, never a missing key.
+ * the contract writes it; an empty array is a period that bought nothing, never a missing key. The
+ * sheet states no line bound of its own — one line per model and per material the period bought —
+ * so no length is refused here, exactly like the count sheet of the stock.
  */
 function materialLines(record: Record<string, unknown>): readonly ClosingMaterialLine[] | null {
   if (!Object.hasOwn(record, 'material_lines')) return null;
   const value = record.material_lines;
-  if (!Array.isArray(value) || value.length > closingMaxMaterialLines) return invalidResponse();
+  if (!Array.isArray(value)) return invalidResponse();
   const lines: ClosingMaterialLine[] = [];
   for (const entry of value) {
     lines.push(materialLine(entry, lines.length === 0 ? null : lines[lines.length - 1]));
@@ -1293,7 +1295,7 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
         token(csrf);
         path = closingMaterialsPath(id);
         wanted = closingID(id);
-        if (!Array.isArray(lines) || lines.length === 0 || lines.length > closingMaxMaterialLines) {
+        if (!Array.isArray(lines) || lines.length === 0) {
           throw new Error('materiales inválidos');
         }
         body = JSON.stringify({ lines: lines.map(line => materialBody(line)) });
