@@ -1,0 +1,103 @@
+name: e2e
+
+# The browser suite is deliberately not a pull-request gate. It drives a compiled
+# frontend, a real PostgreSQL and a real Chromium, arranges and mutates stock for
+# every spec, and takes far longer than lint, typecheck and Vitest together.
+# Running it per pull request would queue behind itself; running it against a
+# shared database would report the state of that database instead of the state of
+# the product. It therefore runs once a night, and on demand, always against a
+# database the run owns and destroys.
+on:
+  schedule:
+    # 06:17 UTC is 02:17 in La Paz: off the top of the hour, where GitHub queues
+    # scheduled runs, and finished before the working day starts. GitHub only runs
+    # a schedule that exists on the default branch, so this fires once merged.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e
+  # Never cancelled. A cancelled cycle still tears its own database down, but
+  # cancelling cannot make the next run start sooner and would only throw away a
+  # finished cycle. There is no per-ref group: a cycle owns one database and one
+  # loopback port it chooses itself, so two overlapping cycles would only compete
+  # for the runner.
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    # A measured local cycle of these steps is 1m49s total on a warm 16-core
+    # desktop (the suite itself 1m42s, with the Go and Vite caches already warm and
+    # Chromium already downloaded). A hosted four-vCPU runner is slower on the suite
+    # and, on a cache miss, also builds Go, builds the frontend and downloads
+    # Chromium, so this cap leaves headroom while still turning a hung run into a
+    # red job instead of a six-hour one.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # The script only downloads Chromium when the executable Playwright expects
+      # is absent, so this cache is what keeps a nightly run from downloading the
+      # same browser every night. The key follows the lockfile, which pins
+      # @playwright/test to an exact version; a new version is a new key.
+      - name: cache the Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+
+      - name: install the frontend dependencies from the lockfile
+        working-directory: apps/web
+        run: npm ci
+
+      # One command, the same one a developer runs: an ephemeral PostgreSQL, the
+      # migrations to the head of apps/api/migrations, the three accounts over a
+      # private controlling terminal, the frontend build, the API on the origin
+      # the suite drives, `npx playwright test`, and a teardown that stops the API
+      # and drops the database even when the suite fails. No uid-1000 preparation
+      # is needed here: that identity belongs to the audited Go fixture
+      # (`make test-pg`, verify.yml `go-postgresql`), which this job does not use.
+      - name: run one complete end-to-end cycle
+        env:
+          LUSON_E2E_OUTPUT_DIR: ${{ runner.temp }}/e2e-artifacts
+        run: ./scripts/test-e2e.sh
+
+      - name: keep traces and screenshots of a red run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: ${{ runner.temp }}/e2e-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # The script's own teardown already removes the container and reports
+      # itself, and it runs on failure and on SIGTERM. This second pass also runs
+      # after a kill or a cancellation that never reached it, so a green job can
+      # never mean a database container survived on the runner.
+      - name: prove no browser database survived
+        if: always()
+        run: |
+          set -euo pipefail
+          leftover=$(docker ps -aq --filter label=luson.e2e.owner=luson-e2e)
+          if [ -n "${leftover}" ]; then
+            echo "::error::a browser-suite database container survived this run: ${leftover}"
+            exit 1
+          fi
+          echo "no browser-suite database container is left on this runner"

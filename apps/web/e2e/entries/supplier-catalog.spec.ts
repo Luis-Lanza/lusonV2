@@ -1,6 +1,7 @@
 import {
-  addBattery, arrangeBatterySupplier, catalogPanel, catalogRow, catalogRows, catalogSearch, chooseSupplier,
-  confirmButton, documentPanel, draftQuantity, draftRow, draftTotals, expect, openEntries, supplierCatalog, test,
+  addBattery, allListedSuppliers, arrangeBatterySupplier, catalogPanel, catalogRow, catalogRows, catalogSearch,
+  chooseSupplier, confirmButton, documentPanel, draftQuantity, draftRow, draftTotals, expect, openEntries,
+  supplierCatalog, supplierOptionText, supplierOptions, supplierPlaceholderOption, supplierSelect, test,
   warehouseRole, warehouseSessionState,
 } from './harness';
 
@@ -18,6 +19,16 @@ test.use({ storageState: warehouseSessionState });
  * El arreglo previo —el proveedor y su batería— va por la API pública de la misma sesión, que es también
  * la lectura con la que se contrasta qué variante ofreció el proveedor. Este acto no escribe nada: el
  * borrador no toca el stock hasta confirmar, y por eso no hay documento que leer.
+ *
+ * El selector de Ingresos tiene que publicar la lista **entera** de proveedores del contrato, no su primera
+ * página: el control pedía una sola página de cincuenta y el operador no podía elegir a los proveedores que
+ * ordenaban después. Ese es el defecto que esta prueba cubre, y se afirma donde se ve —en las opciones del
+ * control—: se leen todas las páginas publicadas y las opciones tienen que ser exactamente esas filas, en
+ * ese orden y con esos nombres. El proveedor de la corrida ordena **último** entre los activos por
+ * construcción (`supplierName`, en el arnés), así que elegirlo obliga a la lista a llegar hasta el final.
+ * En una base acumulada esta igualdad falla en voz alta si el selector lee una sola página; en una base
+ * fresca —once proveedores sembrados— sigue valiendo, porque la lista completa también entra en una.
+ * Ninguna otra aserción de este acto cambia.
  */
 
 test('la búsqueda en el catálogo del proveedor filtra sus productos y llena las líneas del documento',
@@ -29,8 +40,23 @@ test('la búsqueda en el catálogo del proveedor filtra sus productos y llena la
     const offered = await supplierCatalog(warehouse, supplier.supplierId, 'battery');
     expect(offered.map(item => item.variant_id)).toEqual([variant.variantId]);
 
+    // La lista completa que el operador tiene que poder elegir, leída del contrato página por página.
+    const published = await allListedSuppliers(warehouse);
+    const active = published.filter(listed => !listed.retired);
+    // El proveedor de la corrida es el último activo: el control tiene que llegar hasta él.
+    expect(active.at(-1)?.id).toBe(supplier.supplierId);
+
     await openEntries(page);
+    // Las opciones del selector son la lista publicada entera, con sus nombres y en su orden: la primera
+    // opción es el pedido de elegir un proveedor y las demás son las filas del contrato, retirados al final.
+    await expect(supplierSelect(page).locator('option')).toHaveCount(published.length + 1);
+    await expect.poll(() => supplierOptions(page)).toEqual([
+      supplierPlaceholderOption, ...published.map(listed => supplierOptionText(listed)),
+    ]);
+
     await chooseSupplier(page, warehouse, supplier.supplierId);
+    // Elegirlo es un acto real: el contexto del documento queda con el proveedor que ordena último.
+    await expect(supplierSelect(page)).toHaveValue(String(supplier.supplierId));
 
     // La búsqueda del catálogo publica exactamente el producto del proveedor de esta corrida.
     await catalogSearch(page, 'battery').fill(supplier.model);

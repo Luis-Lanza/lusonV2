@@ -133,22 +133,29 @@ func TestNoticeReleaseShape(t *testing.T) {
 		if err != nil {
 			t.Fatalf("embedded migration %s is unreadable", entry.Name())
 		}
-		// A later version narrows this guard forward by restating it whole, exactly as this file restated
-		// 065's, so it states these same codes again on purpose. What is never reused is a number by a
-		// version that adds a fact of its own.
-		if strings.Contains(string(version),
-			"CREATE OR REPLACE FUNCTION admit_warranty_case_event()") {
-			continue
-		}
+		// A later version narrows one of these two facts forward by restating its function whole, exactly as
+		// this file restated 065's, so it states again -- on purpose -- the codes that function owns: the
+		// event guard states this file's eleven and is restated by 069, 073 and 074; the release states
+		// LW024 and LW025, and LW036 is the number 074 adds forward to it. What is never reused is a number
+		// by a version that adds a fact of its own, and a restatement never repeats the other function's.
+		restatesGuard := strings.Contains(string(version),
+			"CREATE OR REPLACE FUNCTION admit_warranty_case_event()")
+		restatesRelease := strings.Contains(string(version),
+			"CREATE OR REPLACE FUNCTION release_case_unit_to_stock()")
+		releaseCodes := map[string]bool{"LW024": true, "LW025": true, "LW036": true}
 		for code := range used {
 			// 065 states LW006, LW007 and LW008 itself: narrowing its guard restates them, and the
 			// other versions of this vertical never reuse the numbers this file adds.
 			if code == "LW006" || code == "LW007" || code == "LW008" {
 				continue
 			}
-			if strings.Contains(string(version), "ERRCODE='"+code+"'") {
-				t.Fatalf("%s reuses the code %s of the notice and release", entry.Name(), code)
+			if !strings.Contains(string(version), "ERRCODE='"+code+"'") {
+				continue
 			}
+			if restatesGuard || (restatesRelease && releaseCodes[code]) {
+				continue
+			}
+			t.Fatalf("%s reuses the code %s of the notice and release", entry.Name(), code)
 		}
 	}
 	// The file documents the decision it takes, so the next reader does not reconstruct it.

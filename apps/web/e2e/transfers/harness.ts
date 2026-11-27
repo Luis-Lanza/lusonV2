@@ -19,13 +19,13 @@ import { branchBSession, warehouseSessionState } from '../warranty/sessions';
  * importa módulos de la aplicación, así que una prueba no puede pasar por coincidir con el código que
  * revisa.
  *
- * **La variante de cada corrida es un producto propio, no una batería del sembrado.** El catálogo de
- * origen de la pantalla de creación lee como mucho cuatro páginas de cincuenta variantes
- * (`loadSourceInventory`) y la base que comparten todos los grupos ya tiene más de doscientas baterías,
- * así que esa pantalla no puede armar el catálogo de baterías ni pedir una: la entrega usa el documento
- * de otros productos, que es el mismo acto de transferencia con la misma regla de stock, y de paso deja
- * las cifras de la corrida en una variante que nadie más mueve. La batería no cambia ninguna regla del
- * flujo (`apps/api/docs/transfers-api.md`, «One catalogue kind per document»).
+ * **Cada corrida mueve un catálogo propio: una batería con sus dos polaridades y un producto.** El cargador
+ * de origen de la pantalla de creación deriva sus páginas del total que la primera publica
+ * (`apps/web/src/sourceInventory.ts:74`), así que el catálogo de baterías entero —más de quinientas
+ * variantes en la base que comparten todos los grupos— se lee completo y los actos de creación se ejercen
+ * sobre una batería que la corrida crea con marca y modelo propios. El documento de otros productos sigue
+ * cubriendo los actos que no eligen el catálogo de la pantalla, y deja sus cifras en una variante que nadie
+ * más mueve (`apps/api/docs/transfers-api.md`, «One catalogue kind per document»).
  */
 
 export { branchA, branchB, expect, origin, test, warehouseRole, type Session } from '../warranty/harness';
@@ -229,15 +229,100 @@ export async function arrangeRunStock(warehouse: Session, units = 25): Promise<R
   };
 }
 
+/** Una polaridad de la batería de la corrida, con la identidad que el servidor le asignó. */
+export interface RunBatteryVariant {
+  readonly variantId: number;
+  readonly polarity: 'L' | 'R';
+  /** El detalle que la fila del catálogo y el carrito publican de la polaridad. */
+  readonly detail: string;
+  /** La etiqueta de la fila: el modelo y la polaridad, sin la marca. */
+  readonly label: string;
+}
+
+/**
+ * Una batería nueva de esta corrida, con marca y modelo propios: dos polaridades, un proveedor que la
+ * ofrece como batería y el ingreso que deja sus unidades en Almacén. Es el catálogo que la pantalla de
+ * creación lee cuando el documento es de baterías, y ninguna otra corrida ni grupo lo mueve.
+ */
+export interface RunBattery {
+  readonly catalogueEntryId: number;
+  readonly brand: string;
+  readonly model: string;
+  /** La capacidad canónica que la batería publicó al crearse, como la fila del catálogo la imprime. */
+  readonly capacityAh: string;
+  /** El nombre que la fila, el carrito y la revisión imprimen: la marca y el modelo. */
+  readonly name: string;
+  /** Las dos polaridades, en el orden en que la batería las publicó. */
+  readonly variants: readonly RunBatteryVariant[];
+  /** La primera polaridad: la que mueve el acto que nombra una sola de las dos. */
+  readonly line: RunBatteryVariant;
+  /** Las unidades que el ingreso dejó de cada polaridad en Almacén. */
+  readonly units: number;
+}
+
+/**
+ * Los mismos actos que la pantalla de catálogo, la de proveedores y la de ingresos hacen, sin ningún
+ * atajo por la base: la batería con sus dos polaridades, el proveedor que la ofrece y el documento de
+ * ingreso que le da stock en Almacén. La marca, el modelo, el proveedor y la nota son únicos de la corrida.
+ */
+export async function arrangeRunBattery(warehouse: Session, units = 6): Promise<RunBattery> {
+  const mark = stamp();
+  const battery = await send<{ id: number; brand: string; model: string; capacity_ah: string;
+    variants: readonly { id: number; polarity: 'L' | 'R' }[] }>(warehouse, 'post', '/api/catalog/batteries', {
+    brand: `FLUJO ${mark}`, model: `MODELO ${mark}`, capacity_ah: '70', polarities: ['L', 'R'],
+  }, 201);
+  const supplier = await send<{ id: number }>(warehouse, 'post', '/api/suppliers', {
+    name: `Proveedor flujo ${mark}`, contact: '700-11111',
+  }, 201);
+  await send(warehouse, 'put', `/api/suppliers/${supplier.id}/offers`, { catalog_entry_ids: [battery.id] }, 200);
+  const offered = await read<{ items: readonly { variant_id: number; kind: string; name: string; detail: string }[] }>(
+    warehouse, `/api/suppliers/${supplier.id}/catalog?kind=battery`);
+  const rows = battery.variants.map(variant => {
+    const row = offered.items.find(item => item.variant_id === variant.id);
+    if (row === undefined) {
+      throw new Error(`la polaridad ${variant.polarity} de la batería ${battery.id} no figura en la oferta del proveedor ${supplier.id}`);
+    }
+    return { variantId: variant.id, polarity: variant.polarity, detail: row.detail,
+      label: `${battery.model} ${variant.polarity}`, name: row.name };
+  });
+  const first = rows[0];
+  if (rows.length !== 2 || first === undefined || rows[1] === undefined) {
+    throw new Error(`la batería ${battery.id} no publicó sus dos polaridades`);
+  }
+  await send(warehouse, 'post', '/api/stock-entries', {
+    operation_key: operationKey('ingreso'), supplier_id: supplier.id, note: `Ingreso del flujo ${mark}`,
+    lines: rows.map(row => ({ variant_id: row.variantId, quantity: units })),
+  }, 201);
+  const variants: readonly RunBatteryVariant[] = rows.map(row => ({
+    variantId: row.variantId, polarity: row.polarity, detail: row.detail, label: row.label,
+  }));
+  const line = variants[0];
+  if (line === undefined) throw new Error(`la batería ${battery.id} no publicó ninguna variante`);
+  return {
+    catalogueEntryId: battery.id, brand: battery.brand, model: battery.model, capacityAh: battery.capacity_ah,
+    name: first.name, variants, line, units,
+  };
+}
+
+/** La góndola en la que vive la variante: el otro producto del documento o la batería de la corrida. */
+export interface BalanceQuery {
+  readonly kind?: 'battery' | 'other';
+  /** El término con el que el listado acota sus filas; sin él una batería se pierde entre quinientas. */
+  readonly search?: string;
+}
+
 /**
  * El saldo de la variante de la corrida en una ubicación, leído por el mismo listado de inventario que
- * la pantalla consulta. Es la góndola de los otros productos, donde vive la variante de esta corrida:
- * el stock de las baterías compartidas se mueve mientras la suite corre y no sirve de medida.
+ * la pantalla consulta. La variante es de la corrida —un producto propio o una batería con marca y modelo
+ * propios—, así que su cifra es una medida y no el stock compartido que la suite mueve por detrás.
  */
-export async function balance(session: Session, locationId: number, variantId: number): Promise<Balance> {
+export async function balance(session: Session, locationId: number, variantId: number,
+  query: BalanceQuery = {}): Promise<Balance> {
+  const kind = query.kind ?? 'other';
+  const search = query.search === undefined ? '' : `&search=${encodeURIComponent(query.search)}`;
   for (let page = 1; page <= 10; page += 1) {
     const body = await read<{ items: readonly BalanceRow[]; total_variants: number }>(session,
-      `/api/inventory?location_id=${locationId}&page=${page}&page_size=50&kind=other`);
+      `/api/inventory?location_id=${locationId}&page=${page}&page_size=50&kind=${kind}${search}`);
     const row = body.items.find(item => item.variant_id === variantId);
     if (row !== undefined) {
       return { existing: row.existing, reserved: row.reserved, available: row.available };
@@ -297,19 +382,22 @@ export async function transferByReference(session: Session, status: TransferStat
 
 export interface TransferSessions { readonly branch: Session; readonly warehouse: Session }
 
+/** La variante que el acto mueve: una línea del producto o una polaridad de la batería de la corrida. */
+export interface MovableVariant { readonly variantId: number }
+
 /** Una solicitud pendiente de la corrida: el documento que el Almacén decide por pantalla. */
-export async function arrangePending(stock: RunStock, sessions: TransferSessions, units: number): Promise<TransferRecord> {
+export async function arrangePending(stock: MovableVariant, sessions: TransferSessions, units: number): Promise<TransferRecord> {
   return requestStock(sessions.branch, stock.variantId, units);
 }
 
 /** Una solicitud ya aprobada: el documento que el origen despacha, cancela o recibe por pantalla. */
-export async function arrangeApproved(stock: RunStock, sessions: TransferSessions, units: number): Promise<TransferRecord> {
+export async function arrangeApproved(stock: MovableVariant, sessions: TransferSessions, units: number): Promise<TransferRecord> {
   const pending = await arrangePending(stock, sessions, units);
   return approveTransfer(sessions.warehouse, pending.id);
 }
 
 /** Una solicitud ya despachada: el documento que el destino recibe por pantalla. */
-export async function arrangeInTransit(stock: RunStock, sessions: TransferSessions, units: number): Promise<TransferRecord> {
+export async function arrangeInTransit(stock: MovableVariant, sessions: TransferSessions, units: number): Promise<TransferRecord> {
   const approved = await arrangeApproved(stock, sessions, units);
   return dispatchTransfer(sessions.warehouse, approved.id);
 }
@@ -319,7 +407,7 @@ export async function arrangeInTransit(stock: RunStock, sessions: TransferSessio
  * que la conciliación unificada viene a resolver, y es el único dato que la prueba no puede inventar sin
  * que deje de ser una diferencia real.
  */
-export async function arrangeReceived(stock: RunStock, sessions: TransferSessions,
+export async function arrangeReceived(stock: MovableVariant, sessions: TransferSessions,
   units: number, actual: number): Promise<TransferRecord> {
   const transit = await arrangeInTransit(stock, sessions, units);
   return receiveTransfer(sessions.branch, transit.id, { variantId: stock.variantId, units: actual });
@@ -329,7 +417,7 @@ export async function arrangeReceived(stock: RunStock, sessions: TransferSession
  * Un envío directo que el Almacén crea, despacha y la sucursal recibe: el camino por el que la corrida
  * deja stock propio en la sucursal para el acto que lo necesita de ese lado.
  */
-export async function arrangeDirectShipment(stock: RunStock, sessions: TransferSessions,
+export async function arrangeDirectShipment(stock: MovableVariant, sessions: TransferSessions,
   units: number): Promise<TransferRecord> {
   const created = await send<TransferRecord>(sessions.warehouse, 'post', '/api/transfers', {
     kind: 'direct_shipment', counterparty_location_id: sessions.branch.locationId,
@@ -429,19 +517,41 @@ export async function chooseProductsKind(page: Page): Promise<void> {
   await expect(page.getByText('Esta transferencia es de Otros productos. Un documento nunca mezcla los dos tipos.')).toBeVisible();
 }
 
-/** El campo de búsqueda del catálogo de otros productos. */
-function productSearch(page: Page): Locator {
-  return page.getByLabel('Buscar nombre o dato del producto');
+/** El mismo paso, con el catálogo que el documento de baterías lee después. */
+export async function chooseBatteryKind(page: Page): Promise<void> {
+  await page.getByRole('group', { name: 'Tipo de producto de la transferencia' })
+    .getByRole('button', { name: 'Baterías', exact: true }).click();
+  await expect(page.getByText('Esta transferencia es de Baterías. Un documento nunca mezcla los dos tipos.')).toBeVisible();
 }
 
-/** La fila del catálogo de origen que nombra la variante de la corrida. */
-function sourceRow(page: Page, stock: RunStock): Locator {
-  return page.getByRole('row').filter({ has: page.getByRole('button', { name: `Añadir ${stock.name}` }) });
+interface SourceLine {
+  /** El catálogo que la fila habita: el buscador y las columnas cambian con el tipo del documento. */
+  readonly kind: 'battery' | 'other';
+  /** Lo que el operador escribe en el buscador del catálogo de origen. */
+  readonly search: string;
+  /** Cómo la fila anuncia su cantidad y su botón: el producto, o el modelo y la polaridad. */
+  readonly label: string;
+  /** Cómo el carrito y la revisión nombran la variante. */
+  readonly name: string;
+  /** Lo que la fila del catálogo publica de la variante, en sus propias celdas. */
+  readonly row: readonly string[];
+  /** El detalle compuesto que el carrito publica de la variante. */
+  readonly detail: string;
+}
+
+/** El campo de búsqueda del catálogo de origen, con la etiqueta de cada tipo. */
+function sourceSearch(page: Page, kind: 'battery' | 'other'): Locator {
+  return page.getByLabel(kind === 'battery' ? 'Buscar marca o modelo' : 'Buscar nombre o dato del producto');
+}
+
+/** La fila del catálogo de origen que nombra la línea de la corrida. */
+function sourceRow(page: Page, line: SourceLine): Locator {
+  return page.getByRole('row').filter({ has: page.getByRole('button', { name: `Añadir ${line.label}` }) });
 }
 
 /** La cantidad que el operador escribe en la fila del catálogo antes de añadirla. */
-function sourceQuantity(page: Page, stock: RunStock): Locator {
-  return page.getByLabel(`Cantidad ${stock.name}`, { exact: true });
+function sourceQuantity(page: Page, line: SourceLine): Locator {
+  return page.getByLabel(`Cantidad ${line.label}`, { exact: true });
 }
 
 /** El carrito de la solicitud o del envío, que la pantalla titula con su propio nombre. */
@@ -449,17 +559,45 @@ export function creationCart(page: Page): Locator {
   return page.getByRole('complementary', { name: 'Carrito de transferencia' });
 }
 
+/**
+ * La línea del carrito, nombrada por el detalle que publica: es lo único que distingue una polaridad de la
+ * otra, porque las dos comparten el nombre de la batería y la etiqueta de su cantidad.
+ */
+function cartLine(page: Page, line: SourceLine): Locator {
+  return creationCart(page).locator('article').filter({ hasText: line.detail });
+}
+
 /** El acto de agregar: busca la variante de la corrida, escribe la cantidad y la suma al carrito. */
-export async function addToCart(page: Page, stock: RunStock, units: number): Promise<void> {
-  await productSearch(page).fill(stock.name);
-  const row = sourceRow(page, stock);
+async function addSourceLine(page: Page, line: SourceLine, units: number): Promise<void> {
+  await sourceSearch(page, line.kind).fill(line.search);
+  const row = sourceRow(page, line);
   await expect(row).toBeVisible();
-  await expect(row).toContainText(stock.detail);
-  await sourceQuantity(page, stock).fill(String(units));
-  await row.getByRole('button', { name: `Añadir ${stock.name}` }).click();
-  const cart = creationCart(page);
-  await expect(cart.getByRole('heading', { level: 3, name: stock.name })).toBeVisible();
-  await expect(cart.getByLabel(`Cantidad seleccionada ${stock.name}`)).toHaveValue(String(units));
+  for (const text of line.row) await expect(row).toContainText(text);
+  await sourceQuantity(page, line).fill(String(units));
+  await row.getByRole('button', { name: `Añadir ${line.label}` }).click();
+  const selected = cartLine(page, line);
+  await expect(selected).toContainText(line.name);
+  await expect(selected.getByLabel(/^Cantidad seleccionada /)).toHaveValue(String(units));
+}
+
+/** El producto de la corrida, con el nombre y el detalle que la fila del catálogo publica. */
+export async function addToCart(page: Page, stock: RunStock, units: number): Promise<void> {
+  await addSourceLine(page, {
+    kind: 'other', search: stock.name, label: stock.name, name: stock.name, row: [stock.detail],
+    detail: stock.detail,
+  }, units);
+}
+
+/**
+ * El acto de agregar una polaridad de la batería de la corrida: la fila se nombra por modelo y polaridad, y
+ * publica la capacidad y la polaridad en celdas propias.
+ */
+export async function addBatteryToCart(page: Page, battery: RunBattery, variant: RunBatteryVariant,
+  units: number): Promise<void> {
+  await addSourceLine(page, {
+    kind: 'battery', search: battery.model, label: variant.label, name: battery.name,
+    row: [`${battery.capacityAh} Ah`, variant.polarity], detail: variant.detail,
+  }, units);
 }
 
 /** El botón que abre la revisión: la solicitud y el envío lo nombran distinto. */

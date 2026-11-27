@@ -16,9 +16,10 @@ import { expect, type Session } from '../warranty/harness';
  * Nada de acá importa módulos de la aplicación: la prueba no puede pasar por coincidir con el código
  * que revisa. Cada arreglo lleva el sello de la corrida —marca, modelo, nombre de proveedor y nota
  * únicos— porque la base es una sola y las demás suites del pedido corren contra ella al mismo tiempo
- * (S4). El proveedor se llama `AAA…` a propósito: la pantalla publica una sola página de proveedores
- * ordenada por nombre y no tiene búsqueda, así que el nombre más chico garantiza que el proveedor de
- * esta corrida esté en la lista que el operador ve.
+ * (S4). El proveedor se llama `ZZZ…` a propósito: ordena último en la lista que la pantalla publica, así
+ * que sólo es elegible si esa lista es la completa y no la primera página. Antes se llamaba `AAA…` para
+ * entrar en la única página que la pantalla pedía: ese arreglo tapaba el defecto que
+ * `supplier-catalog.spec.ts` ahora prueba.
  */
 
 export { expect, test, warehouseRole } from '../warranty/harness';
@@ -40,16 +41,14 @@ function stamp(): string {
 }
 
 /**
- * El nombre del proveedor de la corrida. El selector de Ingresos no busca ni pagina: publica **una sola
- * página de 50 proveedores activos**, ordenada por `lower(name), id` con los retirados al final
- * (`apps/api/internal/suppliers/store.go:256`, pedida tal cual por `apps/web/src/StockEntry.tsx:153` con
- * `stockSupplierPageSize = 50`). Un proveedor recién creado sólo es elegible si su nombre entra en esa
- * página, así que el nombre lleva el complemento del reloj en 13 dígitos: cada corrida crea el nombre
- * más chico de todos y su proveedor queda primero, sin depender de cuántos proveedores haya ya.
+ * El nombre del proveedor de la corrida. Ordena **último** en la lista que publica `GET /api/suppliers`
+ * (`lower(name), id`, con los retirados al final), que es lo que el selector de Ingresos tiene que
+ * publicar entero para poder elegirlo: el contrato de esa lectura admite sólo `page` y `page_size`, sin
+ * búsqueda, así que un selector que pidiera una sola página dejaría este proveedor afuera. Un nombre
+ * "natural", además: el `AAA…` anterior existía únicamente por ese defecto.
  */
 function supplierName(tag: string): string {
-  const rank = String(10_000_000_000_000 - Date.now()).padStart(13, '0');
-  return `AAA T9 0${rank} ${tag}`;
+  return `ZZZ T9 ${tag}`;
 }
 
 /** El sello de la corrida, para que las notas y los motivos tampoco se repitan. */
@@ -177,9 +176,9 @@ export interface ArrangedBatterySupplier {
 }
 
 /**
- * Un proveedor nuevo que ofrece una sola batería nueva, con marca y modelo únicos: es el proveedor que
- * la pantalla lista primero por su nombre y el producto que su catálogo publica. La batería nace con
- * saldo cero en todo local, así que el stock que el ingreso mueve es exactamente el de esta corrida.
+ * Un proveedor nuevo que ofrece una sola batería nueva, con marca y modelo únicos: es el proveedor que la
+ * pantalla lista **último** por su nombre y el producto que su catálogo publica. La batería nace con saldo
+ * cero en todo local, así que el stock que el ingreso mueve es exactamente el de esta corrida.
  */
 export async function arrangeBatterySupplier(session: Session,
   options: { readonly polarities?: readonly ('L' | 'R')[]; readonly capacityAh?: string } = {}):
@@ -349,10 +348,27 @@ export async function openEntries(page: Page): Promise<void> {
   await expect(page.getByText('ALMACÉN / INGRESOS')).toBeVisible();
 }
 
-/** El rótulo de una opción del selector: el nombre del proveedor y lo que ofrece, como lo compone la pantalla. */
+/**
+ * El rótulo de una opción del selector: el nombre del proveedor y lo que ofrece, como lo compone la
+ * pantalla —el proveedor sin productos asignados también, porque el control lo publica así—.
+ */
 export function supplierOptionLabel(supplierName: string, offers: number): string {
-  return `${supplierName} · ${offers} ${offers === 1 ? 'producto' : 'productos'}`;
+  const count = offers === 0 ? 'Sin productos asignados'
+    : `${offers} ${offers === 1 ? 'producto' : 'productos'}`;
+  return `${supplierName} · ${count}`;
 }
+
+/**
+ * El rótulo exacto con el que el selector publica una fila de la lista del contrato: el nombre, lo que
+ * ofrece y, si el proveedor está retirado, la marca con la que la pantalla lo dice. La lista del contrato
+ * ordena los retirados al final, así que la comparación de opciones se hace contra esta misma forma.
+ */
+export function supplierOptionText(listed: ListedSupplier): string {
+  return supplierOptionLabel(listed.name, listed.offers) + (listed.retired ? ' · Retirado' : '');
+}
+
+/** La opción que no es un proveedor: la pantalla pide elegir uno antes de abrir un catálogo. */
+export const supplierPlaceholderOption = 'Elegí un proveedor';
 
 /**
  * El selector de proveedor del documento: la primera decisión, y sin ella nada se lee ni se guarda. Se
@@ -362,7 +378,16 @@ export function supplierSelect(page: Page): Locator {
   return page.locator('select#stock-supplier');
 }
 
-/** Uno de los proveedores que la pantalla publica en su única página, con lo que ofrece. */
+/**
+ * Los rótulos que el selector publica, en el orden en que los publica: la primera opción es el pedido de
+ * elegir uno y desde la segunda van los proveedores. Es lo que el operador puede elegir, leído del control
+ * y no del contrato, para poder contrastar los dos.
+ */
+export async function supplierOptions(page: Page): Promise<readonly string[]> {
+  return (await supplierSelect(page).locator('option').allTextContents()).map(text => text.trim());
+}
+
+/** Uno de los proveedores que la pantalla publica, con lo que ofrece y si está retirado. */
 export interface ListedSupplier {
   readonly id: number;
   readonly name: string;
@@ -373,30 +398,54 @@ export interface ListedSupplier {
 }
 
 /**
- * La lista que el selector de Ingresos lee, pedida exactamente como la pide la pantalla: la primera
- * página de 50 (`apps/web/src/StockEntry.tsx:153`). No hay una página siguiente ni una búsqueda de
- * proveedores en esta pantalla, así que esto es todo lo que el operador puede elegir.
+ * La lista que el selector de Ingresos lee, pedida exactamente como la pide la pantalla: la página más
+ * ancha que admite el contrato (`GET /api/suppliers?page=&page_size=`, `apps/api/docs/suppliers.md`),
+ * sin búsqueda, porque esa lectura no tiene ninguna.
  */
-export async function screenSupplierPage(session: Session): Promise<{
+export interface ListedSupplierPage {
   readonly suppliers: readonly ListedSupplier[];
-  readonly total_suppliers: number;
   readonly page: number;
   readonly page_size: number;
-}> {
-  return read(session, '/api/suppliers?page=1&page_size=50');
+  readonly total_suppliers: number;
+}
+
+/** La página más ancha del contrato: la que la pantalla pide en cada paso de su lectura. */
+const supplierPageSize = 50;
+
+/**
+ * Todas las páginas que el contrato publica de proveedores, leídas como las camina la pantalla: desde la
+ * primera hasta cubrir el `total_suppliers` que el propio servidor contó, y cortando en una página vacía.
+ * Es la lista completa que el operador tiene que poder elegir.
+ */
+export async function allSupplierPages(session: Session): Promise<readonly ListedSupplierPage[]> {
+  const pages: ListedSupplierPage[] = [];
+  let total = 0;
+  for (let page = 1; page <= 1_000_000; page += 1) {
+    const current = await read<ListedSupplierPage>(session,
+      `/api/suppliers?page=${page}&page_size=${supplierPageSize}`);
+    pages.push(current);
+    total = Math.max(total, current.total_suppliers);
+    if (current.suppliers.length === 0 || page >= Math.ceil(total / supplierPageSize)) return pages;
+  }
+  throw new Error('la lectura de proveedores no terminó: el servidor publicó más páginas que su propio total');
+}
+
+/** La lista completa de proveedores que el selector tiene que publicar, en el orden del contrato. */
+export async function allListedSuppliers(session: Session): Promise<readonly ListedSupplier[]> {
+  return (await allSupplierPages(session)).flatMap(page => page.suppliers);
 }
 
 /**
- * El proveedor de la corrida dentro de la página que el selector publica, o el motivo por el que no
- * está: elegir un proveedor que la pantalla no lista es imposible, y esta lectura lo dice antes de
+ * El proveedor de la corrida dentro de la lista completa que el selector publica, o el motivo por el que
+ * no está: elegir un proveedor que la pantalla no lista es imposible, y esta lectura lo dice antes de
  * intentar un clic que nunca podría funcionar.
  */
 export async function listedSupplier(session: Session, supplierId: number): Promise<ListedSupplier> {
-  const page = await screenSupplierPage(session);
-  const row = page.suppliers.find(candidate => candidate.id === supplierId);
+  const suppliers = await allListedSuppliers(session);
+  const row = suppliers.find(candidate => candidate.id === supplierId);
   if (row === undefined) {
-    throw new Error(`el selector de Ingresos publica ${page.suppliers.length} de ${page.total_suppliers} ` +
-      `proveedores y el ${supplierId} no está en esa página`);
+    throw new Error(`el selector de Ingresos publica ${suppliers.length} proveedores y el ${supplierId} ` +
+      'no está en ninguno: la lista que el operador puede elegir está incompleta');
   }
   return row;
 }

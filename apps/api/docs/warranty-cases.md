@@ -403,12 +403,17 @@ of the case's branch, and it is the mirror of the write-off of a finding:
 * The release requires a recorded notice (`409 notice_required`), it happens once
   (`409 already_released`) and it exists only once the factory has answered
   (`409 resolution_pending`).
-* The unit that returns is the single unit a claim got back as a sellable battery: the one the factory
-  returned repaired or replaced, whether its destination is the client or the branch's own shelf. A
-  claim whose battery never came back as a usable unit — kept by the factory, scrapped or the damaged
-  battery of a `not_covered` verdict, which belongs to the used pool — is `409 nothing_to_release`; a
-  branch that tries to authorise a release is `403 forbidden`, and a finding is `409 claim_only`,
-  because its units are the branch's own and came back at its resolution.
+* The unit that returns is the single unit a claim got back as a sellable battery, and the verdict is the
+  fact that says whether there is one: the verdict is `repaired` or `replaced` **and** its destination is
+  the client or the branch's own shelf, so the claim came back with a unit the branch may sell. The
+  destination alone never answers it — it states where the unit went and not in what condition it came
+  back — and neither does the verdict alone: a repaired battery the factory kept is not the branch's.
+  `lost` (the factory kept it), `unrepairable`, `refused_at_warehouse` (the factory never saw it), the
+  `not_covered` unit that belongs to the used pool, and the destinations `scrap` and
+  `retained_by_factory` are every one of them `409 nothing_to_release`, whatever the case declared, and
+  the refusal writes no event and no balance; a branch that tries to authorise a release is
+  `403 forbidden`, and a finding is `409 claim_only`, because its units are the branch's own and came
+  back at its resolution.
 * The release of a case whose `reported_destination` is `stock` and whose verdict is `repaired` or
   `replaced` **closes the case**: the factory gave a usable battery back that the client never came to
   collect, so it is the branch's sellable stock and it never leaves with anyone. That release states

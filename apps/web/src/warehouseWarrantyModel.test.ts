@@ -48,6 +48,15 @@ const findingEvents = () => [
   event({ ordinal: 4, phase: 'at_factory', factory_case_number: 'F-2214', recorded_at: '2026-03-10T12:00:00Z' }),
 ];
 /** A claim the factory answered and whose unit came back for the client, still in custody (S13). */
+/** A claim the factory answered with a verdict that did not give a usable unit back (S11). */
+const neverReturnedClaim = (verdict: string, over: Record<string, unknown> = {}) => parseWarrantyCase(claimJSON({
+  phase: 'resolved', verdict, reported_destination: 'customer', loan_destination: 'customer',
+  loans: [loan()],
+  events: [...atFactoryEvents(),
+    event({ ordinal: 5, phase: 'resolved', recorded_at: '2026-03-12T12:00:00Z', note: 'Sin unidad' }),
+    event({ ordinal: 6, kind: 'notice', phase: 'resolved', recorded_at: '2026-03-16T12:00:00Z', note: 'Avisado' })],
+  ...over,
+}));
 const resolvedClaim = (over: Record<string, unknown> = {}) => parseWarrantyCase(claimJSON({
   phase: 'resolved', verdict: 'repaired', reported_destination: 'customer', loan_destination: 'stock',
   loans: [loan()],
@@ -190,6 +199,27 @@ describe('the custody and the release (S13, S14, S19)', () => {
     expect(pooled[1].state).toBe('absent');
     expect(pooled[1].note).toMatch(/pool de usadas/);
     expect(pooled[2].state).toBe('absent');
+  });
+
+  it('never offers the release of a unit the factory did not give back, whatever the destination says', () => {
+    // The destination states where a unit went and the verdict states in what condition it came back, and
+    // it takes both facts to say the branch holds a unit it may sell (S11, S13, S31). A case declared to the
+    // client whose unit the factory kept, could not repair or refused before seeing it holds nothing, and a
+    // release here would add one unit of stock that never existed.
+    for (const verdict of ['lost', 'unrepairable', 'refused_at_warehouse']) {
+      const held = neverReturnedClaim(verdict);
+      expect(warehouseReleaseSubject(held)).toBe(false);
+      expect(warehouseReleaseSubjectKind(held)).toBeNull();
+      expect(warehouseReleaseAvailable(held)).toBe(false);
+      expect(warehouseReleaseBlocked(held)).toMatch(/no volvió/);
+    }
+    // The repaired unit the factory kept is not the branch's either, and neither is the scrapped one: the
+    // destination is the other half of the same pair, and the release reads both.
+    for (const destination of ['retained_by_factory', 'scrap']) {
+      const away = neverReturnedClaim('repaired', { reported_destination: destination });
+      expect(warehouseReleaseSubject(away)).toBe(false);
+      expect(warehouseReleaseAvailable(away)).toBe(false);
+    }
   });
 
   it('offers the release only to a resolved claim whose notice is on record', () => {

@@ -12,11 +12,11 @@ import {
   stockEntryReversalErrorMessages, stockEntryReversalFailureIsDefinite, stockEntryReversible,
   groupSupplierCatalog, supplierCatalogGroupDraftUnits, supplierCatalogGroupKeyOf, supplierCatalogProductCount,
   supplierCatalogProductDraftUnits,
-  stockSupplierDraftNotOffered, stockSupplierNoOffers, stockSupplierPageSize, stockSupplierRequired,
+  stockSupplierDraftNotOffered, stockSupplierNoOffers, stockSupplierRequired, readStockSupplierChoices,
   unofferedStockEntryVariantIDs, validStockQuantity,
   type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryDetailLine, type StockEntryErrorCode,
   type StockEntryHistoryPage, type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalErrorCode,
-  type StockEntryReversalInput, type SupplierCatalogRow, type SupplierChoice, type SupplierListPage,
+  type StockEntryReversalInput, type SupplierCatalogRow, type SupplierChoice,
 } from './stockEntryModel';
 import './stock-entry.css';
 
@@ -29,10 +29,12 @@ interface CatalogState {
   readonly problem: string;
 }
 // The suppliers the screen can choose from are their own read: a failed read
-// never leaves a picker or a document behind.
+// never leaves a picker or a document behind. Every active supplier is here, not
+// only the first page of them, so the one that sorts last is as selectable as the
+// one that sorts first.
 interface SupplierState {
   readonly phase: 'loading' | 'ready' | 'error';
-  readonly page: SupplierListPage | null;
+  readonly choices: readonly SupplierChoice[];
   readonly problem: string;
 }
 // The history is its own state: a failed read never touches the draft document.
@@ -89,7 +91,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   const [supplierSwitch, setSupplierSwitch] = useState<{ next: SupplierChoice; trigger: HTMLElement } | null>(null);
   const supplierDialog = useRef<HTMLElement>(null);
   const [suppliersState, setSuppliersState] = useState<SupplierState>(
-    { phase: 'loading', page: null, problem: supplierUnavailable });
+    { phase: 'loading', choices: [], problem: supplierUnavailable });
   const [suppliersRevision, setSuppliersRevision] = useState(0);
   // The document declares its kind, and the kind is chosen before any catalog or
   // document appears: one document never mixes the two kinds.
@@ -147,12 +149,17 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   useEffect(() => {
     const controller = new AbortController();
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
-    setSuppliersState(current => ({ phase: 'loading', page: current.page, problem: supplierUnavailable }));
+    setSuppliersState(current => ({ phase: 'loading', choices: current.choices, problem: supplierUnavailable }));
     void (async () => {
       try {
-        const page = await api.suppliers(1, stockSupplierPageSize, controller.signal);
+        // The supplier read admits only page and page_size and has no search, so the
+        // picker walks every page the server itself counted instead of the first
+        // one: a search over one page would only search the fifty suppliers that page
+        // already holds, and a supplier that sorts last would stay unreachable.
+        const choices = await readStockSupplierChoices(
+          (page, pageSize, signal) => api.suppliers(page, pageSize, signal), controller.signal);
         if (!alive()) return;
-        setSuppliersState({ phase: 'ready', page, problem: '' });
+        setSuppliersState({ phase: 'ready', choices, problem: '' });
       } catch {
         if (alive()) setSuppliersState(current => ({ ...current, phase: 'error', problem: supplierUnavailable }));
       }
@@ -491,7 +498,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     if (detail) detailDialog.current?.focus();
   }, [detail]);
 
-  const supplierChoices = suppliersState.phase === 'ready' && suppliersState.page ? suppliersState.page.suppliers : [];
+  const supplierChoices = suppliersState.phase === 'ready' ? suppliersState.choices : [];
   // Only the kinds this supplier actually offers are offered here: choosing it
   // never shows a kind that would open an empty catalogue.
   const offeredKinds = supplier === null ? [] : stockEntryKinds.filter(option => supplier.kinds.includes(option));

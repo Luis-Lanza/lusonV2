@@ -37,6 +37,11 @@ const unitDestinedToStockMigration = "073_unit_destined_to_stock_is_released.sql
 // close the case and asks the branch to decide.
 const decidedLoansMigration = "074_release_requires_decided_loans.sql"
 
+// The release that returns only a unit the factory gave back as a sellable battery (S11, S13, S14): the
+// destination says where a unit went and the verdict says in what condition it came back, and a claim
+// declared to the client held no unit to release when the factory kept it or could not repair it.
+const unitCameBackMigration = "077_release_requires_the_unit_to_come_back.sql"
+
 // TestWarrantyCasesStructure reads the embedded version exactly as PostgreSQL receives it and
 // asserts the shape it installs: the case with its two exclusive entry doors, the loans with no
 // identity but a model and a quantity, and the append-only history of the journey.
@@ -260,7 +265,7 @@ func TestWarrantyCasesGuards(t *testing.T) {
 			entry.Name() == writeOffMigration || entry.Name() == noticeReleaseMigration ||
 			entry.Name() == stockResolutionMigration || entry.Name() == usedStockMigration ||
 			entry.Name() == usedModelMigration || entry.Name() == unitDestinedToStockMigration ||
-			entry.Name() == decidedLoansMigration {
+			entry.Name() == decidedLoansMigration || entry.Name() == unitCameBackMigration {
 			continue
 		}
 		version, err := migrations.Files.ReadFile(entry.Name())
@@ -1346,4 +1351,160 @@ func TestOneOpenClaimOnALiveDatabase(t *testing.T) {
 	if phase := warrantyPhase(t, ctx, p, second); phase != "received" {
 		t.Fatalf("the second claim is born received, got %s", phase)
 	}
+}
+
+// TestReleaseRequiresTheUnitToComeBackShape reads the embedded version exactly as PostgreSQL receives
+// it: it proves the file restates the release of 074 forward -- one guard narrowed, every other guard
+// of the act untouched -- declares no function of its own, joins the pair 073 names instead of stating
+// a second copy of it, and spends no new `LW` number (S11, S13, S14, S23).
+func TestReleaseRequiresTheUnitToComeBackShape(t *testing.T) {
+	b, err := migrations.Files.ReadFile(unitCameBackMigration)
+	if err != nil {
+		t.Fatal("the unit that must come back migration must be embedded", err)
+	}
+	sql := statements(string(b))
+	for _, required := range []string{
+		// The release is restated whole, and the guard that decides it now reads the verdict.
+		"CREATE OR REPLACE FUNCTION release_case_unit_to_stock() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"IF header.origin <> 'warranty_claim'",
+		"OR header.verdict IS NULL",
+		"OR header.verdict NOT IN ('repaired','replaced')",
+		"OR header.reported_destination IS NULL",
+		"OR header.reported_destination NOT IN ('customer','stock') THEN",
+		"RAISE EXCEPTION USING ERRCODE='LW025',",
+		// The pair of 073 is read here and never declared again, and the rest of the act is unchanged.
+		"IF warranty_case_unit_bound_for_stock(header)",
+		"RAISE EXCEPTION USING ERRCODE='LW036',",
+		"RAISE EXCEPTION USING ERRCODE='LW024',",
+		"UPDATE inventory_balances SET existing=existing+1",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("the release of a unit that never came back is incomplete: missing %s", required)
+		}
+	}
+	// It narrows one guard and adds nothing: no table, no column, no trigger, no function of its own and
+	// no row of any document rewritten.
+	for _, forbidden := range []string{
+		"CREATE FUNCTION", "CREATE TABLE", "ALTER TABLE", "CREATE TRIGGER", "DROP ",
+		"INSERT INTO", "DELETE FROM", "TRUNCATE", "UPDATE warranty_case_loans",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("the release of a unit that never came back must not contain %s", forbidden)
+		}
+	}
+	if count := strings.Count(sql, "UPDATE "); count != 1 {
+		t.Fatalf("the release writes one balance update and nothing else, got %d updates", count)
+	}
+	// The refusal is the one the act already had: no number of the vertical is spent here (S23).
+	used := map[string]bool{}
+	for _, match := range regexp.MustCompile(`ERRCODE='(LW[0-9]{3})'`).FindAllStringSubmatch(sql, -1) {
+		used[match[1]] = true
+	}
+	declared := []string{"LW024", "LW025", "LW036"}
+	got := make([]string, 0, len(used))
+	for code := range used {
+		got = append(got, code)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != strings.Join(declared, ",") {
+		t.Fatalf("the release restates the codes it narrows and spends none of its own, got %v", got)
+	}
+	// The file documents the decision it takes, so the next reader does not reconstruct it.
+	for _, documented := range []string{
+		"S11", "S13", "S14", "S23", "S31", "073", "074", "LW025", "verdict",
+		"inventory_balances", "customer", "stock", "pool de usadas",
+	} {
+		if !strings.Contains(string(b), documented) {
+			t.Errorf("077 must document its own decision: %s", documented)
+		}
+	}
+}
+
+// TestReleaseRequiresTheUnitToComeBackOnALiveDatabase proves S11, S13 and S14 on the admitted fixture:
+// a claim declared to the client whose verdict states that no usable unit came back -- the factory kept
+// it, or nobody could repair it -- holds no unit in custody, so the release is refused with LW025 and
+// writes no event and no balance, whatever the destination says. The unit the factory did give back is
+// still released into the branch's sellable stock once, and that case still closes with its delivery.
+func TestReleaseRequiresTheUnitToComeBackOnALiveDatabase(t *testing.T) {
+	ctx, p := unitCameBackFixture(t)
+	for _, verdict := range []string{"lost", "unrepairable", "refused_at_warehouse"} {
+		claim := coveredClaim(t, ctx, p)
+		reachedResolved(t, ctx, p, claim)
+		if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict=$2,
+ reported_destination='customer',loan_destination='customer' WHERE id=$1`, claim, verdict); err != nil {
+			t.Fatalf("the factory verdict %s could not be stated: %v", verdict, err)
+		}
+		if _, err := p.Exec(ctx, noticeSQL, claim, "resolved", 2, "Avisado el cliente"); err != nil {
+			t.Fatalf("the branch registers the notice of the %s case: %v", verdict, err)
+		}
+		shelf := unitShelf(t, ctx, p, 2, 1)
+		before := releaseState(t, ctx, p, claim)
+		_, err := p.Exec(ctx, releaseSQL, claim, "resolved", 1, "La unidad no está")
+		execRefusalMessage(t, err, "LW025", "no unit")
+		if got := releaseState(t, ctx, p, claim); got != before {
+			t.Fatalf("a refused release of a %s unit writes nothing: %s became %s", verdict, before, got)
+		}
+		if got := unitShelf(t, ctx, p, 2, 1); got != shelf {
+			t.Fatalf("a %s unit is never sellable stock: the shelf %d became %d", verdict, shelf, got)
+		}
+		if phase := warrantyPhase(t, ctx, p, claim); phase != "resolved" {
+			t.Fatalf("a refused release leaves the %s case resolved, got %s", verdict, phase)
+		}
+	}
+	// The unit the destination states the branch may sell never came back, so the destination alone is
+	// not the answer either: a repaired unit the factory kept is refused with the same code.
+	kept := coveredClaim(t, ctx, p)
+	reachedResolved(t, ctx, p, kept)
+	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='repaired',
+ reported_destination='retained_by_factory',loan_destination='customer' WHERE id=$1`, kept); err != nil {
+		t.Fatalf("the resolution of the kept unit could not be stated: %v", err)
+	}
+	if _, err := p.Exec(ctx, noticeSQL, kept, "resolved", 2, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch registers the notice of the kept case: %v", err)
+	}
+	_, err := p.Exec(ctx, releaseSQL, kept, "resolved", 1, "La unidad no está")
+	execRefusalMessage(t, err, "LW025", "no unit")
+
+	// The path this version must not move: the unit the factory did give back to the client's claim is
+	// still released into the branch's sellable stock, once, and the case keeps closing with the
+	// delivery its branch owes the client (S13, S14, S31).
+	returned := coveredClaim(t, ctx, p)
+	reachedResolved(t, ctx, p, returned)
+	if _, err := p.Exec(ctx, `UPDATE warranty_cases SET verdict='replaced',
+ reported_destination='customer',loan_destination='stock' WHERE id=$1`, returned); err != nil {
+		t.Fatalf("the resolution of the returned unit could not be stated: %v", err)
+	}
+	if _, err := p.Exec(ctx, noticeSQL, returned, "resolved", 2, "Avisado el cliente"); err != nil {
+		t.Fatalf("the branch registers the notice of the returned case: %v", err)
+	}
+	shelf := unitShelf(t, ctx, p, 2, 1)
+	if _, err := p.Exec(ctx, releaseSQL, returned, "resolved", 1, "El cliente no volvió"); err != nil {
+		t.Fatalf("the warehouse releases the unit that came back: %v", err)
+	}
+	if got := unitShelf(t, ctx, p, 2, 1); got != shelf+1 {
+		t.Fatalf("the released replacement is sellable stock: %d became %d", shelf, got)
+	}
+	if phase := warrantyPhase(t, ctx, p, returned); phase != "resolved" {
+		t.Fatalf("the release of a client's unit never closes the case, got %s", phase)
+	}
+	if _, err := p.Exec(ctx, closeCaseSQL, returned, 2, "Entregada al cliente"); err != nil {
+		t.Fatalf("the client's case keeps closing with its delivery: %v", err)
+	}
+	if phase := warrantyPhase(t, ctx, p, returned); phase != "closed" {
+		t.Fatalf("the delivered case is closed, got %s", phase)
+	}
+	t.Logf("077: the release returns the unit the factory gave back and never one that never came back")
+}
+
+// unitCameBackFixture is the whole prefix of this vertical with the branch stock, the accounts and the
+// price the claims of the release need, applied up to this version so the guard it tests is the one 077
+// installs.
+func unitCameBackFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
+	t.Helper()
+	ctx, p := usedPoolFixture(t, 77)
+	if _, err := p.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,
+ suggested_price,updated_by_account_id) VALUES(2,1,0.01,100.00,1)`); err != nil {
+		t.Fatal("the branch prices could not be configured")
+	}
+	return ctx, p
 }

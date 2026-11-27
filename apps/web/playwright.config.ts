@@ -4,9 +4,18 @@ import { defineConfig } from '@playwright/test';
 import { branchASession } from './e2e/warranty/sessions';
 
 /**
+ * The origin of the server the suite drives, stated once for every use of it: the browser's `baseURL`
+ * here and the `origin` constant of `e2e/warranty/harness.ts`, which is what every spec's API context
+ * and every second browser signs in on. `LUSON_E2E_ORIGIN` is the one input, and the default is the
+ * address every documented local command uses, so a run that states nothing keeps working untouched.
+ * `scripts/test-e2e.sh` states it for the server it starts itself, on a port it chose.
+ */
+export const origin = process.env.LUSON_E2E_ORIGIN?.trim() || 'http://127.0.0.1:8080';
+
+/**
  * The end-to-end harness of the battery warranty vertical (S35). It drives a real browser against the
  * local server the operator already started: this config never boots, restarts or builds anything, so
- * `baseURL` is the running http://127.0.0.1:8080 and there is no `webServer`.
+ * `baseURL` is that running origin (see above) and there is no `webServer`.
  *
  * One worker, because every spec shares the one database the server is reading: two browsers arranging
  * sales and cases at once would race on the stock of a variant. Each spec arranges its own data with its
@@ -28,7 +37,7 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   reporter: [['list']],
   use: {
-    baseURL: 'http://127.0.0.1:8080',
+    baseURL: origin,
     headless: true,
     viewport: { width: 1440, height: 960 },
     locale: 'es-BO',
