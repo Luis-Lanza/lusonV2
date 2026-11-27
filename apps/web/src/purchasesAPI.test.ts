@@ -6,7 +6,8 @@ import {
   purchaseHistoryPath, purchaseListingPath, purchasePeriodToken, purchaseReversePath,
   type PurchaseHistoryRow, type PurchasePeriod,
 } from './purchasesAPI';
-import type { PurchaseInput, PurchaseReversalInput } from './purchaseModel';
+import { purchaseMaxBalanceRows, purchaseMaxLines,
+  type PurchaseInput, type PurchaseReversalInput } from './purchaseModel';
 
 const csrf = 'c'.repeat(43);
 const key = 'purchase_key_0001';
@@ -108,6 +109,20 @@ describe('purchase document decoding', () => {
   ])('rejects %s', (_, raw) => {
     expect(() => parsePurchaseDocument(raw)).toThrow('Respuesta inválida del servidor.');
   });
+
+  it('still refuses a document that carries more lines than a document may write', () => {
+    // The per-document line limit is a document's own, not the pending balance's: one line over it
+    // is a document this server never wrote.
+    const used = Array.from({ length: purchaseMaxLines + 1 }, (_, index) => ({
+      model: `M${String(index).padStart(3, '0')}`, quantity: 1, unit_price: '1.00', amount: '1.00' }));
+    const scrap = Array.from({ length: purchaseMaxLines + 1 }, (_, index) => ({
+      material_id: index + 1, name: 'Cobre', kg: '1.000', price_per_kg: '1.00', amount: '1.00' }));
+    const total = `${String(used.length + scrap.length)}.00`;
+    expect(() => parsePurchaseDocument(documentBody({ used_lines: used, scrap_lines: [],
+      total, paid_cash: total }))).toThrow('Respuesta inválida del servidor.');
+    expect(() => parsePurchaseDocument(documentBody({ used_lines: [], scrap_lines: scrap,
+      total, paid_cash: total }))).toThrow('Respuesta inválida del servidor.');
+  });
 });
 
 const pendingPeriod = { kind: 'pending', closing_id: null, from: null, to: null, label: 'Pendiente' };
@@ -174,6 +189,29 @@ describe('purchase reads', () => {
     expect(listing.purchases).toHaveLength(1);
     expect(Object.isFrozen(listing)).toBe(true);
     expect(Object.isFrozen(listing.periods)).toBe(true);
+  });
+
+  it('reads a pending balance with more rows than a document may carry lines', () => {
+    // The balance is one row per model of the catalogue, and the catalogue grows: 240 rows is a fact
+    // about the catalogue, not a balance that lied, so the listing is read whole instead of refused.
+    const rows = Array.from({ length: purchaseMaxLines + 50 }, (_, index) => ({
+      model: `M${String(index).padStart(3, '0')}`, bought: '1', delivered: '0', balance: '1' }));
+    const listing = parsePurchaseListing(listingBody({ balance: { used: rows, scrap: [] },
+      totals: { money: null, used_units: String(rows.length), scrap_kg: '0.000' } }));
+    expect(listing.balance?.used).toHaveLength(purchaseMaxLines + 50);
+    expect(listing.balance?.used[0]).toEqual({ model: 'M000', bought: 1, delivered: 0, balance: 1 });
+    expect(listing.totals).toEqual({ money_cents: null, used_units: purchaseMaxLines + 50,
+      scrap_kg_milli: 0n });
+  });
+
+  it('refuses a balance with more rows than one row per model could explain', () => {
+    // The balance has its own lie guard: far above any catalogue, so an answer past it is not a
+    // balance at all and the listing is refused whole.
+    const rows = Array.from({ length: purchaseMaxBalanceRows + 1 }, (_, index) => ({
+      model: `M${String(index).padStart(5, '0')}`, bought: '1', delivered: '0', balance: '1' }));
+    expect(() => parsePurchaseListing(listingBody({ balance: { used: rows, scrap: [] },
+      totals: { money: null, used_units: String(rows.length), scrap_kg: '0.000' } })))
+      .toThrow('Respuesta inválida del servidor.');
   });
 
   it('parses a settlement listing with its window, its own totals and no balance', () => {

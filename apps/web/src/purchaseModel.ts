@@ -17,7 +17,15 @@ import { newTransferRetryKey } from './transferModel';
 // Frozen bounds and text shapes of the contract
 // ---------------------------------------------------------------------------------
 
+/** A document's own writing: at most this many used lines and this many scrap lines. */
 export const purchaseMaxLines = 190;
+/**
+ * The pending balance is not a document: it carries one row per model of the catalogue and one row
+ * per material, so its row count follows the catalogue, which grows, and not the 190 lines an
+ * operator may write in a document. This bound is the balance's own lie guard — far above any
+ * catalogue, far below what a broken answer could claim — and must never be the line limit.
+ */
+export const purchaseMaxBalanceRows = 50_000;
 export const purchaseMaxQuantity = 1_000_000;
 export const purchaseMaxNote = 500;
 export const purchaseMaxReason = 500;

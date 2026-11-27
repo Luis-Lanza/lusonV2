@@ -15,4 +15,5 @@ export function sessionState(username: string): string {
 }
 
 export const branchASession = sessionState('bot_sucursal_a');
+export const branchBSession = sessionState('bot_sucursal_b');
 export const warehouseSessionState = sessionState('bot_almacen');

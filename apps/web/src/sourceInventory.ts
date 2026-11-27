@@ -19,6 +19,15 @@ export class SourceInventoryError extends Error {
   }
 }
 
+/**
+ * A lie guard, not a catalog limit. The reader has no page count of its own: it
+ * asks for every page the published total covers, however many that is. A total
+ * far above any branch's catalog could only be a broken answer, so it is refused
+ * after the first page instead of being paged through forever.
+ */
+const MAX_VARIANTS = 50000;
+const PAGE_SIZE = 50;
+
 // Complete catalog membership, NOT a transaction-wide quantity snapshot.
 export async function loadSourceInventory(source: TransferLocationID, options: SourceInventoryOptions = {}, fetcher: typeof globalThis.fetch = globalThis.fetch): Promise<SourceCatalog> {
   if (!validTransferLocation(source)) throw new SourceInventoryError('invalid_source');
@@ -30,11 +39,15 @@ export async function loadSourceInventory(source: TransferLocationID, options: S
   const seen = new Set<number>();
   let location: Readonly<Location> | undefined;
   let total: number | undefined;
-  for (let page = 1; page <= 4; page++) {
+  // The page count is derived from the published total, so a catalog of any size
+  // is read whole and a short, duplicated or reordered page is refused by the
+  // checks below instead of leaving rows unread forever.
+  let lastPage = 1;
+  for (let page = 1; page <= lastPage; page++) {
     checkCanceled();
     let reply: Response;
     try {
-      reply = await fetcher(queryURL({ ...initialQuery(source, kind), page, size: 50 }), {
+      reply = await fetcher(queryURL({ ...initialQuery(source, kind), page, size: PAGE_SIZE }), {
         method: 'GET', credentials: 'same-origin', cache: 'no-store', signal,
         headers: passive ? { 'X-Luson-Passive': '1' } : {},
       });
@@ -52,12 +65,14 @@ export async function loadSourceInventory(source: TransferLocationID, options: S
     checkCanceled();
     let data;
     try { data = parseInventory(raw); } catch { throw malformed(); }
-    if (data.location.id !== source || data.page !== page || data.page_size !== 50
+    if (data.location.id !== source || data.page !== page || data.page_size !== PAGE_SIZE
       || (total !== undefined && data.total_variants !== total)
       || (location && data.location.name !== location.name)) throw malformed();
     total = data.total_variants;
     location ??= Object.freeze({ ...data.location });
-    const expected = Math.min(50, Math.max(0, total - (page - 1) * 50));
+    if (total > MAX_VARIANTS) throw malformed();
+    lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const expected = Math.min(PAGE_SIZE, Math.max(0, total - (page - 1) * PAGE_SIZE));
     if (data.items.length !== expected) throw malformed();
     for (const item of data.items) {
       if (seen.has(item.variant_id) || (rows.length > 0 && item.variant_id <= rows[rows.length - 1].variant_id)

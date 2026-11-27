@@ -17,6 +17,7 @@ import (
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
 	"luson/api/internal/catalog"
+	"luson/api/internal/catalogadmin"
 	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
@@ -1118,6 +1119,9 @@ type closingHTTPFixture struct {
 	handler http.Handler
 	tokens  []string
 	prices  *pricing.Store
+	// service is the authentication service the handler was built with, so a fixture can also
+	// write through the catalogue's own store with the same session tokens the HTTP surface uses.
+	service *auth.Service
 }
 
 // closingFixture needs the isolated test PostgreSQL. Admission fails closed inside testpg.Open,
@@ -1156,7 +1160,7 @@ func closingFixture(t *testing.T) *closingHTTPFixture {
 		t.Fatal("settlement HTTP auth fixture failed")
 	}
 	f := &closingHTTPFixture{ctx: ctx, p: p, cfg: transferConfig(t), tokens: make([]string, 3),
-		prices: pricing.New(p)}
+		prices: pricing.New(p), service: svc}
 	for i, c := range credentials {
 		_, token, err := svc.Login(ctx, c.Username, c.Password, fmt.Sprintf("127.0.0.%d", i+1), "")
 		if err != nil {
@@ -1248,7 +1252,7 @@ func (f *closingHTTPFixture) sheet(t *testing.T, id int64) []closings.Counted {
 		t.Fatal("count sheet read failed")
 	}
 	defer rows.Close()
-	lines := make([]closings.Counted, 0, closings.MaxCountLines)
+	lines := make([]closings.Counted, 0, 8)
 	for rows.Next() {
 		var line closings.Counted
 		if rows.Scan(&line.VariantID, &line.Quantity) != nil {
@@ -3244,6 +3248,140 @@ func TestSettlementCycleEndToEnd(t *testing.T) {
 		after.CommissionAmount != second.CommissionAmount || after.CashExpenses != second.CashExpenses ||
 		after.OpeningCash != second.OpeningCash || len(after.Corrections) != 0 {
 		t.Fatalf("step 6: a correction must not recalculate the settlement that came after it: %+v", after)
+	}
+}
+
+// stockBranch puts units on the shelf of one branch through the balance the opener photographs.
+// A branch receives stock through a transfer receipt in production; this fixture writes the balance
+// instead of replaying a four-step document per variant, so the case under test is the settlement
+// and not the transfer. The reservation is cleared because the units are already on the shelf.
+func (f *closingHTTPFixture) stockBranch(t *testing.T, branch int64, variants []int64, quantity int64) {
+	t.Helper()
+	for _, variant := range variants {
+		tag, err := f.p.Exec(f.ctx, `UPDATE inventory_balances SET existing=$3,reserved=0
+ WHERE location_id=$1 AND variant_id=$2`, int16(branch), int32(variant), quantity)
+		if err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("the stock of variant %d on branch %d could not be written: %v", variant, branch, err)
+		}
+	}
+}
+
+// branchStockedVariants reads the variants the branch holds in stock, in variant order: exactly the
+// sheet an opener photographs, so the case is stated against the database and not against a count.
+func (f *closingHTTPFixture) branchStockedVariants(t *testing.T, branch int64) []int64 {
+	t.Helper()
+	rows, err := f.p.Query(f.ctx, `SELECT variant_id FROM inventory_balances
+ WHERE location_id=$1 AND existing>0 ORDER BY variant_id`, int16(branch))
+	if err != nil {
+		t.Fatal("the stocked variants of the branch could not be read")
+	}
+	defer rows.Close()
+	variants := make([]int64, 0, 256)
+	for rows.Next() {
+		var variant int64
+		if rows.Scan(&variant) != nil {
+			t.Fatal("a stocked variant of the branch could not be read")
+		}
+		variants = append(variants, variant)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal("the stocked variants of the branch could not be read")
+	}
+	return variants
+}
+
+// closingSheetOf proves a published sheet is exactly the listed variants, one line each and in
+// variant order, so neither a missing line nor an invented one can pass.
+func closingSheetOf(t *testing.T, record closingWireRecord, variants []int64) {
+	t.Helper()
+	if len(record.CountLines) != len(variants) {
+		t.Fatalf("the sheet must carry one line per in-stock variant: %d lines for %d variants",
+			len(record.CountLines), len(variants))
+	}
+	for i, variant := range variants {
+		if record.CountLines[i].VariantID != variant {
+			t.Fatalf("the sheet must carry variant %d at line %d: %+v", variant, i, record.CountLines[i])
+		}
+	}
+}
+
+// TestClosingsBranchAboveTheOldSheetBoundSettles pins S1: the sheet of a settlement is one line per
+// variant the branch holds in stock, so it has no bound of its own. The branch is taken above the
+// 190 variants the catalogue was born with -- the bound migration 028 dropped from the catalogue and
+// that this contract must never re-impose -- and the whole cycle runs over it: open, count, propose,
+// decide and close, with every in-stock variant on the sheet the branch signed.
+func TestClosingsBranchAboveTheOldSheetBoundSettles(t *testing.T) {
+	f := closingFixture(t)
+	const branch = int64(2)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/branches/%d/commission", branch),
+		`{"commission_rate_percent":"10.00"}`)); w.Code != 200 {
+		t.Fatalf("the rate of the branch must be configured: %d %s", w.Code, w.Body.String())
+	}
+
+	// The branch outgrows the catalogue it was seeded with. Four batteries are created through the
+	// catalogue's own writer, so every active branch holds a balance row for their eight variants,
+	// and those variants reach the shelf of the branch.
+	admin := catalogadmin.New(f.p, f.service)
+	grown := make([]int64, 0, 8)
+	for i := 0; i < 4; i++ {
+		battery, err := admin.Create(f.ctx, f.tokens[0], catalogadmin.CreateInput{
+			Brand: "TOYO", Model: fmt.Sprintf("RENDICION-%d", i), Capacity: catalog.Decimal("45"),
+			Polarities: []catalog.Polarity{catalog.Left, catalog.Right}})
+		if err != nil {
+			t.Fatalf("the catalogue must admit a new battery: %v", err)
+		}
+		for _, variant := range battery.Variants {
+			grown = append(grown, variant.ID)
+		}
+	}
+	f.stockBranch(t, branch, grown, 4)
+
+	// The premise: the branch holds more in-stock variants than the bound this contract carried.
+	stocked := f.branchStockedVariants(t, branch)
+	if len(stocked) <= 190 {
+		t.Fatalf("the fixture must take the branch above 190 in-stock variants: %d", len(stocked))
+	}
+
+	// Open: the sheet is the branch's own stock, one line per variant, published whole.
+	opened := closingWire(t, f.serve(t, f.request(1, "POST", "/api/closings",
+		fmt.Sprintf(`{"branch_location_id":%d}`, branch))), 201)
+	if opened.Status != "open" {
+		t.Fatalf("the settlement of a large branch must open: %+v", opened)
+	}
+	closingSheetOf(t, opened, stocked)
+
+	// Count: the whole sheet in one request, which is what the warehouse does when every line agrees
+	// with the system.
+	counted := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/count", opened.ID), closingCountBody(f.sheet(t, opened.ID)))), 200)
+	closingSheetOf(t, counted, stocked)
+
+	// The drawer and the offer of the first settlement, exactly like any other branch's.
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", opened.ID),
+		`{"counted_cash":"0.00","contributed_cash":"500.00","closing_cash":"300.00","observation":""}`)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	offered := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/propose", opened.ID), "")), 200)
+	if offered.Status != "proposed" || len(offered.Rounds) != 1 {
+		t.Fatalf("the large settlement must be offered: %+v", offered)
+	}
+
+	// The branch decides, the settlement closes, and the closure publishes and applies every line.
+	closed := closingWire(t, f.serve(t, f.request(int(branch), "POST",
+		fmt.Sprintf("/api/closings/%d/decision", opened.ID), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" || closed.ClosedAt == nil {
+		t.Fatalf("the large settlement must close: %+v", closed)
+	}
+	closingSheetOf(t, closed, stocked)
+	for _, line := range closed.CountLines {
+		if line.CountedQuantity == nil || *line.CountedQuantity != line.ExpectedQuantity {
+			t.Fatalf("a closed line must keep the count it was counted with: %+v", line)
+		}
+		if existing, reserved := f.stock(t, branch, line.VariantID); existing != line.ExpectedQuantity || reserved != 0 {
+			t.Fatalf("variant %d must end at what was counted: %d/%d (want %d/0)",
+				line.VariantID, existing, reserved, line.ExpectedQuantity)
+		}
 	}
 }
 

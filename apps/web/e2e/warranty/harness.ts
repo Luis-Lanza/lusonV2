@@ -27,6 +27,9 @@ export interface Role {
 export const branchA: Role = {
   username: 'bot_sucursal_a', password: 'Bot.SucursalA.2026', locationId: 2, locationName: 'Sucursal A',
 };
+export const branchB: Role = {
+  username: 'bot_sucursal_b', password: 'Bot.SucursalB.2026', locationId: 3, locationName: 'Sucursal B',
+};
 export const warehouseRole: Role = {
   username: 'bot_almacen', password: 'Bot.Almacen.2026', locationId: 1, locationName: 'Almacén',
 };

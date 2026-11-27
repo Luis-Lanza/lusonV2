@@ -198,8 +198,9 @@ POST /api/closings
   `400 invalid_request`.
 * Opening freezes the branch (it can no longer sell, load an expense, receive a transfer,
   receive stock or reconcile), freezes the cut instant of the period, seeds the count sheet
-  with the branch's own stock at that instant — every line already stating the quantity the
-  system expects — seeds the material sheet with what the period bought (see
+  with the branch's own stock at that instant — one line per variant with stock, and the sheet
+  has no size of its own (see [the count sheet](#count-sheet)) — every line already stating the
+  quantity the system expects — seeds the material sheet with what the period bought (see
   [the third account](#the-third-account-materials)) and inherits the fund left by the previous
   closure (`opening_cash`; `"0.00"` for the first settlement).
 * **A branch holds one live settlement at a time**: a second opening is
@@ -229,8 +230,18 @@ POST /api/closings/1/count
   difference, the branch and the settlement are not part of it at all, so a blinded count
   cannot even be expressed; `expected_quantity` or `difference` in a line is `400
   invalid_request`.
-* `lines` holds 1 to 190 entries, `variant_id` is unique per request and `counted_quantity` is
-  a whole number from `0` to `1000000`. `0` is a legitimate result of a physical count.
+* `lines` holds one or more entries, one per variant of the sheet, and neither the sheet nor the
+  request has a line bound of its own: a branch holding any number of variants with stock states
+  them all in one request. `variant_id` is unique per request and must be a battery or a product of
+  the live catalogue (a retired one is `400 invalid_request`), and `counted_quantity` is a whole
+  number from `0` to `1000000`. `0` is a legitimate result of a physical count.
+* What bounds a count is the catalogue and never a copied number: the sheet is one line per
+  catalogue variant, so the catalogue's own size is its only ceiling, which is why migration `028`
+  dropping the catalogue's 190-variant bound left this contract with nothing to re-impose. A body
+  is still a request of this API and stays inside the transport limit of 32 KiB, which is 862
+  counted lines — the body limit over the 38 bytes the shortest line of this contract takes
+  (`{"variant_id":1,"counted_quantity":0},`); a sheet wider than that is counted in more than one
+  request, and the sheet is read whole either way.
 * A line that already exists only changes its counted quantity; a line the system did not have
   is added with the database's own snapshot of `0`. The expected quantity is the snapshot the
   database took at open and is never recalculated, so the sheet stays a fact of the cut.
@@ -1039,10 +1050,11 @@ POST /api/closings/1/corrections
 * `payload` states **at least one** of four values, and every one of them is optional: the
   values a correction does not touch stay **absent** instead of being restated, so a client can
   read which numbers this correction rewrote.
-  * `counted_quantities` is the same array the count sheet admits (1 to 190 lines, one per
-    variant, `counted_quantity` from `0` to `1000000`). The variant must be on the closed
+  * `counted_quantities` is the same array the count sheet admits (one entry per variant, unique
+    per request, `counted_quantity` from `0` to `1000000`). The variant must be on the closed
     settlement's own sheet: a variant it never counted has no recorded quantity to take a
-    difference against, and is `409 {"error":"correction_payload"}`.
+    difference against, and is `409 {"error":"correction_payload"}`. The settlement's own sheet
+    is what bounds it, one line per variant and never a line count.
   * `counted_cash` is the corrected cash the branch counted at the cut.
   * `commission_amount` is the corrected commission of the period. It is informational money
     settled outside the system, so it moves no till and no balance.

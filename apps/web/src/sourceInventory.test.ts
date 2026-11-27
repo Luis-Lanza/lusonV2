@@ -8,6 +8,13 @@ function row(id: number, stock = '9223372036854775807', entry = Math.ceil(id / 2
 function page(ids: number[], total = ids.length, current = 1, source = 1, name = 'Almacén'): string {
   return `{"location":{"id":${source},"name":"${name}"},"items":[${ids.map(id => row(id)).join(',')}],"page":${current},"page_size":50,"total_variants":${total}}`;
 }
+// The origin picker also reads the other-product catalogue, whose rows are not batteries.
+function product(id: number): string {
+  return `{"variant_id":${id},"catalog_entry_id":${id},"kind":"other","name":"Agua acidulada ${id}","detail":"5 L","battery":null,"fields":[{"name":"volumen en L","kind":"number","unit":"L","number":"5"}],"existing":4,"reserved":0,"available":4}`;
+}
+function productPage(ids: number[], total: number, current: number): string {
+  return `{"location":{"id":1,"name":"Almacén"},"items":[${ids.map(product).join(',')}],"page":${current},"page_size":50,"total_variants":${total}}`;
+}
 const json = (raw: string, status = 200) => new Response(raw, { status, headers: { 'Content-Type': 'application/json' } });
 const range = (first: number, count: number) => Array.from({ length: count }, (_, i) => first + i);
 const replies = (...raws: string[]) => vi.fn<typeof fetch>().mockImplementation(async () => json(raws.shift()!));
@@ -52,6 +59,29 @@ describe('R04 source catalog', () => {
     expect(catalog.rows[190]).toMatchObject({ variant_id: 191, catalog_entry_id: 96 });
     expect(fetcher).toHaveBeenCalledTimes(4);
   });
+  // The catalogue publishes 267 other-product and 540 battery variants, so the
+  // reader cannot stop at a page count of its own: eleven pages must load whole.
+  it('loads a complete catalog larger than four pages page by page', async () => {
+    const pages = (total: number, last: number) => Array.from({ length: Math.ceil(total / 50) },
+      (_, i) => page(range(i * 50 + 1, i === Math.ceil(total / 50) - 1 ? last : 50), total, i + 1));
+    const fetcher = replies(...pages(540, 40));
+    const catalog = await loadSourceInventory(1, {}, fetcher);
+    expect(catalog.rows).toHaveLength(540);
+    expect(catalog.rows[539]).toMatchObject({ variant_id: 540, catalog_entry_id: 270 });
+    expect(fetcher).toHaveBeenCalledTimes(11);
+    expect(fetcher.mock.calls[10][0]).toBe('/api/inventory?location_id=1&page=11&page_size=50');
+  });
+  // The absolute boundary of the same rule: 267 other products are five full pages
+  // and a last one of seventeen.
+  it('loads an odd-sized catalog whose last page is not full', async () => {
+    const fetcher = replies(productPage(range(1, 50), 267, 1), productPage(range(51, 50), 267, 2),
+      productPage(range(101, 50), 267, 3), productPage(range(151, 50), 267, 4),
+      productPage(range(201, 50), 267, 5), productPage(range(251, 17), 267, 6));
+    const catalog = await loadSourceInventory(1, { kind: 'other' }, fetcher);
+    expect(catalog.rows).toHaveLength(267);
+    expect(catalog.rows[266].variant_id).toBe(267);
+    expect(fetcher).toHaveBeenCalledTimes(6);
+  });
   it('accepts a consistent empty catalog without fabricated rows', async () => {
     const fetcher = replies(page([]));
     expect((await loadSourceInventory(1, {}, fetcher)).rows).toEqual([]);
@@ -83,6 +113,20 @@ describe('R04 source catalog', () => {
     ['empty-terminal', page([], 51, 2)],
   ])('rejects second-page %s with no partial result', async (_name, raw) => {
     await expect(loadSourceInventory(1, {}, replies(page(range(1, 50), 51), raw))).rejects.toBeInstanceOf(SourceInventoryError);
+  });
+  // A total the pages can never satisfy is still refused, and a published total no
+  // branch could hold is refused after one page instead of asking forever.
+  it('rejects a page that cannot complete the published total', async () => {
+    const fetcher = replies(page(range(1, 50), 540), page(range(51, 50), 540, 2), page(range(101, 50), 540, 3),
+      page(range(151, 50), 540, 4), page(range(201, 50), 540, 5), page(range(251, 50), 540, 6),
+      page(range(301, 50), 540, 7), page(range(351, 50), 540, 8), page(range(401, 50), 540, 9),
+      page(range(451, 50), 540, 10), page(range(501, 39), 540, 11));
+    await expect(loadSourceInventory(1, {}, fetcher)).rejects.toMatchObject({ code: 'malformed', message: 'malformed', status: 200 });
+  });
+  it.each([1000000000, 1000000000000])('refuses an impossible published total %i after the first page', async total => {
+    const fetcher = replies(page(range(1, 50), total));
+    await expect(loadSourceInventory(1, {}, fetcher)).rejects.toMatchObject({ code: 'malformed', message: 'malformed', status: 200 });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('rejects reordered pages even when all returned IDs are unique', async () => {
     await expect(loadSourceInventory(1, {}, replies(page(range(2, 50), 51), page([1], 51, 2)))).rejects.toMatchObject({ code: 'malformed' });

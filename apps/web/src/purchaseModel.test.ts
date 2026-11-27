@@ -3,7 +3,8 @@ import { formatMoney } from './pointOfSaleModel';
 import {
   buildPurchaseInput, canonicalPurchaseInput, canonicalPurchaseModelCode, canonicalPurchaseReason,
   formatKg, formatSignedMoney, kgMilliFromWire, kgMilliToWire, lineAmountCents, newPurchaseDraft,
-  newPurchaseOperationKey, parseTypedKg, purchaseDraftProblem, purchaseMaxLines, purchaseMaxNote,
+  newPurchaseOperationKey, parseTypedKg, purchaseDraftProblem, purchaseMaxBalanceRows, purchaseMaxLines,
+  purchaseMaxNote,
   purchaseMaxQuantity, purchaseReversible, purchaseSettlement, purchaseTotalCents, removePurchaseLine,
   purchaseSharePercent, scrapLineAmountCents, scrapPurchaseLine, setPurchaseNote, setPurchaseSettlement, typedKg,
   upsertPurchaseLine, usedPurchaseLine, validPurchaseModelCode, validPurchaseQuantity,
@@ -172,6 +173,14 @@ describe('the purchase draft state machine', () => {
       draft = upsertPurchaseLine(draft, usedPurchaseLine(`M${index}`, 1, 100n));
     }
     expect(() => upsertPurchaseLine(draft, usedPurchaseLine('ONE-MORE', 1, 100n))).toThrow('Compra inválida.');
+  });
+
+  it('keeps the pending balance bound apart from the document line bound', () => {
+    // A document is what an operator writes, so it is capped at 190 lines of each kind; the pending
+    // balance publishes one row per model of the catalogue, which grows, so its own guard is on
+    // another scale and can never be the document's line limit.
+    expect(purchaseMaxLines).toBe(190);
+    expect(purchaseMaxBalanceRows).toBeGreaterThan(purchaseMaxLines);
   });
 
   it('requires the settlement to equal the total exactly', () => {
