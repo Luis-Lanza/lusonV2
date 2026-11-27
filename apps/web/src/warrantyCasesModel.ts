@@ -419,13 +419,22 @@ export function warrantyUnitBoundForStock(value: WarrantyCase): boolean {
  * from the factory while the case waits — the repaired one a client will collect, and the usable one bound for
  * the branch's own shelf — and it stops holding it when the Almacén releases it to stock or when the counter
  * delivers it. A finding holds nothing: its units are the branch's own and came back at its resolution.
+ *
+ * Whether a unit came back is the pair 077 reads in `release_case_unit_to_stock()`: the verdict states that the
+ * factory gave a usable battery back and the destination states that it came back to the branch. The destination
+ * alone never answers it — it says where the unit went and not in what condition it came back — so a `lost`,
+ * `unrepairable` or `refused_at_warehouse` claim holds nothing whatever it declared, a `not_covered` unit is the
+ * pool de usadas and never a sellable one (LW025), and a unit sent out as scrap or kept by the factory did not
+ * come back either. A case the factory has not answered fails closed, because its verdict is still null.
  */
 export function warrantyCustodyUnits(value: WarrantyCase): number {
   if (value.origin !== 'warranty_claim') return 0;
   if (value.phase !== 'resolved') return 0;
-  // S13, S31: one battery came back to the branch and waits in custody — the repaired unit a client will
-  // collect, and the usable unit bound for the branch's own shelf, which the release enters into stock.
-  if (value.reported_destination !== 'customer' && !warrantyUnitBoundForStock(value)) return 0;
+  // S11, S13, S14: only the unit the factory returned repaired or replaced is in custody, and only while the
+  // destination is one that brings it back to the branch — for the client who will collect it, or for the
+  // branch's own shelf, which the release enters into stock.
+  if (value.verdict !== 'repaired' && value.verdict !== 'replaced') return 0;
+  if (value.reported_destination !== 'customer' && value.reported_destination !== 'stock') return 0;
   return warrantyReleased(value) ? 0 : 1;
 }
 

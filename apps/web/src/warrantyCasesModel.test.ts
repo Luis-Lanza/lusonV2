@@ -200,6 +200,31 @@ describe('what the screen derives from the persisted facts', () => {
     // A finding holds nothing: its units are the branch's own and came back at its resolution.
     expect(warrantyCustodyUnits(parseWarrantyCase(defectJSON()))).toBe(0);
   });
+  it('counts no custody for a unit the factory kept or could not repair, whatever the case declared (S11, S13)',
+    () => {
+      const custody = (verdict: string, destination = 'customer') => warrantyCustodyUnits(
+        parseWarrantyCase(resolvedJSON({ verdict, reported_destination: destination })));
+      // 077's guard read from the client: the unit that waits is the one the factory gave back as a usable
+      // battery, and the destination only says where it went. A case declared to the client whose factory
+      // answer was `lost`, `unrepairable`, `not_covered` or `refused_at_warehouse` held nothing, and the
+      // screen showed one unit in custody that never existed.
+      for (const verdict of ['lost', 'unrepairable', 'not_covered', 'refused_at_warehouse']) {
+        expect(custody(verdict)).toBe(0);
+      }
+      // The two verdicts that handed a usable battery back do hold it, in either destination that returns
+      // the unit to the branch (S11, S31).
+      expect(custody('repaired')).toBe(1);
+      expect(custody('replaced')).toBe(1);
+      expect(custody('repaired', 'stock')).toBe(1);
+      expect(custody('replaced', 'stock')).toBe(1);
+      // The destination is the other half of the same pair: a repaired unit out as scrap or kept by the
+      // factory did not come back to the branch either.
+      expect(custody('repaired', 'scrap')).toBe(0);
+      expect(custody('replaced', 'retained_by_factory')).toBe(0);
+      // A case the factory never answered fails closed.
+      expect(warrantyCustodyUnits(parseWarrantyCase(caseJSON({ phase: 'resolved', events: resolvedEvents() }))))
+        .toBe(0);
+    });
   it('names the phase of a closed case by the act that closed it, never by the phase alone (S19, S31)', () => {
     // The release sold the unit: the case is not `Entregada al cliente`, which is the delivery's reading.
     expect(warrantyPhaseShortLabel(parseWarrantyCase(releasedStockJSON()))).toBe('Cerrada por liberación');
