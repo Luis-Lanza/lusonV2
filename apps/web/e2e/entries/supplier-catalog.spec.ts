@@ -1,7 +1,7 @@
 import {
-  addBattery, arrangeBatterySupplier, catalogPanel, catalogRow, catalogRows, catalogSearch, chooseSupplier,
-  confirmButton, documentPanel, draftQuantity, draftRow, draftTotals, expect, openEntries, supplierCatalog, test,
-  warehouseRole, warehouseSessionState,
+  addBattery, allListedSuppliers, arrangeBatterySupplier, catalogPanel, catalogRow, catalogRows, catalogSearch,
+  chooseSupplier, confirmButton, documentPanel, draftQuantity, draftRow, draftTotals, expect, openEntries,
+  screenSupplierPage, supplierCatalog, supplierSelect, test, warehouseRole, warehouseSessionState,
 } from './harness';
 
 // El catálogo que el ingreso nombra es el del proveedor elegido: la pantalla es del Almacén.
@@ -18,6 +18,13 @@ test.use({ storageState: warehouseSessionState });
  * El arreglo previo —el proveedor y su batería— va por la API pública de la misma sesión, que es también
  * la lectura con la que se contrasta qué variante ofreció el proveedor. Este acto no escribe nada: el
  * borrador no toca el stock hasta confirmar, y por eso no hay documento que leer.
+ *
+ * El proveedor de la corrida ordena **último** por su nombre (`supplierName`, en el arnés), así que queda
+ * fuera de la primera página de `GET /api/suppliers`. Ese es el defecto que esta prueba cubre: el selector
+ * pedía una sola página de cincuenta y el operador no podía elegir a los proveedores que ordenaban
+ * después. Se afirma primero, contra el contrato, que el proveedor no entra en esa primera página; después
+ * que el selector ofrece su opción y que elegirla deja el documento con ese proveedor, y recién entonces
+ * se recorre el catálogo. Ninguna otra aserción de este acto cambia.
  */
 
 test('la búsqueda en el catálogo del proveedor filtra sus productos y llena las líneas del documento',
@@ -29,8 +36,19 @@ test('la búsqueda en el catálogo del proveedor filtra sus productos y llena la
     const offered = await supplierCatalog(warehouse, supplier.supplierId, 'battery');
     expect(offered.map(item => item.variant_id)).toEqual([variant.variantId]);
 
+    // El proveedor que esta prueba elige no está en la primera página de la lista y ordena después de
+    // todos los que sí están: la base tiene más de una página, y la lista completa lo contiene.
+    const firstPage = await screenSupplierPage(warehouse);
+    expect(firstPage.total_suppliers).toBeGreaterThan(firstPage.page_size);
+    expect(firstPage.suppliers.map(listed => listed.id)).not.toContain(supplier.supplierId);
+    expect(firstPage.suppliers.every(listed => listed.name.toLowerCase() < supplier.supplierName.toLowerCase()))
+      .toBe(true);
+    expect((await allListedSuppliers(warehouse)).map(listed => listed.id)).toContain(supplier.supplierId);
+
     await openEntries(page);
     await chooseSupplier(page, warehouse, supplier.supplierId);
+    // Elegirlo es un acto real: el contexto del documento queda con el proveedor que ordena último.
+    await expect(supplierSelect(page)).toHaveValue(String(supplier.supplierId));
 
     // La búsqueda del catálogo publica exactamente el producto del proveedor de esta corrida.
     await catalogSearch(page, 'battery').fill(supplier.model);

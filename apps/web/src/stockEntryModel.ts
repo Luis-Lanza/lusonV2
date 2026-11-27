@@ -93,7 +93,11 @@ export const stockEntryKindDescriptions: Record<Kind, string> = {
   other: 'Del catálogo libre: nombre y sus campos propios.',
 };
 export const stockCatalogPageSize = 50;
-/** One page of suppliers is all the picker asks for, and it asks for the maximum. */
+/**
+ * The widest page the supplier read admits, and the one the picker asks for: the
+ * screen walks every page the server publishes (`stockSupplierPageCount`) instead
+ * of searching, because that read has no search to use.
+ */
 export const stockSupplierPageSize = 50;
 /**
  * The catalogue of one supplier is a single server-capped page, never paged here.
@@ -431,6 +435,68 @@ export function validStockSupplierQuery(page: number, pageSize: number): boolean
 export function stockSupplierListPath(page: number, pageSize: number): string {
   if (!validStockSupplierQuery(page, pageSize)) return invalidResponse();
   return `/api/suppliers?page=${page}&page_size=${pageSize}`;
+}
+
+/**
+ * The number of pages the frozen supplier read publishes for the total it stated.
+ *
+ * The picker needs every one of them: `/api/suppliers` admits only `page` and
+ * `page_size` (10, 25 and 50) and offers no search, so there is no query to send
+ * as the operator types, and a search over the first page would only search the
+ * fifty suppliers that page already holds. Paging the control alone would leave
+ * the operator guessing which page holds the supplier; walking the pages the
+ * server itself counted is what puts every active supplier in the one list.
+ */
+export function stockSupplierPageCount(totalSuppliers: number): number {
+  if (typeof totalSuppliers !== 'number' || !Number.isSafeInteger(totalSuppliers) || totalSuppliers < 0) {
+    return invalidResponse();
+  }
+  return Math.ceil(totalSuppliers / stockSupplierPageSize);
+}
+
+/**
+ * Every supplier the published pages named, in the order the read listed them: the
+ * active ones first by name and the retired ones last, exactly as each page stated.
+ * A supplier listed by two pages was shifted across their boundary by a concurrent
+ * write and is carried once, so the control never repeats a row.
+ */
+export function stockSupplierChoices(pages: readonly SupplierListPage[]): readonly SupplierChoice[] {
+  const seen = new Set<number>();
+  const choices: SupplierChoice[] = [];
+  for (const page of pages) {
+    for (const choice of page.suppliers) {
+      if (seen.has(choice.id)) continue;
+      seen.add(choice.id);
+      choices.push(choice);
+    }
+  }
+  return Object.freeze(choices);
+}
+
+/** One page of the frozen supplier read, as the transport answers it. */
+export type StockSupplierPageReader =
+  (page: number, pageSize: number, signal?: AbortSignal) => Promise<SupplierListPage>;
+
+/**
+ * Reads the whole supplier list the screen chooses from, page by page.
+ *
+ * The read it walks publishes only `page` and `page_size`, so the walk is the only
+ * way to reach the suppliers that sort after the first page. The walk asks for the
+ * widest admitted page and stops at the total the server itself counted, following
+ * a total that grows while it reads and a page that comes back empty; a failed page
+ * rejects the whole read, so the picker never shows half a list as if it were all.
+ */
+export async function readStockSupplierChoices(read: StockSupplierPageReader,
+  signal?: AbortSignal): Promise<readonly SupplierChoice[]> {
+  const pages: SupplierListPage[] = [];
+  let total = 0;
+  for (let page = 1; page <= stockEntryHistoryMaxPage; page += 1) {
+    const current = await read(page, stockSupplierPageSize, signal);
+    pages.push(current);
+    total = Math.max(total, current.total_suppliers);
+    if (current.suppliers.length === 0 || page >= stockSupplierPageCount(total)) break;
+  }
+  return stockSupplierChoices(pages);
 }
 
 /**

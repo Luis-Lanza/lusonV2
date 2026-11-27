@@ -9,11 +9,14 @@ import {
   stockEntryHistoryPageSizes, stockEntryReversalAdmittedErrors, stockEntryReversalErrorMessages,
   stockEntryReversalFailureIsDefinite, stockEntryReversalPath, stockEntryReversible, validStockEntryHistoryQuery,
   validStockQuantity, offeredStockEntryVariantIDs, parseStockSupplierError, parseSupplierCatalog, parseSupplierList,
-  stockSupplierAdmittedErrors, stockSupplierListPath, stockSupplierMaxCatalogPageSize, stockSupplierNoOffers,
-  stockSupplierPageSize, supplierCatalogPath, unofferedStockEntryVariantIDs,
+  validStockSupplierQuery,
+  stockSupplierAdmittedErrors, stockSupplierChoices, stockSupplierListPath, stockSupplierMaxCatalogPageSize,
+  stockSupplierNoOffers, stockSupplierPageCount, stockSupplierPageSize, readStockSupplierChoices, supplierCatalogPath,
+  unofferedStockEntryVariantIDs,
   groupSupplierCatalog, supplierCatalogGroupDraftUnits, supplierCatalogGroupKeyOf, supplierCatalogProductCount,
   supplierCatalogProductDraftUnits, stockEntryOtherGroupLabel,
   type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalInput, type SupplierCatalogRow,
+  type SupplierListPage,
 } from './stockEntryModel';
 
 const key = 'warehouse_key_0001';
@@ -399,6 +402,112 @@ describe('supplier read contract of the ingress screen', () => {
     expect(() => supplierCatalogPath(3, 'battery', 'x'.repeat(129))).toThrow('Respuesta inválida del servidor.');
     expect(() => stockSupplierListPath(0, 50)).toThrow('Respuesta inválida del servidor.');
     expect(() => stockSupplierListPath(1, 51)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('reads every page the frozen supplier query publishes, never only the first one', () => {
+    // page and page_size are the whole query of that read: it has no search, so the
+    // only way to reach a supplier that sorts after the first page is to walk them.
+    expect(stockSupplierPageCount(0)).toBe(0);
+    expect(stockSupplierPageCount(1)).toBe(1);
+    expect(stockSupplierPageCount(stockSupplierPageSize)).toBe(1);
+    expect(stockSupplierPageCount(stockSupplierPageSize + 1)).toBe(2);
+    // The operator's warehouse: 161 suppliers are four pages, the last one holding one row.
+    expect(stockSupplierPageCount(161)).toBe(4);
+    for (const total of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => stockSupplierPageCount(total)).toThrow('Respuesta inválida del servidor.');
+    }
+    // Every page of that walk is a page the contract admits.
+    for (let page = 1; page <= stockSupplierPageCount(161); page += 1) {
+      expect(validStockSupplierQuery(page, stockSupplierPageSize)).toBe(true);
+    }
+  });
+
+  it('joins every published page of suppliers into the one list the picker shows', () => {
+    const rows = (from: number, count: number) => Array.from({ length: count }, (_, index) => supplierChoiceJSON({
+      id: from + index, name: `Proveedor ${from + index}` }));
+    const page = (number: number, suppliers: readonly Record<string, unknown>[]) => parseSupplierList(JSON.stringify({
+      suppliers, page: number, page_size: 50, total_suppliers: 161 }));
+    const choices = stockSupplierChoices([
+      page(1, rows(100, 50)), page(2, rows(150, 50)), page(3, rows(200, 50)), page(4, rows(250, 11))]);
+    // The 161 published suppliers reach the control, in the order the read listed them:
+    // the supplier that sorts after the first fifty is selectable like the first one.
+    expect(choices).toHaveLength(161);
+    expect(choices[0]).toMatchObject({ id: 100, name: 'Proveedor 100' });
+    expect(choices[49]).toMatchObject({ id: 149 });
+    expect(choices[50]).toMatchObject({ id: 150 });
+    expect(choices[160]).toMatchObject({ id: 260 });
+    expect(Object.isFrozen(choices)).toBe(true);
+    expect(stockSupplierChoices([])).toEqual([]);
+    // A supplier created while the pages are being read shifts a row across a page
+    // boundary: the read lists it twice and the control carries it exactly once.
+    const shifted = stockSupplierChoices([page(1, rows(100, 50)), page(2, [...rows(149, 1), ...rows(151, 1)])]);
+    expect(shifted).toHaveLength(51);
+    expect(shifted[49]).toMatchObject({ id: 149 });
+    expect(shifted[50]).toMatchObject({ id: 151 });
+  });
+
+  it('walks every page of the supplier read and stops at the total the server counted', async () => {
+    const asked: number[] = [];
+    const read = async (page: number, pageSize: number): Promise<SupplierListPage> => {
+      asked.push(page);
+      const from = 100 + (page - 1) * pageSize;
+      const rows = page === 4 ? 11 : pageSize;
+      return parseSupplierList(JSON.stringify({ page, page_size: pageSize, total_suppliers: 161,
+        suppliers: Array.from({ length: rows }, (_, index) => supplierChoiceJSON({ id: from + index,
+          name: `Proveedor ${from + index}` })) }));
+    };
+    const choices = await readStockSupplierChoices(read);
+    // Four requests, each the widest page the contract admits: 161 suppliers are 4 pages.
+    expect(asked).toEqual([1, 2, 3, 4]);
+    expect(choices).toHaveLength(161);
+    expect(choices[0]).toMatchObject({ id: 100 });
+    expect(choices[160]).toMatchObject({ id: 260, name: 'Proveedor 260' });
+    // A warehouse that fits in one page costs one request, as before.
+    const single: number[] = [];
+    const onePage = await readStockSupplierChoices(async (page, pageSize) => {
+      single.push(page);
+      return parseSupplierList(JSON.stringify({ page, page_size: pageSize, total_suppliers: 3,
+        suppliers: [1, 2, 3].map(id => supplierChoiceJSON({ id })) }));
+    });
+    expect(single).toEqual([1]);
+    expect(onePage).toHaveLength(3);
+  });
+
+  it('follows a total that grows while the list is read and stops on a page that comes back empty', async () => {
+    const walk = async (stated: readonly { total: number; rows: number }[]) => {
+      const asked: number[] = [];
+      const choices = await readStockSupplierChoices(async (page, pageSize): Promise<SupplierListPage> => {
+        asked.push(page);
+        const current = stated[page - 1];
+        if (current === undefined) throw new Error('la pantalla pidió una página que el servidor no publicó');
+        const from = 100 + (page - 1) * pageSize;
+        return parseSupplierList(JSON.stringify({ page, page_size: pageSize,
+          total_suppliers: current.total, suppliers: Array.from({ length: current.rows },
+            (_, index) => supplierChoiceJSON({ id: from + index })) }));
+      });
+      return { asked, choices };
+    };
+    // A supplier created after the first page was read raises the total: the walk
+    // follows the newest one instead of stopping at the total it read first.
+    const grown = await walk([{ total: 100, rows: 50 }, { total: 161, rows: 50 },
+      { total: 161, rows: 50 }, { total: 161, rows: 11 }]);
+    expect(grown.asked).toEqual([1, 2, 3, 4]);
+    expect(grown.choices).toHaveLength(161);
+    // A total that promises pages the read no longer serves ends the walk on the
+    // empty page instead of a request loop.
+    const shrunk = await walk([{ total: 161, rows: 50 }, { total: 161, rows: 0 }]);
+    expect(shrunk.asked).toEqual([1, 2]);
+    expect(shrunk.choices).toHaveLength(50);
+  });
+
+  it('fails the whole picker instead of publishing a half read supplier list', async () => {
+    await expect(readStockSupplierChoices(async page => {
+      if (page === 1) {
+        return parseSupplierList(JSON.stringify({ page: 1, page_size: 50, total_suppliers: 161,
+          suppliers: Array.from({ length: 50 }, (_, index) => supplierChoiceJSON({ id: 100 + index })) }));
+      }
+      throw new Error('network');
+    })).rejects.toThrow('network');
   });
 
   it('parses the supplier list with its offer count, its kinds and its retirement', () => {
