@@ -690,6 +690,31 @@ describe('the branch actions follow their dependency (S34)', () => {
     expect(h.posts()).toHaveLength(0);
   });
 
+  it('names a departure refused for the missing loan in the contract words (S4)', async () => {
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([row()]);
+      if (url === '/api/warranty-cases/1') return json(receivedCase({ loans: [loan()] }));
+      if (url === '/api/sales/12') return json(saleBody);
+      if (url === '/api/warranty-cases/1/advance' && init.method === 'POST') return failure('loan_required', 409);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver el caso C-2-000001' }));
+    await screen.findByRole('heading', { name: 'Marta Giménez' });
+    fireEvent.change(screen.getByLabelText('Motivo del envío'), { target: { value: 'Sale al Almacén' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar al Almacén' }));
+    // The refusal is the contract's own code, with the sentence the closed map publishes for it, never
+    // a transport error: the operator reads that the client has no used battery in hand yet.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Un reclamo no sale de la sucursal sin que el cliente tenga una usada en la mano: registrá el préstamo. No se registró nada.');
+    expect(alert).not.toHaveTextContent('La respuesta del servidor no es válida');
+    // The refused tramo wrote nothing, and the departure still says what it was asked to send.
+    expect(h.posts()).toHaveLength(1);
+    expect(JSON.parse(String(h.posts()[0].init.body)))
+      .toEqual({ phase: 'in_transit', factory_case_number: '', note: 'Sale al Almacén' });
+  });
+
   it('keeps every other branch action where it was (S34)', async () => {
     const h = harness(url => {
       if (url === '/api/warranty-cases') return tray([row({ id: 2, case_number: 'C-2-000002', phase: 'resolved' })]);
@@ -793,6 +818,28 @@ describe('registering the exchange from the tray', () => {
     // The refusal wrote nothing: one claim attempt and no case behind it.
     expect(h.posts()).toHaveLength(1);
     expect(h.calls.some(call => call.url === '/api/sales/12')).toBe(false);
+  });
+
+  it('names a second open claim of the same serial in the contract words (S7)', async () => {
+    const h = harness((url, init) => {
+      if (url === '/api/warranty-cases') return tray([]);
+      if (url === '/api/warranty-cases/claims' && init.method === 'POST') return failure('claim_already_open', 409);
+      return undefined;
+    });
+    renderScreen(h);
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar canje' }));
+    fireEvent.change(screen.getByLabelText('Número de serie de la batería reclamada'), { target: { value: 'ABC123' } });
+    fireEvent.change(screen.getByLabelText('Qué falló'), { target: { value: 'No arranca el motor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Buscar la venta y abrir el caso' }));
+    // The refusal is the contract's own code, with the sentence the closed map publishes for it, never
+    // a transport error: the operator reads that the serial carries one open claim at a time.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Ese número de serie ya tiene un reclamo abierto: un serial lleva un reclamo a la vez. No se registró nada.');
+    expect(alert).not.toHaveTextContent('La respuesta del servidor no es válida');
+    // The refused claim wrote nothing: one attempt, and no second case confirmed behind it.
+    expect(h.posts()).toHaveLength(1);
+    expect(screen.queryByText(/Caso C-2-000001 abierto/)).toBeNull();
   });
 
   it('offers no model at all when the chosen origin holds no used battery, and never a typed one (S30)', async () => {
