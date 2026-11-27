@@ -989,6 +989,19 @@ export function closingMaterialReading(lines: readonly ClosingMaterialLine[],
   });
 }
 
+/**
+ * The search of the material sheet: the sheet is already here, so the filter never asks the server.
+ * Each row answers to the identity its kind shows — the model of a used line and the name of the
+ * material of a scrap one — because a term a row shows must answer that row (S7, S8).
+ */
+export function filterMaterialRows(rows: readonly ClosingMaterialRow[],
+  search: string): readonly ClosingMaterialRow[] {
+  if (typeof search !== 'string' || !validSearch(search)) throw new Error(closingSearchMessage);
+  const needle = search.trim().toLocaleLowerCase('es');
+  if (needle === '') return rows;
+  return rows.filter(row => row.label.toLocaleLowerCase('es').includes(needle));
+}
+
 // ---------------------------------------------------------------------------------
 // The two tabs and the three balances of one settlement (S10, S13, S14)
 // ---------------------------------------------------------------------------------

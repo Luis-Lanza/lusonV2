@@ -11,6 +11,7 @@ import {
   closingExpenseEffect, closingExpenseMotive, closingExpenseNote,
   closingEvidencePath, closingEvidenceSizeText, closingEvidenceText,
   closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
+  filterMaterialRows,
   canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
   closingCorrectedCommission, closingCorrectedCounts, closingCorrectionPreview,
   closingCorrectionReadiness, closingPendingCorrection, correctionDraftFrom,
@@ -345,7 +346,42 @@ const materialLines: readonly ClosingMaterialLine[] = [
   scrapMaterial(4, 'Bronce', '3.100', '3.100'),
 ];
 
+/**
+ * The material sheet of a branch the sheet has no bound for (S7, S8): 300 lines over its two kinds,
+ * every used model of one of two families and the four materials the branch sells as scrap.
+ */
+const longMaterialSheet: readonly ClosingMaterialLine[] = [
+  ...Array.from({ length: 180 }, (_, index) => usedMaterial(
+    `${index % 2 === 0 ? 'NS60' : '24F'}-${String(index).padStart(3, '0')}`, '4', '4')),
+  ...Array.from({ length: 120 }, (_, index) => scrapMaterial(index + 1,
+    ['Cobre', 'Plomo', 'Aluminio', 'Bronce'][index % 4], '1.000', '1.000')),
+];
+
 describe('S7, S8, S9 the materials the purchase fund bought', () => {
+  it('narrows a long sheet by the model of a used row and the material of a scrap one (S7, S8)', () => {
+    const reading = closingMaterialReading(longMaterialSheet, emptyMaterialDraft);
+    expect(reading.total).toBe(300);
+    // An empty search is the whole sheet of both kinds, in the order the document published it.
+    expect(filterMaterialRows(reading.used.lines, '')).toHaveLength(180);
+    expect(filterMaterialRows(reading.scrap.lines, '')).toHaveLength(120);
+    expect(filterMaterialRows(reading.used.lines, '')).toEqual(reading.used.lines);
+    // A used row answers to its model, in any case and with the blanks around the term ignored.
+    const ns60 = filterMaterialRows(reading.used.lines, ' ns60 ');
+    expect(ns60).toHaveLength(90);
+    expect(ns60.every(row => row.line.kind === 'used'
+      && (row.line.model ?? '').startsWith('NS60'))).toBe(true);
+    // A scrap row answers to the name of its material, which is the identity its kind shows.
+    const plomo = filterMaterialRows(reading.scrap.lines, 'PLOMO');
+    expect(plomo).toHaveLength(30);
+    expect(plomo.every(row => row.line.material === 'Plomo')).toBe(true);
+    // A kind the term does not reach is narrowed to nothing, and no row is invented for it.
+    expect(filterMaterialRows(reading.scrap.lines, 'ns60')).toEqual([]);
+    expect(filterMaterialRows(reading.used.lines, 'plomo')).toEqual([]);
+    // A term that is not a search is refused instead of being read as no row at all.
+    expect(() => filterMaterialRows(reading.rows, 'x'.repeat(200)))
+      .toThrow(model.closingSearchMessage);
+  });
+
   it('reads a quantity of either kind in exact thousandths, never as a float', () => {
     expect(closingMaterialMilli('kg', '84.500')).toBe(84500n);
     expect(closingMaterialMilli('unit', '12')).toBe(12000n);

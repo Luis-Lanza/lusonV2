@@ -30,7 +30,7 @@ import {
   closingTabsLabel,
   correctionDraftFrom, drawerDraftFrom,
   drawerView,
-  emptyDrawerDraft, emptyMaterialDraft, emptyPurchaseFundDraft, filterCountLines,
+  emptyDrawerDraft, emptyMaterialDraft, emptyPurchaseFundDraft, filterCountLines, filterMaterialRows,
   materialDraftFrom, purchaseFundDraftFrom, purchaseFundView,
   type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingMaterialRow,
   type ClosingRail, type ClosingTab,
@@ -121,6 +121,9 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const [materials, setMaterials] = useState<MaterialDraft>(emptyMaterialDraft);
   const [correction, setCorrection] = useState<CorrectionDraft | null>(null);
   const [search, setSearch] = useState('');
+  // The search of the material sheet: its own field, because it narrows its own sheet and the two
+  // sheets never filter each other.
+  const [materialSearch, setMaterialSearch] = useState('');
   // The battery the admin counted and the cut did not know: a row the closure honours upward (S5).
   const [added, setAdded] = useState<readonly ClosingCatalogueVariant[]>([]);
   const [catalogueSearch, setCatalogueSearch] = useState('');
@@ -185,7 +188,6 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
         apply(document);
         if (live) {
           setResumed(document.id);
-          setStatus(`La sucursal ya tenía la rendición #${document.id} abierta: la retomamos con su conteo y su caja.`);
         } else {
           setClosedView(document.id);
         }
@@ -395,7 +397,11 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     setCounted(current => ({ ...current, [line.variant_id]: value }));
   }
 
-  function moveFocus(event: KeyboardEvent<HTMLTableSectionElement>) {
+  /**
+   * Moves the focus between the counted cells of one sheet with the arrows and `Enter`: the rows are
+   * read in the order the sheet shows them, and the first and the last one do not wrap around.
+   */
+  function moveFocus(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== 'Enter' && event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     const inputs = Array.from(event.currentTarget.querySelectorAll<HTMLInputElement>('input'));
     const index = inputs.indexOf(document.activeElement as HTMLInputElement);
@@ -498,6 +504,10 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const blocked = blockers.length > 0;
   const searchValid = validSearch(search);
   const visibleRows = searchValid ? filterCountLines(rows, search) : rows;
+  const materialSearchValid = validSearch(materialSearch);
+  // Whether the term narrows the sheet at all: whitespace is not a search, and a term the sheet
+  // refuses leaves it whole, so neither of them counts as a narrowing (S8).
+  const materialNarrowed = materialSearchValid && materialSearch.trim() !== '';
   // The count of the draft against the system: purely local, it is neither sent nor stored (S2).
   const countReading = closingCountReading(rows, counted);
   const changedIDs = new Set(countReading.differences.map(entry => entry.variant_id));
@@ -528,7 +538,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     }
   })();
 
-  return <section className="closing-workspace" aria-labelledby="closing-title">
+  return <section className="closing-workspace closing-workspace-compact" aria-labelledby="closing-title">
     <header className="closing-heading">
       <div>
         <small>ALMACÉN / RENDICIONES</small>
@@ -553,7 +563,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
         {period.empty && <small className="closing-muted">Primera rendición: el período arranca y corta en el mismo instante.</small>}
       </>}
       {resumed !== null && <p role="status" className="closing-note">
-        La sucursal ya tenía la rendición #{resumed} abierta: la retomamos.
+        La sucursal ya tenía la rendición #{resumed} abierta: la retomamos con su conteo y su caja.
       </p>}
       {branch !== 0 && phase === 'ready' && (closing === null || closing.status === 'closed') && <>
         <p className="closing-note">
@@ -876,7 +886,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       <div id="closing-panel-chatarra" role="tabpanel" aria-labelledby="closing-tab-chatarra"
         hidden={tab !== 'chatarra'}>
         <div className="closing-layout">
-          <section className="closing-panel" aria-labelledby="closing-materials-title">
+          <section className="closing-panel closing-materials-panel" aria-labelledby="closing-materials-title">
             <header className="closing-panel-head">
               <h2 id="closing-materials-title">Materiales rendidos</h2>
               <span className={`closing-tag ${materialReading.differing === 0 ? 'ok' : 'warn'}`}>
@@ -890,57 +900,78 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             {materialReading.empty
               ? <p className="closing-help">{closingMaterialEmptySheet}</p>
               : <>
+                <div className="closing-search">
+                  <input type="search" aria-label="Buscar en la planilla de materiales"
+                    placeholder="Buscar modelo o material"
+                    value={materialSearch} onChange={event => setMaterialSearch(event.target.value)} />
+                  <small><kbd>Tab</kbd> avanza · <kbd>Enter</kbd> confirma · <kbd>↑</kbd><kbd>↓</kbd> mueven</small>
+                </div>
+                {!materialSearchValid
+                  && <p role="alert" className="closing-problem">{closingSearchMessage}</p>}
+                {/* The sheet has no line bound of its own, so a long one scrolls inside its own
+                    region, in the same wrapper the count sheet uses (S7, S8). */}
+                {materialReading.groups.map(group => {
+                  // The search narrows the rows the table shows and never its totals: a kind keeps
+                  // the total of its whole sheet outside a search, and under one it states none at
+                  // all, because 300 over six rows would read as the sum of those six (S8).
+                  const visible = materialSearchValid
+                    ? filterMaterialRows(group.lines, materialSearch) : group.lines;
+                  return <div className="closing-materials closing-table-wrap closing-materials-wrap"
+                    key={group.kind}>
+                    <table className="closing-table closing-materials-table">
+                      <caption>{group.unit === 'kg'
+                        ? `${group.label} · kilogramos por material`
+                        : `${group.label} · unidades por modelo`}</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">{group.unit === 'kg' ? 'Material' : 'Modelo'}</th>
+                          <th scope="col" className="num">{group.unit === 'kg' ? 'Comprados' : 'Compradas'}</th>
+                          <th scope="col" className="num">{group.unit === 'kg' ? 'Contados' : 'Contadas'}</th>
+                          <th scope="col" className="num">Dif.</th>
+                        </tr>
+                      </thead>
+                      <tbody onKeyDown={moveFocus}>{visible.map(row => {
+                        const differenceClass = row.difference_milli === null || row.difference_milli === 0n
+                          ? 'zero' : row.difference_milli < 0n ? 'neg' : 'pos';
+                        return <tr key={row.key} data-material-key={row.key}>
+                          <td>{row.label}</td>
+                          <td className="num">
+                            {closingMaterialQuantityLabel(row.unit, row.line.expected_quantity)}</td>
+                          <td className="num">{editable
+                            ? <input className="count"
+                              inputMode={row.unit === 'kg' ? 'decimal' : 'numeric'} placeholder="—"
+                              aria-label={row.unit === 'kg'
+                                ? `Contados kg de ${row.label}` : `Contadas modelo ${row.label}`}
+                              value={materials[row.key] ?? ''}
+                              onChange={event => setMaterialValue(row, event.target.value)} />
+                            : <span>{row.counted_milli === null ? 'Sin contar'
+                              : closingMaterialQuantityLabel(row.unit,
+                                closingMaterialWireText(row.unit, row.counted_milli))}</span>}</td>
+                          <td className={`num ${differenceClass}`}>
+                            {closingMaterialSignedText(row.unit, row.difference_milli ?? 0n)}</td>
+                        </tr>;
+                      })}</tbody>
+                      {group.lines.length > 1 && !materialNarrowed && <tfoot>
+                        <tr>
+                          <td>Total</td>
+                          <td className="num">{closingMaterialQuantityLabel(group.unit,
+                            closingMaterialWireText(group.unit, group.expected_milli))}</td>
+                          <td className="num">{group.counted_milli === null ? 'Sin contar'
+                            : closingMaterialQuantityLabel(group.unit,
+                              closingMaterialWireText(group.unit, group.counted_milli))}</td>
+                          <td className={`num ${group.difference_milli === 0n ? 'zero'
+                            : group.difference_milli < 0n ? 'neg' : 'pos'}`}>
+                            {group.complete
+                              ? closingMaterialSignedText(group.unit, group.difference_milli) : '—'}</td>
+                        </tr>
+                      </tfoot>}
+                    </table>
+                  </div>;
+                })}
+                {/* The baseline the sheet is read against sits under the region, not above it: the
+                    paragraph is the same block and the same words, and above the region it took the
+                    rows the region needed to show a sheet of 300 lines. */}
                 <p className="closing-help">{closingMaterialShelfHelp}</p>
-                {materialReading.groups.map(group => <div className="closing-materials" key={group.kind}>
-                  <table className="closing-table closing-materials-table">
-                    <caption>{group.unit === 'kg'
-                      ? `${group.label} · kilogramos por material`
-                      : `${group.label} · unidades por modelo`}</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">{group.unit === 'kg' ? 'Material' : 'Modelo'}</th>
-                        <th scope="col" className="num">{group.unit === 'kg' ? 'Comprados' : 'Compradas'}</th>
-                        <th scope="col" className="num">{group.unit === 'kg' ? 'Contados' : 'Contadas'}</th>
-                        <th scope="col" className="num">Dif.</th>
-                      </tr>
-                    </thead>
-                    <tbody>{group.lines.map(row => {
-                      const differenceClass = row.difference_milli === null || row.difference_milli === 0n
-                        ? 'zero' : row.difference_milli < 0n ? 'neg' : 'pos';
-                      return <tr key={row.key} data-material-key={row.key}>
-                        <td>{row.label}</td>
-                        <td className="num">
-                          {closingMaterialQuantityLabel(row.unit, row.line.expected_quantity)}</td>
-                        <td className="num">{editable
-                          ? <input className="count"
-                            inputMode={row.unit === 'kg' ? 'decimal' : 'numeric'} placeholder="—"
-                            aria-label={row.unit === 'kg'
-                              ? `Contados kg de ${row.label}` : `Contadas modelo ${row.label}`}
-                            value={materials[row.key] ?? ''}
-                            onChange={event => setMaterialValue(row, event.target.value)} />
-                          : <span>{row.counted_milli === null ? 'Sin contar'
-                            : closingMaterialQuantityLabel(row.unit,
-                              closingMaterialWireText(row.unit, row.counted_milli))}</span>}</td>
-                        <td className={`num ${differenceClass}`}>
-                          {closingMaterialSignedText(row.unit, row.difference_milli ?? 0n)}</td>
-                      </tr>;
-                    })}</tbody>
-                    {group.lines.length > 1 && <tfoot>
-                      <tr>
-                        <td>Total</td>
-                        <td className="num">{closingMaterialQuantityLabel(group.unit,
-                          closingMaterialWireText(group.unit, group.expected_milli))}</td>
-                        <td className="num">{group.counted_milli === null ? 'Sin contar'
-                          : closingMaterialQuantityLabel(group.unit,
-                            closingMaterialWireText(group.unit, group.counted_milli))}</td>
-                        <td className={`num ${group.difference_milli === 0n ? 'zero'
-                          : group.difference_milli < 0n ? 'neg' : 'pos'}`}>
-                          {group.complete
-                            ? closingMaterialSignedText(group.unit, group.difference_milli) : '—'}</td>
-                      </tr>
-                    </tfoot>}
-                  </table>
-                </div>)}
                 <p className="closing-help">{materialReading.delivery} {closingMaterialDeliveryHelp}</p>
               </>}
           </section>

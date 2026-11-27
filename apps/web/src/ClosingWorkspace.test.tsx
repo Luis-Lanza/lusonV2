@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import ClosingWorkspace from './ClosingWorkspace';
+import { closingMaterialShelfHelp } from './closingModel';
 import { notifyClosingInvalidation } from './useInventory';
 
 const csrf = 'c'.repeat(43);
@@ -521,6 +522,25 @@ describe('the count sheet (S4)', () => {
     expect(h.calls).toHaveLength(reads);
   });
 
+  it('walks the counted cells of the stock sheet with the arrows, as it always did (S1, S2)', async () => {
+    const h = server();
+    await ready(h);
+    const count = await sheet();
+    const first = within(count).getByLabelText('Contado de Bosch S4 L · 45 Ah');
+    const second = within(count).getByLabelText('Contado de Bosch Power R · 110 Ah');
+    const third = within(count).getByLabelText('Contado de Bosch Blue L · 60 Ah');
+    first.focus();
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'Enter' });
+    expect(document.activeElement).toBe(third);
+    fireEvent.keyDown(third, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(third);
+    fireEvent.keyDown(third, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(second);
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
+  });
+
   it('reads a sheet of both kinds and counts a product like any other row (S2, S3, S4)', async () => {
     const h = server({ product: true });
     await ready(h);
@@ -929,10 +949,176 @@ describe('the two tabs and the three balances (S10, S13)', () => {
     expect(balances()[1]).toHaveAttribute('aria-pressed', 'false');
     expect(h.posts('/api/closings/1/cash')).toHaveLength(0);
   });
+
+  // The strip is the promise the heading makes — "los números del cierre quedan siempre a la
+  // vista" — so the row that compacts it keeps all three parts of every account: what the account
+  // is, what it reads today and what that reading is made of. The one part of this that a browser
+  // alone can state is the layout: jsdom lays nothing out, so the height of the row and the room it
+  // leaves to the material sheet below are not asserted here.
+  it('states the title, the reading and the detail of each balance in its own card', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    const cards = within(balanceStrip()).getAllByRole('button');
+    expect(cards).toHaveLength(3);
+    const parts = (card: HTMLElement) => [...card.children]
+      .map(part => `${part.tagName} ${part.textContent}`);
+    expect(parts(cards[0])).toEqual([
+      'SMALL Caja operativa', 'STRONG Sin contar', 'EM esperada 800,00']);
+    expect(parts(cards[1])).toEqual([
+      'SMALL Fondo de compras', 'STRONG Sin contar', 'EM esperado 379,00']);
+    // The third account is read in its own unit and names what each kind of its sheet reads.
+    expect(parts(cards[2])).toEqual([
+      'SMALL Materiales', 'STRONG 2 cuentas con diferencia',
+      'EM baterías usadas − 1 unidad · chatarra − 4,300 kg']);
+  });
 });
 
 describe('the material sheet of the scrap tab (S7, S8, S9)', () => {
   const table = async (name: string) => within(await materials()).getByRole('table', { name });
+  const materialSearch = async () => within(await materials())
+    .getByLabelText('Buscar en la planilla de materiales');
+
+  // The sheet starts as high as the screen allows, so the paragraph that reads the shelf's baseline
+  // sits under the region instead of above it: it costs the rows the region needs. It is the same
+  // block and the same words — a paragraph of the panel, never a tooltip and never a caption folded
+  // away — and the region does not move it out of the panel. (Where it lands on the screen, and the
+  // height it leaves the region, only a browser states.)
+  it('keeps the shelf baseline readable inside the panel, under the region (S7)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const panel = await materials();
+    const help = within(panel).getByText(closingMaterialShelfHelp);
+    expect(help.tagName).toBe('P');
+    const region = within(panel).getByRole('table', { name: 'Baterías usadas · unidades por modelo' });
+    expect(region.compareDocumentPosition(help) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('searches the sheet by the model or the material of each row, without touching its totals (S7, S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    const scrap = await table('Chatarra · kilogramos por material');
+    const reads = h.calls.length;
+    // A used row answers to its model: the term narrows what the table shows and nothing else.
+    fireEvent.change(await materialSearch(), { target: { value: '31' } });
+    expect(within(used).getByLabelText('Contadas modelo 31-100')).toBeInTheDocument();
+    expect(within(used).queryByLabelText('Contadas modelo 24F-45')).not.toBeInTheDocument();
+    expect(within(scrap).queryByLabelText('Contados kg de Cobre')).not.toBeInTheDocument();
+    // A scrap row answers to the name of its material, in any case the operator writes it.
+    fireEvent.change(await materialSearch(), { target: { value: 'plomo' } });
+    expect(within(scrap).getByLabelText('Contados kg de Plomo')).toBeInTheDocument();
+    expect(within(scrap).queryByLabelText('Contados kg de Cobre')).not.toBeInTheDocument();
+    expect(within(used).queryByLabelText('Contadas modelo 31-100')).not.toBeInTheDocument();
+    // A kind's total is the reading of the whole sheet and never of the rows the search left, so
+    // under a narrowed sheet it is not rendered at all: it would read as the sum of those rows (S8).
+    expect(used.querySelector('tfoot')).toBeNull();
+    expect(scrap.querySelector('tfoot')).toBeNull();
+    // The filter is local: the sheet is already here, so nothing is read from the server again (S8).
+    expect(h.calls).toHaveLength(reads);
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+    // An empty search brings the whole sheet back, its totals with the numbers they always had.
+    fireEvent.change(await materialSearch(), { target: { value: '' } });
+    expect(within(used).getByLabelText('Contadas modelo 24F-45')).toBeInTheDocument();
+    expect(within(scrap).getByLabelText('Contados kg de Cobre')).toBeInTheDocument();
+    const usedTotal = used.querySelector('tfoot')!;
+    expect(usedTotal).toHaveTextContent('27');
+    expect(usedTotal).toHaveTextContent('26');
+    const scrapTotal = scrap.querySelector('tfoot')!;
+    expect(scrapTotal).toHaveTextContent('108,750 kg');
+    expect(scrapTotal).toHaveTextContent('104,450 kg');
+  });
+
+  it('renders no total row while the search narrows the sheet and the same ones when it clears (S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    const scrap = await table('Chatarra · kilogramos por material');
+    const usedTotal = () => used.querySelector('tfoot');
+    const scrapTotal = () => scrap.querySelector('tfoot');
+    // Before any search each kind states the total of its whole sheet.
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(usedTotal()).toHaveTextContent('26');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    expect(scrapTotal()).toHaveTextContent('104,450 kg');
+    // A term that leaves one row out of the used kind takes the totals out with it: six rows under
+    // a row that reads 300 would say those six sum 300.
+    fireEvent.change(await materialSearch(), { target: { value: '31' } });
+    expect(within(used).getByLabelText('Contadas modelo 31-100')).toBeInTheDocument();
+    expect(usedTotal()).toBeNull();
+    expect(scrapTotal()).toBeNull();
+    // Whitespace is not a search: the sheet is whole and so are its totals.
+    fireEvent.change(await materialSearch(), { target: { value: '   ' } });
+    expect(within(used).getByLabelText('Contadas modelo 24F-45')).toBeInTheDocument();
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    // An empty search brings the very same numbers back, never a total recomputed over the rows it
+    // shows, and a search the sheet refuses leaves the sheet and its totals as they are.
+    fireEvent.change(await materialSearch(), { target: { value: '' } });
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(usedTotal()).toHaveTextContent('26');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    expect(scrapTotal()).toHaveTextContent('104,450 kg');
+    fireEvent.change(await materialSearch(), { target: { value: 'x'.repeat(129) } });
+    expect(within(await materials()).getByRole('alert'))
+      .toHaveTextContent('La búsqueda admite hasta 128 bytes UTF-8');
+    expect(usedTotal()).toHaveTextContent('27');
+    expect(scrapTotal()).toHaveTextContent('108,750 kg');
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+  });
+
+  it('scrolls inside its own region and walks its counted cells with the arrows (S7, S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    const scrap = await table('Chatarra · kilogramos por material');
+    // The sheet has no line bound of its own, so a long one scrolls inside its own region instead
+    // of pushing the page down: the same wrapper the count sheet already uses, plus the material
+    // class the region's own scrollbar and height are stated on (S7, S8).
+    expect(used.closest('.closing-table-wrap')).not.toBeNull();
+    expect(scrap.closest('.closing-table-wrap')).not.toBeNull();
+    // What jsdom can honestly assert here is the hook the stylesheet rides on, never a layout: the
+    // region's visible scrollbar and the room the action bar needs are verified in a real browser.
+    expect(used.closest('.closing-table-wrap.closing-materials-wrap')).not.toBeNull();
+    expect(scrap.closest('.closing-table-wrap.closing-materials-wrap')).not.toBeNull();
+    expect((await materials()).closest('.closing-panel')?.className)
+      .toBe('closing-panel closing-materials-panel');
+    // The arrows walk the counted cells of a kind in the order its table shows them.
+    const first = within(used).getByLabelText('Contadas modelo 24F-45');
+    const second = within(used).getByLabelText('Contadas modelo 27-60');
+    const third = within(used).getByLabelText('Contadas modelo 31-100');
+    first.focus();
+    fireEvent.keyDown(first, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'Enter' });
+    expect(document.activeElement).toBe(third);
+    // The last cell of a kind and the first one do not wrap around: moving never jumps rows.
+    fireEvent.keyDown(third, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(third);
+    fireEvent.keyDown(third, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(second);
+    fireEvent.keyDown(second, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(first);
+    fireEvent.keyDown(first, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(first);
+    // The scrap table walks its own cells the same way, in the unit it counts.
+    const cobre = within(scrap).getByLabelText('Contados kg de Cobre');
+    const aluminio = within(scrap).getByLabelText('Contados kg de Aluminio');
+    cobre.focus();
+    fireEvent.keyDown(cobre, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(aluminio);
+    fireEvent.keyDown(aluminio, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(cobre);
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+  });
 
   it('renders both tables with their totals and the sign of every difference (S8)', async () => {
     const h = server();
