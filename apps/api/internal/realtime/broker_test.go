@@ -348,13 +348,27 @@ func (f *brokerFixture) item(t *testing.T, tx pgx.Tx, id int64) {
 }
 func TestR03BrokerPostgres(t *testing.T) {
 	root := t
-	t.Run("live_delivery", func(t *testing.T) { f := brokerFixtureDB(t); registerBrokerAudit(root, f.p); testBrokerFlows(t, f) })
-	t.Run("commit_rollback_deferred_failure", testBrokerTransactions)
-	t.Run("inventory_changes_noop_pending_silence", testBrokerInventory)
-	t.Run("reversed_audience_lock_order", testBrokerLockOrder)
-	t.Run("listen_snapshot_subscription_race", testBrokerStartupRace)
-	t.Run("recovery_overflow_cancellation", testBrokerRecovery)
-	t.Run("failed_startup_backoff_cancellation", testBrokerBackoff)
+	// The isolated databases this test's own fixtures open. The audit cleanup
+	// asserts exactly these are gone: sibling packages hold their own
+	// luson_test_<32 hex> database while their tests run, so a catalog-wide
+	// claim is not this test's to make. TestR01AdmissionPostgres owns it.
+	owned := make([]string, 0, 7)
+	open := func(t *testing.T) *brokerFixture {
+		f := brokerFixtureDB(t)
+		owned = append(owned, f.p.Config().ConnConfig.Database)
+		return f
+	}
+	t.Run("live_delivery", func(t *testing.T) {
+		f := open(t)
+		registerBrokerAudit(root, f.p, &owned)
+		testBrokerFlows(t, f)
+	})
+	t.Run("commit_rollback_deferred_failure", func(t *testing.T) { testBrokerTransactions(t, open(t)) })
+	t.Run("inventory_changes_noop_pending_silence", func(t *testing.T) { testBrokerInventory(t, open(t)) })
+	t.Run("reversed_audience_lock_order", func(t *testing.T) { testBrokerLockOrder(t, open(t)) })
+	t.Run("listen_snapshot_subscription_race", func(t *testing.T) { testBrokerStartupRace(t, open(t)) })
+	t.Run("recovery_overflow_cancellation", func(t *testing.T) { testBrokerRecovery(t, open(t)) })
+	t.Run("failed_startup_backoff_cancellation", func(t *testing.T) { testBrokerBackoff(t, open(t)) })
 }
 func testBrokerFlows(t *testing.T, f *brokerFixture) {
 	b, all := f.start(t, nil)
@@ -411,8 +425,7 @@ func testBrokerFlows(t *testing.T, f *brokerFixture) {
 		}
 	}
 }
-func testBrokerTransactions(t *testing.T) {
-	f := brokerFixtureDB(t)
+func testBrokerTransactions(t *testing.T, f *brokerFixture) {
 	_, all := f.start(t, nil)
 	before := f.stock(t)
 	versions := f.revisions(t)
@@ -472,8 +485,7 @@ func testBrokerTransactions(t *testing.T) {
 	}
 	f.unchanged(t, before)
 }
-func testBrokerInventory(t *testing.T) {
-	f := brokerFixtureDB(t)
+func testBrokerInventory(t *testing.T, f *brokerFixture) {
 	_, all := f.start(t, nil)
 	versions := f.revisions(t)
 	before := f.stock(t)
@@ -554,8 +566,7 @@ func testBrokerInventory(t *testing.T) {
 		t.Fatal("initialization reset operational stock")
 	}
 }
-func testBrokerLockOrder(t *testing.T) {
-	f := brokerFixtureDB(t)
+func testBrokerLockOrder(t *testing.T, f *brokerFixture) {
 	_, all := f.start(t, nil)
 	before := f.stock(t)
 	first, err := pgx.ConnectConfig(f.ctx, f.p.Config().ConnConfig.Copy())
@@ -720,8 +731,7 @@ func (tr *brokerTrace) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.
 		}
 	})
 }
-func testBrokerStartupRace(t *testing.T) {
-	f := brokerFixtureDB(t)
+func testBrokerStartupRace(t *testing.T, f *brokerFixture) {
 	trace := &brokerTrace{counted: make(chan struct{}), resume: make(chan struct{})}
 	cfg := f.p.Config().ConnConfig.Copy()
 	cfg.Tracer = trace
@@ -790,8 +800,7 @@ func testBrokerStartupRace(t *testing.T) {
 		t.Fatal("initial resync lacks concurrently committed state")
 	}
 }
-func testBrokerRecovery(t *testing.T) {
-	f := brokerFixtureDB(t)
+func testBrokerRecovery(t *testing.T, f *brokerFixture) {
 	trace := &brokerTrace{}
 	cfg := f.p.Config().ConnConfig.Copy()
 	cfg.Tracer = trace
@@ -901,8 +910,7 @@ func (tr *failedSnapshotTrace) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, d
 		tr.mu.Unlock()
 	}
 }
-func testBrokerBackoff(t *testing.T) {
-	f := brokerFixtureDB(t)
+func testBrokerBackoff(t *testing.T, f *brokerFixture) {
 	cfg := f.p.Config().ConnConfig.Copy()
 	// Session-local search_path makes the readiness query unavailable without
 	// changing schema, operator configuration, resource bindings or table data.
@@ -946,7 +954,12 @@ func testBrokerBackoff(t *testing.T) {
 	}
 }
 
-func registerBrokerAudit(t *testing.T, p *pgxpool.Pool) {
+// registerBrokerAudit verifies, at the end of the test, that the databases its
+// own fixtures opened are gone and that the admin schema is untouched. It never
+// asserts about other packages' isolated databases: those exist concurrently
+// for as long as their tests run, so only TestR01AdmissionPostgres may claim
+// that none survives the suite.
+func registerBrokerAudit(t *testing.T, p *pgxpool.Pool, owned *[]string) {
 	t.Helper()
 	cfg := p.Config().ConnConfig.Copy()
 	cfg.Database = "luson_test"
@@ -964,12 +977,15 @@ func registerBrokerAudit(t *testing.T, p *pgxpool.Pool) {
 		if admin.QueryRow(ctx, "SELECT current_user,current_database()").Scan(&user, &db) != nil || user != "luson_test" || db != "luson_test" {
 			t.Fatal("broker audit identity refused")
 		}
+		if len(*owned) == 0 {
+			t.Fatal("broker audit recorded no owned database")
+		}
 		for {
-			var total, owned, foreign int
-			if admin.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE datname ~ '^luson_test_[a-f0-9]{32}$'),count(*) FILTER (WHERE datname NOT IN ('luson_test','postgres','template0','template1')) FROM pg_database`).Scan(&total, &owned, &foreign) != nil {
+			var remaining int
+			if admin.QueryRow(ctx, "SELECT count(*) FROM pg_database WHERE datname = ANY($1)", *owned).Scan(&remaining) != nil {
 				t.Fatal("broker audit catalog failed")
 			}
-			if total == 4 && owned == 0 && foreign == 0 {
+			if remaining == 0 {
 				break
 			}
 			select {
@@ -982,6 +998,6 @@ func registerBrokerAudit(t *testing.T, p *pgxpool.Pool) {
 		if admin.QueryRow(ctx, "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'").Scan(&tables) != nil || tables != 0 {
 			t.Fatal("broker changed admin schema")
 		}
-		t.Log("broker settled fixture: baseline=4 owned=0 nonbaseline=0 admin_public=0")
+		t.Log("broker settled fixture: owned=0 admin_public=0")
 	})
 }
